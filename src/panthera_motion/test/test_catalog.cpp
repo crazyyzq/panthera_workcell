@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <stdexcept>
+#include <set>
 
 #include "panthera_motion/Catalog.hpp"
 #include "panthera_motion/Compiler.hpp"
@@ -95,6 +97,61 @@ TEST(TrajectoryScaling, SlowsTimeVelocityAndAccelerationConsistently)
   EXPECT_DOUBLE_EQ(scaled.points.front().velocities.front(), 1.0);
   EXPECT_DOUBLE_EQ(scaled.points.front().accelerations.front(), 1.0);
   EXPECT_DOUBLE_EQ(panthera_motion::trajectoryDurationSec(scaled), 4.0);
+}
+
+TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
+{
+  const auto catalog =
+    panthera_motion::MotionCatalog::loadFromFile(PANTHERA_TEST_CATALOG_PATH);
+
+  const std::set<std::string> required_points{
+    "outlet_1_grasp",
+    "outlet_2_grasp",
+    "spectrometer_place",
+    "spectrometer_pick",
+    "clean_dump",
+    "brush_center",
+  };
+  std::size_t tunable_count = 0;
+  for (const auto & item : catalog.points) {
+    const auto & tags = item.second.tags;
+    if (std::find(tags.begin(), tags.end(), "tunable") != tags.end()) {
+      ++tunable_count;
+    }
+  }
+  EXPECT_EQ(tunable_count, required_points.size());
+  for (const auto & name : required_points) {
+    const auto * point = catalog.findPoint(name);
+    ASSERT_NE(point, nullptr) << name;
+    EXPECT_TRUE(point->pose.has_value()) << name;
+    EXPECT_NE(std::find(point->tags.begin(), point->tags.end(), "tunable"), point->tags.end());
+  }
+
+  const std::set<std::string> required_routes{
+    "outlet_wait_to_outlet_1_grasp",
+    "outlet_wait_to_outlet_2_grasp",
+    "outlet_1_grasp_to_spectrometer_place",
+    "outlet_2_grasp_to_spectrometer_place",
+    "spectrometer_pick_to_clean_dump",
+    "clean_dump_to_pour",
+    "clean_dump_pour_shake_once",
+    "clean_dump_pour_to_upright",
+    "clean_dump_to_brush_entry",
+    "brush_entry_to_center",
+    "brush_center_to_outer",
+    "brush_outer_to_clean_hover",
+  };
+  for (const auto & name : required_routes) {
+    EXPECT_NE(catalog.findRoute(name), nullptr) << name;
+  }
+
+  const auto * outlet_route = catalog.findRoute("outlet_wait_to_outlet_1_grasp");
+  ASSERT_NE(outlet_route, nullptr);
+  ASSERT_FALSE(outlet_route->segments.empty());
+  const auto & final_segment = outlet_route->segments.back();
+  EXPECT_EQ(final_segment.type, panthera_motion::SegmentType::LINEAR);
+  EXPECT_EQ(final_segment.constraints.vertical_axis, "z");
+  EXPECT_TRUE(final_segment.constraints.keep_orientation);
 }
 
 }  // namespace

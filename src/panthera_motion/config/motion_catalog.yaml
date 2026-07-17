@@ -213,6 +213,32 @@ points:
     - process
     - cleaning
     - tunable
+  clean_dump_pour:
+    description: 倒料点第六轴负向限位姿态；由已编译clean_dump关节分支固化。
+    joints:
+    - 1.0001
+    - 1.95496
+    - 1.01812
+    - 0.936839
+    - -0.570702
+    - -2.5
+    tags:
+    - cleaning
+    - fixed_sequence
+    - advanced
+  clean_dump_shake_relief:
+    description: 倒料限位回退0.4rad的单次抖料点。
+    joints:
+    - 1.0001
+    - 1.95496
+    - 1.01812
+    - 0.936839
+    - -0.570702
+    - -2.1
+    tags:
+    - cleaning
+    - fixed_sequence
+    - advanced
   brush_outer:
     description: 毛刷远外侧安全点，由毛刷中心沿工具局部-Z退出80mm。
     pose:
@@ -386,6 +412,44 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  clean_dump_to_pour:
+    start: clean_dump
+    velocity_scale: 0.5
+    acceleration_scale: 0.1
+    segments:
+    - name: rotate_wrist_to_pour_limit
+      type: joint
+      to: clean_dump_pour
+  clean_dump_pour_shake_once:
+    start: clean_dump_pour
+    velocity_scale: 0.4
+    acceleration_scale: 0.1
+    segments:
+    - name: shake_relief
+      type: joint
+      to: clean_dump_shake_relief
+    - name: shake_back_to_pour
+      type: joint
+      to: clean_dump_pour
+  clean_dump_pour_to_upright:
+    start: clean_dump_pour
+    velocity_scale: 0.5
+    acceleration_scale: 0.1
+    segments:
+    - name: return_wrist_upright
+      type: joint
+      to: clean_dump
+  clean_dump_to_clean_hover:
+    start: clean_dump
+    velocity_scale: 0.1
+    acceleration_scale: 0.08
+    segments:
+    - name: vertical_leave_dump
+      type: linear
+      to: clean_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
   clean_dump_to_brush_entry:
     start: clean_dump
     velocity_scale: 0.1
@@ -416,6 +480,14 @@ routes:
     - name: retract_from_brush
       type: linear
       to: brush_outer
+  brush_outer_to_clean_hover:
+    start: brush_outer
+    velocity_scale: 0.1
+    acceleration_scale: 0.08
+    segments:
+    - name: leave_brush_area
+      type: joint
+      to: clean_hover
   clean_hover_to_outlet_1_return:
     start: clean_hover
     segments:

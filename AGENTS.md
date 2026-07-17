@@ -60,13 +60,19 @@ This file contains durable repository context and operating rules for future age
   physical validation; confirm brush direction at low speed before insertion.
 - Spectrometer sensor correction axis is inconsistent across historical docs/config (X versus Y). Confirm physical direction before enabling sensor mode.
 - HMI exposes full point/route CRUD for `motion_catalog.yaml`. Saves use schema checks, Motion Server compilation, atomic replacement and automatic rollback. The lower legacy state-machine parameter editor remains only during migration.
-- The optimized catalog has 15 points and 18 routes. Only 6 points carry the `tunable`
+- The optimized catalog has 17 points and 23 routes. Only 6 points carry the `tunable`
   tag and appear in the normal HMI view; `advanced` hover/recovery points are hidden by
   default. Do not reintroduce per-action approach/pre/near/retreat points unless measured
   collision evidence requires them.
 - Normal station motion uses one hover directly above each process point and a strict
   vertical final segment. Cross-station transfers should be continuous cached routes,
   not sequences that stop at every intermediate sample.
+- `panthera_spectrometer_cell` defaults to `motion.backend: fixed_cache`. In real mode
+  it is an action client of Motion Server and must not construct MoveGroup or publish arm
+  trajectories directly. `legacy_moveit` is a restart-only controlled fallback.
+- Fixed cleaning is also catalog-driven: pour, one shake pattern, upright return, brush
+  insertion/exit, and brush-area retreat are named routes. Do not reintroduce dynamic
+  wrist planning into the production path.
 - Historical `.bak_*`, `bakeup/`, zip and export artifacts exist. Do not confuse them with canonical configuration.
 
 ## Build and validation
@@ -96,6 +102,16 @@ ros2 launch panthera_motion fixed_motion_bringup.launch.py default_speed_scale:=
 ```
 
 It starts hardware/controllers plus the Motion Server without MoveGroup. Do not start legacy real-motion nodes beside it.
+
+The full fixed-backend production entry point is:
+
+```bash
+ros2 launch panthera_motion fixed_spectrometer_cell.launch.py default_speed_scale:=0.20
+```
+
+It adds the spectrometer state machine and optional HMI while keeping Motion Server as
+the only arm-trajectory owner. The configured `motion.fixed_start_point` is a declaration,
+not a homing command; the server still verifies fresh encoder positions before execution.
 
 Runtime outputs belong in `build/`, `install/`, `log/`, `validation_logs/` and `.runtime/`; do not commit them.
 

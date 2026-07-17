@@ -6,13 +6,14 @@
 段编译、垂直约束、自碰撞与限位检查、时间参数化、缓存、起点保护、速度缩放、
 取消/停止和直接 `FollowJointTrajectory` 执行。
 
-当前目录已根据旧配置收敛为 15 个点（其中日常可调工艺点 6 个）和 18 条固定路线，
+当前目录已根据旧配置收敛为 17 个点（其中日常可调工艺点 6 个）和 23 条固定路线，
 并已在真实机器人模型上完成 IK、限位、自碰撞和笛卡尔约束编译。旧光谱工作流仍作为
-迁移期兼容实现；固定路线切为生产默认前必须完成分级低速验收。
+受控回退实现；正式状态机默认后端已切为 `fixed_cache`，真实运行前仍必须完成分级低速验收。
 
 兼容状态机单循环的普通空间移动调用已从 27 次降为 15 次（不计倒料关节和毛刷内部
 动作）。固定路线把跨工位移动与垂直进退编译成一条连续轨迹，中间采样点不会逐点停顿。
-因此本阶段禁止把旧状态机与新 Motion Server 同时用于真实运动。
+真实模式下状态机只向 Motion Server action 提交路线，不创建 MoveGroup。禁止同时启动
+旧 workflow executor、pose tuner 或任何其他机械臂轨迹发布者。
 
 ## 无硬件检查
 
@@ -62,9 +63,13 @@ HMI 的“点位”页顶部是固定轨迹主目录，底部是迁移期旧状�
 只有在现场确认工位无人、硬急停可用、控制器健康、轨迹起点匹配后，才使用：
 
 ```bash
-ros2 launch panthera_motion fixed_motion_bringup.launch.py \
+ros2 launch panthera_motion fixed_spectrometer_cell.launch.py \
   default_speed_scale:=0.20
 ```
+
+启动前机械臂必须实际位于 `motion.fixed_start_point`；默认是
+`safe_joint_center = [0, 0.18, 0.18, 0, 0, 0]`。配置名称不能替代实际编码器位置，
+Motion Server 仍会以 `0.05 rad` 起点容差逐关节拒绝错误起点。
 
 依次完成：控制器只读检查、dry-run、安全关节单段、垂直 Cartesian 单段、无物料
 空跑、空杯分段、单杯整轮、多轮与故障注入。任何一级失败都不得进入下一级。

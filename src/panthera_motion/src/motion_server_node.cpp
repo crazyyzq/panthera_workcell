@@ -83,6 +83,20 @@ double maxAbsVelocity(
   return maximum;
 }
 
+std::string jointVectorString(const std::vector<double> & values)
+{
+  std::ostringstream out;
+  out << '[';
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index > 0) {
+      out << ',';
+    }
+    out << values[index];
+  }
+  out << ']';
+  return out.str();
+}
+
 }  // namespace
 
 class MotionServer
@@ -162,10 +176,16 @@ public:
         std::lock_guard<std::mutex> lock(catalog_mutex_);
         std::ostringstream out;
         for (const auto & item : compiled_routes_) {
+          const auto & points = item.second.trajectory.points;
           out << item.first
               << " duration=" << item.second.duration_sec
-              << "s points=" << item.second.trajectory.points.size()
-              << " hash=" << item.second.content_hash << '\n';
+              << "s points=" << points.size()
+              << " hash=" << item.second.content_hash;
+          if (!points.empty()) {
+            out << " start=" << jointVectorString(points.front().positions)
+                << " end=" << jointVectorString(points.back().positions);
+          }
+          out << '\n';
         }
         response->success = !compiled_routes_.empty();
         response->message = out.str();

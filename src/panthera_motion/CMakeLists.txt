@@ -75,6 +75,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_catalog test/test_catalog.cpp)
   if(TARGET test_catalog)
     target_link_libraries(test_catalog panthera_motion_core)
+    target_compile_definitions(
+      test_catalog PRIVATE
+      PANTHERA_TEST_CATALOG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/motion_catalog.yaml"
+    )
   endif()
 
   find_package(ament_lint_auto REQUIRED)

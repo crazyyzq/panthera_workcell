@@ -142,6 +142,11 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readDouble(loop, "reset_timeout_sec", config.loop.resetTimeoutSec);
 
   const auto motion = root["motion"];
+  config.motion.backend = readString(motion, "backend", config.motion.backend);
+  config.motion.fixedStartPoint =
+    readString(motion, "fixed_start_point", config.motion.fixedStartPoint);
+  config.motion.motionServerWaitSec =
+    readDouble(motion, "motion_server_wait_sec", config.motion.motionServerWaitSec);
   config.motion.velocityScale = readDouble(motion, "velocity_scale", config.motion.velocityScale);
   config.motion.accelerationScale =
     readDouble(motion, "acceleration_scale", config.motion.accelerationScale);
@@ -399,6 +404,15 @@ ActionResult WorkcellConfig::validate() const
   if (motion.safeJointPose.empty()) {
     return ActionResult::fail("motion.safe_joint_pose must not be empty");
   }
+  if (motion.backend != "fixed_cache" && motion.backend != "legacy_moveit") {
+    return ActionResult::fail("motion.backend must be fixed_cache or legacy_moveit");
+  }
+  if (motion.fixedStartPoint != "safe_joint_center" && motion.fixedStartPoint != "home_near") {
+    return ActionResult::fail("motion.fixed_start_point must be safe_joint_center or home_near");
+  }
+  if (motion.motionServerWaitSec <= 0.0) {
+    return ActionResult::fail("motion.motion_server_wait_sec must be > 0");
+  }
   if (motion.outletTransferZ <= 0.0) {
     return ActionResult::fail("motion.outlet_transfer_z must be > 0");
   }
@@ -434,6 +448,14 @@ ActionResult WorkcellConfig::validate() const
   }
   if (cleaning.brushStrokeCount < 0) {
     return ActionResult::fail("cleaning.brush_stroke_count must be >= 0");
+  }
+  if (motion.backend == "fixed_cache" && cleaning.brushEnabled &&
+    (std::abs(cleaning.brushStrokeOffsetXyz[0]) > 1e-9 ||
+    std::abs(cleaning.brushStrokeOffsetXyz[1]) > 1e-9 ||
+    std::abs(cleaning.brushStrokeOffsetXyz[2]) > 1e-9))
+  {
+    return ActionResult::fail(
+      "fixed_cache brush supports center hold only; add compiled stroke routes before setting brush_stroke_offset_xyz");
   }
   if (cleaning.brushHoldSec < 0.0) {
     return ActionResult::fail("cleaning.brush_hold_sec must be >= 0");

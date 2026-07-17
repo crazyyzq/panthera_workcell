@@ -22,6 +22,7 @@
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>panthera_spectrometer_cell</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>panthera_ht_config</exec_depend>
 

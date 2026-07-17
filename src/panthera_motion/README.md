@@ -53,7 +53,18 @@ from `ik_seed`. A route has one fixed start point and ordered `joint` or `linear
 segments. `linear` segments may require a strict X/Y/Z vertical constraint.
 
 The catalog contains 6 operator-facing process points, shared safety hovers, and
-18 deterministic routes. Normal tuning should change only points tagged
+23 deterministic routes. Normal tuning should change only points tagged
 `tunable`; points tagged `advanced` are recovery or clearance points. Every
 route compiles against the robot model, but real execution still requires the
 staged low-speed commissioning procedure.
+
+The complete fixed-backend cell (hardware, Motion Server, state machine, and
+optional HMI, without MoveGroup) starts with:
+
+```bash
+ros2 launch panthera_motion fixed_spectrometer_cell.launch.py \
+  default_speed_scale:=0.20
+```
+
+For a no-hardware end-to-end dry run, add `simulation:=true
+start_hardware:=false start_hmi:=false`.

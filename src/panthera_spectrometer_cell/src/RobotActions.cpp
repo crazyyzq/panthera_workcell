@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -29,6 +30,9 @@ constexpr char kHandFrame[] = "gripper_center";
 constexpr char kGripperTopic[] = "/gripper_controller/joint_trajectory";
 constexpr char kGripperJoint[] = "L_finger_joint";
 constexpr char kCupObjectId[] = "carried_cup";
+constexpr char kMotionAction[] = "/motion/execute";
+
+using ExecuteMotion = panthera_interfaces::action::ExecuteMotion;
 
 double clampPosition(double value, double min_value, double max_value)
 {
@@ -296,13 +300,15 @@ ActionResult RobotActions::initialize()
 {
   RCLCPP_INFO(
     logger_,
-    "initialize robot actions, simulation=%s velocity_scale=%.3f acceleration_scale=%.3f",
+    "initialize robot actions, simulation=%s backend=%s velocity_scale=%.3f acceleration_scale=%.3f",
     config_.simulation.enabled ? "true" : "false",
+    config_.motion.backend.c_str(),
     config_.motion.velocityScale,
     config_.motion.accelerationScale);
 
-  if (!config_.simulation.enabled) {
-    const auto init_result = initializeRealInterfaces();
+  if (usesFixedMotion() || !config_.simulation.enabled) {
+    const auto init_result = usesFixedMotion() ?
+      initializeFixedMotionInterface() : initializeRealInterfaces();
     if (!init_result.success) {
       return init_result;
     }
@@ -323,6 +329,12 @@ ActionResult RobotActions::stop()
   if (!motor_stop.success) {
     RCLCPP_ERROR(logger_, "%s", motor_stop.message.c_str());
   }
+  if (motion_client_) {
+    motion_client_->async_cancel_all_goals();
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_.clear();
+    active_outlet_ = OutletId::NONE;
+  }
   if (!config_.simulation.enabled && arm_) {
     try {
       arm_->stop();
@@ -337,6 +349,16 @@ ActionResult RobotActions::stop()
 ActionResult RobotActions::reset()
 {
   RCLCPP_INFO(logger_, "robot reset requested");
+  if (usesFixedMotion() && motion_client_) {
+    motion_client_->async_cancel_all_goals();
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      fixed_point_.clear();
+      active_outlet_ = OutletId::NONE;
+    }
+    return ActionResult::ok(
+      "fixed motion reset: active goal cancelled; restart after placing arm at configured start point");
+  }
   if (!config_.simulation.enabled && arm_) {
     std::lock_guard<std::mutex> lock(motion_mutex_);
     arm_->stop();
@@ -353,7 +375,20 @@ void RobotActions::updateConfig(const WorkcellConfig & config)
     config_.cleaning.motorSerialEnabled != config.cleaning.motorSerialEnabled ||
     config_.cleaning.motorSerialDevice != config.cleaning.motorSerialDevice ||
     config_.cleaning.motorSerialBaudrate != config.cleaning.motorSerialBaudrate;
+  const std::string active_backend = config_.motion.backend;
+  const std::string active_start_point = config_.motion.fixedStartPoint;
   config_ = config;
+  if (config_.motion.backend != active_backend ||
+    config_.motion.fixedStartPoint != active_start_point)
+  {
+    RCLCPP_WARN(
+      logger_,
+      "motion backend/start point changes require restart; keeping backend=%s start=%s",
+      active_backend.c_str(),
+      active_start_point.c_str());
+    config_.motion.backend = active_backend;
+    config_.motion.fixedStartPoint = active_start_point;
+  }
   if (cleaning_motor_serial_changed) {
     std::lock_guard<std::mutex> motor_lock(cleaning_motor_mutex_);
     if (cleaning_motor_serial_) {
@@ -378,7 +413,7 @@ ActionResult RobotActions::setSpeedScale(double scale)
     return ActionResult::fail("setSpeedScale failed: scale is not finite");
   }
 
-  const double applied = std::clamp(scale, 0.20, 1.20);
+  const double applied = std::clamp(scale, 0.10, 1.00);
   speed_scale_.store(applied);
   if (!config_.simulation.enabled && arm_) {
     std::lock_guard<std::mutex> lock(motion_mutex_);
@@ -405,6 +440,30 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
   }
 
   RCLCPP_INFO(logger_, "pick cup from %s", outlet_config->name.c_str());
+
+  if (usesFixedMotion()) {
+    auto result = openGripper();
+    if (!result.success) {
+      return result;
+    }
+    const bool outlet_one = outlet == OutletId::OUTLET_1;
+    result = executeFixedRoute(
+      outlet_one ? "outlet_wait_to_outlet_1_grasp" : "outlet_wait_to_outlet_2_grasp",
+      outlet_one ? "outlet_1_grasp" : "outlet_2_grasp",
+      "fixed route pick from outlet");
+    if (!result.success) {
+      return result;
+    }
+    result = closeGripper();
+    if (!result.success) {
+      return result;
+    }
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      active_outlet_ = outlet;
+    }
+    return attachCup();
+  }
 
   const auto target_pose = config_.findPose(outlet_config->pickPose);
   if (!target_pose) {
@@ -477,6 +536,43 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
 
   RCLCPP_INFO(logger_, "return cup to original outlet %s", outlet_config->name.c_str());
 
+  if (usesFixedMotion()) {
+    OutletId active_outlet = OutletId::NONE;
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      active_outlet = active_outlet_;
+    }
+    if (active_outlet != outlet) {
+      return ActionResult::fail(
+        "fixed return rejected: active outlet does not match " + toString(outlet));
+    }
+    const bool outlet_one = outlet == OutletId::OUTLET_1;
+    auto result = executeFixedRoute(
+      outlet_one ? "clean_hover_to_outlet_1_return" : "clean_hover_to_outlet_2_return",
+      outlet_one ? "outlet_1_grasp" : "outlet_2_grasp",
+      "fixed route return cup to outlet");
+    if (!result.success) {
+      return result;
+    }
+    result = openGripper();
+    if (!result.success) {
+      return result;
+    }
+    result = detachCup();
+    if (!result.success) {
+      return result;
+    }
+    result = executeFixedRoute(
+      outlet_one ? "outlet_1_return_to_wait" : "outlet_2_return_to_wait",
+      "outlet_wait",
+      "fixed route leave returned cup");
+    if (result.success) {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      active_outlet_ = OutletId::NONE;
+    }
+    return result;
+  }
+
   const auto target_pose = config_.findPose(outlet_config->returnPose);
   if (!target_pose) {
     return ActionResult::fail(
@@ -529,6 +625,38 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
 
 ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
 {
+  if (usesFixedMotion()) {
+    OutletId active_outlet = OutletId::NONE;
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      active_outlet = active_outlet_;
+    }
+    if (active_outlet == OutletId::NONE) {
+      return ActionResult::fail("fixed spectrometer place rejected: no active source outlet");
+    }
+    const bool outlet_one = active_outlet == OutletId::OUTLET_1;
+    auto result = executeFixedRoute(
+      outlet_one ? "outlet_1_grasp_to_spectrometer_place" :
+      "outlet_2_grasp_to_spectrometer_place",
+      "spectrometer_place",
+      "fixed route place to spectrometer");
+    if (!result.success) {
+      return result;
+    }
+    result = openGripper();
+    if (!result.success) {
+      return result;
+    }
+    result = detachCup();
+    if (!result.success) {
+      return result;
+    }
+    return executeFixedRoute(
+      "spectrometer_place_to_hover",
+      "spectrometer_hover",
+      "fixed route leave spectrometer after place");
+  }
+
   PoseConfig target;
   auto result = computeSpectrometerTarget(
     axis_position_mm,
@@ -577,6 +705,21 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
 
 ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
 {
+  if (usesFixedMotion()) {
+    auto result = executeFixedRoute(
+      "spectrometer_hover_to_pick",
+      "spectrometer_pick",
+      "fixed route pick from spectrometer");
+    if (!result.success) {
+      return result;
+    }
+    result = closeGripper();
+    if (!result.success) {
+      return result;
+    }
+    return attachCup();
+  }
+
   PoseConfig target;
   auto result = computeSpectrometerTarget(
     axis_position_mm,
@@ -627,6 +770,10 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
 ActionResult RobotActions::cleanCup()
 {
   RCLCPP_INFO(logger_, "clean cup");
+
+  if (usesFixedMotion()) {
+    return executeFixedCleaning();
+  }
 
   const auto dump_pose = config_.findPose(config_.cleaning.dumpPose);
   if (!dump_pose) {
@@ -854,6 +1001,32 @@ ActionResult RobotActions::brushCleanCup()
 
 ActionResult RobotActions::moveToOutletWait()
 {
+  if (usesFixedMotion()) {
+    std::string current_point;
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      current_point = fixed_point_;
+    }
+    if (current_point == "outlet_wait") {
+      return ActionResult::ok("already at fixed outlet wait point");
+    }
+    if (current_point == "home_near") {
+      auto result = executeFixedRoute(
+        "home_to_safe_center", "safe_joint_center", "fixed startup home to safe center");
+      if (!result.success) {
+        return result;
+      }
+      current_point = "safe_joint_center";
+    }
+    if (current_point != "safe_joint_center") {
+      return ActionResult::fail(
+        "fixed outlet wait requires known home_near or safe_joint_center start; current=" +
+        (current_point.empty() ? std::string("unknown") : current_point));
+    }
+    return executeFixedRoute(
+      "safe_center_to_outlet_wait", "outlet_wait", "fixed startup to outlet wait");
+  }
+
   const auto wait_pose = config_.findPose("outlet_wait_mid");
   if (!wait_pose) {
     return ActionResult::ok("outlet_wait_mid not configured; skip wait pose move");
@@ -931,6 +1104,216 @@ ActionResult RobotActions::moveToSafePose(const std::string & label)
   }
 
   return executeJointTarget(config_.motion.safeJointPose, label);
+}
+
+bool RobotActions::usesFixedMotion() const
+{
+  return config_.motion.backend == "fixed_cache";
+}
+
+ActionResult RobotActions::initializeFixedMotionInterface()
+{
+  try {
+    motion_callback_group_ =
+      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    motion_client_ = rclcpp_action::create_client<ExecuteMotion>(
+      node_, kMotionAction, motion_callback_group_);
+    gripper_pub_ =
+      node_->create_publisher<trajectory_msgs::msg::JointTrajectory>(kGripperTopic, 10);
+  } catch (const std::exception & exc) {
+    return ActionResult::fail(
+      std::string("initialize fixed motion interface failed: ") + exc.what());
+  }
+
+  if (!motion_client_->wait_for_action_server(
+      std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
+  {
+    return ActionResult::fail(
+      "fixed motion server unavailable at " + std::string(kMotionAction));
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_ = config_.motion.fixedStartPoint;
+    active_outlet_ = OutletId::NONE;
+  }
+  RCLCPP_INFO(
+    logger_,
+    "fixed motion interface ready action=%s expected_start=%s",
+    kMotionAction,
+    config_.motion.fixedStartPoint.c_str());
+  return ActionResult::ok("fixed motion interface initialized");
+}
+
+ActionResult RobotActions::executeFixedRoute(
+  const std::string & route_name,
+  const std::string & expected_end_point,
+  const std::string & label)
+{
+  if (!motion_client_) {
+    return ActionResult::fail(label + " failed: fixed motion client is not initialized");
+  }
+  if (!motion_client_->wait_for_action_server(
+      std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
+  {
+    return ActionResult::fail(label + " failed: motion server unavailable");
+  }
+
+  ExecuteMotion::Goal goal;
+  goal.route_name = route_name;
+  goal.speed_scale = std::clamp(speed_scale_.load(), 0.10, 1.0);
+  goal.dry_run = config_.simulation.enabled;
+
+  std::string logical_start;
+  {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    logical_start = fixed_point_;
+  }
+  RCLCPP_INFO(
+    logger_,
+    "%s route=%s logical_start=%s speed_scale=%.2f dry_run=%s",
+    label.c_str(),
+    route_name.c_str(),
+    logical_start.empty() ? "unknown" : logical_start.c_str(),
+    goal.speed_scale,
+    goal.dry_run ? "true" : "false");
+
+  auto goal_future = motion_client_->async_send_goal(goal);
+  if (goal_future.wait_for(
+      std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=
+    std::future_status::ready)
+  {
+    return ActionResult::fail(label + " failed: action goal response timeout");
+  }
+
+  const auto goal_handle = goal_future.get();
+  if (!goal_handle) {
+    return ActionResult::fail(label + " failed: route goal rejected: " + route_name);
+  }
+
+  auto result_future = motion_client_->async_get_result(goal_handle);
+  if (result_future.wait_for(
+      std::chrono::duration<double>(config_.loop.actionTimeoutSec)) !=
+    std::future_status::ready)
+  {
+    motion_client_->async_cancel_goal(goal_handle);
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_.clear();
+    return ActionResult::fail(label + " failed: route execution timeout: " + route_name);
+  }
+
+  const auto wrapped = result_future.get();
+  if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
+    !wrapped.result || !wrapped.result->success)
+  {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_.clear();
+    const std::string reason = wrapped.result ? wrapped.result->message : "missing action result";
+    return ActionResult::fail(label + " failed: " + reason);
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_ = expected_end_point;
+  }
+  return ActionResult::ok(
+    label + " ok route=" + route_name + " end=" + expected_end_point);
+}
+
+ActionResult RobotActions::executeFixedCleaning()
+{
+  auto result = executeFixedRoute(
+    "spectrometer_pick_to_clean_dump",
+    "clean_dump",
+    "fixed route spectrometer to clean dump");
+  if (!result.success) {
+    return result;
+  }
+
+  result = executeFixedRoute(
+    "clean_dump_to_pour", "clean_dump_pour", "fixed wrist pour");
+  if (!result.success) {
+    return result;
+  }
+  if (config_.cleaning.pourHoldSec > 0.0) {
+    std::this_thread::sleep_for(
+      std::chrono::duration<double>(effectiveDuration(config_.cleaning.pourHoldSec)));
+  }
+
+  for (int shake = 0; shake < config_.cleaning.shakeCount; ++shake) {
+    result = executeFixedRoute(
+      "clean_dump_pour_shake_once",
+      "clean_dump_pour",
+      "fixed wrist shake " + std::to_string(shake + 1));
+    if (!result.success) {
+      return result;
+    }
+    if (config_.cleaning.shakeHoldSec > 0.0) {
+      std::this_thread::sleep_for(
+        std::chrono::duration<double>(effectiveDuration(config_.cleaning.shakeHoldSec)));
+    }
+  }
+
+  result = executeFixedRoute(
+    "clean_dump_pour_to_upright", "clean_dump", "fixed wrist return upright");
+  if (!result.success) {
+    return result;
+  }
+
+  if (!config_.cleaning.brushEnabled) {
+    return executeFixedRoute(
+      "clean_dump_to_clean_hover", "clean_hover", "fixed route leave clean dump");
+  }
+
+  result = executeFixedRoute(
+    "clean_dump_to_brush_entry", "brush_entry", "fixed route align brush entry");
+  if (!result.success) {
+    return result;
+  }
+
+  result = setCleaningMotor(true, "start cleaning motor before fixed brush insertion");
+  if (!result.success) {
+    return result;
+  }
+  bool motor_running = true;
+  const auto stop_motor = [this, &motor_running]() {
+      if (!motor_running) {
+        return ActionResult::ok("cleaning motor already stopped");
+      }
+      auto stop_result = setCleaningMotor(false, "stop cleaning motor after fixed brush exit");
+      motor_running = false;
+      return stop_result;
+    };
+
+  result = executeFixedRoute(
+    "brush_entry_to_center", "brush_center", "fixed Cartesian brush insertion");
+  if (!result.success) {
+    stop_motor();
+    return result;
+  }
+  if (config_.cleaning.brushHoldSec > 0.0) {
+    std::this_thread::sleep_for(
+      std::chrono::duration<double>(effectiveDuration(config_.cleaning.brushHoldSec)));
+  }
+
+  result = executeFixedRoute(
+    "brush_center_to_outer", "brush_outer", "fixed Cartesian brush exit");
+  if (!result.success) {
+    stop_motor();
+    return result;
+  }
+  if (config_.cleaning.brushMotorStopDelaySec > 0.0) {
+    std::this_thread::sleep_for(
+      std::chrono::duration<double>(
+        effectiveDuration(config_.cleaning.brushMotorStopDelaySec)));
+  }
+  const auto motor_stop = stop_motor();
+  if (!motor_stop.success) {
+    return motor_stop;
+  }
+
+  return executeFixedRoute(
+    "brush_outer_to_clean_hover", "clean_hover", "fixed route leave brush area");
 }
 
 ActionResult RobotActions::initializeRealInterfaces()

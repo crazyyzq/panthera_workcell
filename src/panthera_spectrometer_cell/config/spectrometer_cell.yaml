@@ -67,6 +67,13 @@ loop:
   reset_timeout_sec: 30.0
 
 motion:
+  # 真实运行默认使用预编译固定轨迹；legacy_moveit 只用于受控排障/迁移回退。
+  backend: fixed_cache
+
+  # 启动真实流程前机械臂必须实际位于此点，Motion Server 仍会用编码器做0.05rad校验。
+  fixed_start_point: safe_joint_center
+  motion_server_wait_sec: 15.0
+
   # ========== MoveIt 全局规划参数 ==========
   # 这些参数影响所有机械臂动作。现场调点时通常不用改，除非规划经常失败或速度明显不合适。
 

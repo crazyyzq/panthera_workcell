@@ -11,10 +11,12 @@
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 #include "panthera_rs485/serial_port.hpp"
+#include "panthera_interfaces/action/execute_motion.hpp"
 #include "panthera_spectrometer_cell/Config.h"
 #include "panthera_spectrometer_cell/Types.h"
 
@@ -50,6 +52,13 @@ private:
     const std::string & label);
   ActionResult moveToSafePose(const std::string & label);
   ActionResult initializeRealInterfaces();
+  ActionResult initializeFixedMotionInterface();
+  ActionResult executeFixedRoute(
+    const std::string & route_name,
+    const std::string & expected_end_point,
+    const std::string & label);
+  ActionResult executeFixedCleaning();
+  bool usesFixedMotion() const;
   ActionResult executePoseJoint(const PoseConfig & pose, const std::string & label);
   ActionResult executePoseCartesian(const PoseConfig & pose, const std::string & label);
   ActionResult executeJointTarget(const std::vector<double> & positions, const std::string & label);
@@ -85,6 +94,11 @@ private:
   std::mutex motion_mutex_;
   std::unique_ptr<moveit::planning_interface::MoveGroupInterface> arm_;
   std::unique_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_;
+  rclcpp_action::Client<panthera_interfaces::action::ExecuteMotion>::SharedPtr motion_client_;
+  rclcpp::CallbackGroup::SharedPtr motion_callback_group_;
+  mutable std::mutex fixed_state_mutex_;
+  std::string fixed_point_;
+  OutletId active_outlet_{OutletId::NONE};
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr gripper_pub_;
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;

@@ -40,6 +40,9 @@ struct LoopConfig
 
 struct MotionConfig
 {
+  std::string backend{"fixed_cache"};
+  std::string fixedStartPoint{"safe_joint_center"};
+  double motionServerWaitSec{5.0};
   double velocityScale{0.10};
   double accelerationScale{0.10};
   double planningTimeSec{5.0};

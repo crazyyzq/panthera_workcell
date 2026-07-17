@@ -45,6 +45,8 @@ struct SegmentDefinition
   std::string name;
   SegmentType type{SegmentType::JOINT};
   std::string to;
+  std::optional<double> velocity_scale;
+  std::optional<double> acceleration_scale;
   double joint_step_rad{0.05};
   double cartesian_step_m{0.005};
   double max_joint_jump_rad{0.35};
@@ -65,6 +67,7 @@ struct CatalogDefaults
 {
   double velocity_scale{0.10};
   double acceleration_scale{0.10};
+  double max_jerk_rad_sec3{100.0};
   double joint_step_rad{0.05};
   double cartesian_step_m{0.005};
   double max_joint_jump_rad{0.35};

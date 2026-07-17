@@ -70,6 +70,24 @@ TEST(MotionCatalog, LinearVerticalConstraintNeedsPoseTarget)
   EXPECT_NE(result.message.find("needs a pose"), std::string::npos);
 }
 
+TEST(MotionCatalog, InvalidSegmentSpeedFails)
+{
+  auto catalog = validCatalog();
+  catalog.routes.at("route").segments.front().velocity_scale = 1.1;
+  const auto result = catalog.validate();
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.message.find("velocity/acceleration"), std::string::npos);
+}
+
+TEST(MotionCatalog, InvalidJerkLimitFails)
+{
+  auto catalog = validCatalog();
+  catalog.defaults.max_jerk_rad_sec3 = 0.0;
+  const auto result = catalog.validate();
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.message.find("invalid limits"), std::string::npos);
+}
+
 TEST(TrajectoryScaling, InvalidScaleIsRejected)
 {
   // Compiler.hpp deliberately keeps speed scaling strict: production trajectories
@@ -97,6 +115,46 @@ TEST(TrajectoryScaling, SlowsTimeVelocityAndAccelerationConsistently)
   EXPECT_DOUBLE_EQ(scaled.points.front().velocities.front(), 1.0);
   EXPECT_DOUBLE_EQ(scaled.points.front().accelerations.front(), 1.0);
   EXPECT_DOUBLE_EQ(panthera_motion::trajectoryDurationSec(scaled), 4.0);
+}
+
+TEST(TrajectoryJerkLimit, StretchesQuinticDynamicsConsistently)
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  trajectory.joint_names = {"joint1"};
+  trajectory_msgs::msg::JointTrajectoryPoint start;
+  start.positions = {0.0};
+  start.velocities = {0.0};
+  start.accelerations = {0.0};
+  trajectory.points.push_back(start);
+  auto end = start;
+  end.positions = {1.0};
+  end.time_from_start.sec = 1;
+  trajectory.points.push_back(end);
+
+  const auto result = panthera_motion::enforceTrajectoryJerkLimit(trajectory, 10.0);
+  ASSERT_TRUE(result.success) << result.message;
+  const double stretched_duration = panthera_motion::trajectoryDurationSec(trajectory);
+  EXPECT_GT(stretched_duration, 1.0);
+  EXPECT_DOUBLE_EQ(trajectory.points.front().velocities.front(), 0.0);
+  EXPECT_DOUBLE_EQ(trajectory.points.back().accelerations.front(), 0.0);
+}
+
+TEST(TrajectoryJerkLimit, RejectsIncompleteDynamics)
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  trajectory.joint_names = {"joint1"};
+  trajectory_msgs::msg::JointTrajectoryPoint start;
+  start.positions = {0.0};
+  start.time_from_start.sec = 0;
+  trajectory.points.push_back(start);
+  auto end = start;
+  end.positions = {1.0};
+  end.time_from_start.sec = 1;
+  trajectory.points.push_back(end);
+
+  const auto result = panthera_motion::enforceTrajectoryJerkLimit(trajectory, 10.0);
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.message.find("velocity"), std::string::npos);
 }
 
 TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
@@ -152,6 +210,13 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_EQ(final_segment.type, panthera_motion::SegmentType::LINEAR);
   EXPECT_EQ(final_segment.constraints.vertical_axis, "z");
   EXPECT_TRUE(final_segment.constraints.keep_orientation);
+  ASSERT_TRUE(final_segment.velocity_scale.has_value());
+  EXPECT_DOUBLE_EQ(*final_segment.velocity_scale, 1.0);
+  EXPECT_DOUBLE_EQ(catalog.defaults.max_jerk_rad_sec3, 100.0);
+
+  const auto & transfer_segment = outlet_route->segments.front();
+  ASSERT_TRUE(transfer_segment.velocity_scale.has_value());
+  EXPECT_DOUBLE_EQ(*transfer_segment.velocity_scale, 1.0);
 }
 
 }  // namespace

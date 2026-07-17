@@ -147,6 +147,12 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readString(motion, "fixed_start_point", config.motion.fixedStartPoint);
   config.motion.motionServerWaitSec =
     readDouble(motion, "motion_server_wait_sec", config.motion.motionServerWaitSec);
+  config.motion.transientRetryCount =
+    readInt(motion, "transient_retry_count", config.motion.transientRetryCount);
+  config.motion.transientRetryDelaySec = readDouble(
+    motion, "transient_retry_delay_sec", config.motion.transientRetryDelaySec);
+  config.motion.cancelWaitSec =
+    readDouble(motion, "cancel_wait_sec", config.motion.cancelWaitSec);
   config.motion.velocityScale = readDouble(motion, "velocity_scale", config.motion.velocityScale);
   config.motion.accelerationScale =
     readDouble(motion, "acceleration_scale", config.motion.accelerationScale);
@@ -198,6 +204,20 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readDouble(gripper, "open_duration_sec", config.gripper.openDurationSec);
   config.gripper.closeDurationSec =
     readDouble(gripper, "close_duration_sec", config.gripper.closeDurationSec);
+  config.gripper.actionServerWaitSec =
+    readDouble(gripper, "action_server_wait_sec", config.gripper.actionServerWaitSec);
+  config.gripper.commandTimeoutMarginSec = readDouble(
+    gripper, "command_timeout_margin_sec", config.gripper.commandTimeoutMarginSec);
+  config.gripper.positionToleranceM =
+    readDouble(gripper, "position_tolerance_m", config.gripper.positionToleranceM);
+  config.gripper.settledVelocityToleranceMps = readDouble(
+    gripper,
+    "settled_velocity_tolerance_mps",
+    config.gripper.settledVelocityToleranceMps);
+  config.gripper.settleTimeoutSec =
+    readDouble(gripper, "settle_timeout_sec", config.gripper.settleTimeoutSec);
+  config.gripper.retryCount =
+    readInt(gripper, "retry_count", config.gripper.retryCount);
 
   const auto positioning = root["positioning"];
   config.positioning.mode =
@@ -413,6 +433,11 @@ ActionResult WorkcellConfig::validate() const
   if (motion.motionServerWaitSec <= 0.0) {
     return ActionResult::fail("motion.motion_server_wait_sec must be > 0");
   }
+  if (motion.transientRetryCount < 0 || motion.transientRetryCount > 5 ||
+    motion.transientRetryDelaySec < 0.0 || motion.cancelWaitSec <= 0.0)
+  {
+    return ActionResult::fail("motion retry/cancel settings are invalid");
+  }
   if (motion.outletTransferZ <= 0.0) {
     return ActionResult::fail("motion.outlet_transfer_z must be > 0");
   }
@@ -420,6 +445,14 @@ ActionResult WorkcellConfig::validate() const
     motion.cleanHighZ <= 0.0 || motion.cleanPreZ <= 0.0 || motion.cleanReadyZ <= 0.0)
   {
     return ActionResult::fail("motion path z values must be > 0");
+  }
+  if (gripper.closePosition > gripper.openPosition ||
+    gripper.openDurationSec <= 0.0 || gripper.closeDurationSec <= 0.0 ||
+    gripper.actionServerWaitSec <= 0.0 || gripper.commandTimeoutMarginSec <= 0.0 ||
+    gripper.positionToleranceM <= 0.0 || gripper.settledVelocityToleranceMps <= 0.0 ||
+    gripper.settleTimeoutSec <= 0.0 || gripper.retryCount < 0 || gripper.retryCount > 3)
+  {
+    return ActionResult::fail("gripper limits, timing, tolerance, or retry count are invalid");
   }
   if (!findPose(spectrometerAxis.basePoseName)) {
     return ActionResult::fail(

@@ -121,6 +121,10 @@ public:
         node_, "controller_wait_timeout_sec", 3.0)),
     execution_margin_sec_(getOrDeclareParameter<double>(
         node_, "execution_margin_sec", 5.0)),
+    final_state_timeout_sec_(getOrDeclareParameter<double>(
+        node_, "final_state_timeout_sec", 2.0)),
+    cancel_settle_timeout_sec_(getOrDeclareParameter<double>(
+        node_, "cancel_settle_timeout_sec", 2.0)),
     trajectory_start_delay_sec_(getOrDeclareParameter<double>(
         node_, "trajectory_start_delay_sec", 0.10)),
     goal_position_tolerance_rad_(getOrDeclareParameter<double>(
@@ -225,6 +229,26 @@ public:
         response->message = "motion speed scale set; applies to the next route goal";
       });
 
+    health_service_ = node_->create_service<Trigger>(
+      "/motion/health",
+      [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> response) {
+        std::vector<std::string> joint_names;
+        {
+          std::lock_guard<std::mutex> lock(catalog_mutex_);
+          joint_names = catalog_.joint_names;
+        }
+        std::vector<double> positions;
+        std::string state_error;
+        const bool state_ok = currentJointState(joint_names, positions, state_error);
+        const bool controller_ok = controller_client_->action_server_is_ready();
+        response->success = state_ok && controller_ok && !busy_.load();
+        std::ostringstream out;
+        out << "busy=" << (busy_.load() ? "true" : "false")
+            << " controller=" << (controller_ok ? "ready" : "unavailable")
+            << " state=" << (state_ok ? "settled" : state_error);
+        response->message = out.str();
+      });
+
     std::string compile_message;
     if (!loadAndCompile(compile_message)) {
       throw std::runtime_error(compile_message);
@@ -265,6 +289,7 @@ private:
     if (start_tolerance_rad_ <= 0.0 || start_tolerance_rad_ > 0.25 ||
       joint_state_max_age_sec_ <= 0.0 || settled_velocity_rad_sec_ <= 0.0 ||
       controller_wait_timeout_sec_ <= 0.0 || execution_margin_sec_ < 0.0 ||
+      final_state_timeout_sec_ <= 0.0 || cancel_settle_timeout_sec_ <= 0.0 ||
       trajectory_start_delay_sec_ < 0.0 || goal_position_tolerance_rad_ <= 0.0 ||
       goal_velocity_tolerance_rad_sec_ <= 0.0)
     {
@@ -437,6 +462,73 @@ private:
     return true;
   }
 
+  bool waitForJointTarget(
+    const std::vector<std::string> & joint_names,
+    const std::vector<double> & target,
+    double tolerance,
+    double timeout_sec,
+    std::string & error)
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(timeout_sec);
+    do {
+      std::vector<double> current;
+      std::string state_error;
+      if (currentJointState(joint_names, current, state_error)) {
+        if (current.size() != target.size()) {
+          error = "joint target dimensions differ";
+          return false;
+        }
+        double maximum_error = 0.0;
+        std::size_t maximum_index = 0;
+        for (std::size_t index = 0; index < current.size(); ++index) {
+          const double difference = std::abs(current[index] - target[index]);
+          if (difference > maximum_error) {
+            maximum_error = difference;
+            maximum_index = index;
+          }
+        }
+        if (maximum_error <= tolerance) {
+          return true;
+        }
+        std::ostringstream out;
+        out << "final position error at " << joint_names[maximum_index]
+            << "=" << maximum_error << "rad limit=" << tolerance << "rad";
+        error = out.str();
+      } else {
+        error = state_error;
+      }
+      std::this_thread::sleep_for(20ms);
+    } while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline);
+    return false;
+  }
+
+  bool cancelControllerGoalAndWait(
+    const std::shared_ptr<GoalHandleController> & controller_goal,
+    const std::vector<std::string> & joint_names,
+    std::string & error)
+  {
+    const auto cancel_future = controller_client_->async_cancel_goal(controller_goal);
+    if (cancel_future.wait_for(std::chrono::duration<double>(controller_wait_timeout_sec_)) !=
+      std::future_status::ready)
+    {
+      error = "controller cancel acknowledgement timeout";
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(cancel_settle_timeout_sec_);
+    do {
+      std::vector<double> positions;
+      std::string state_error;
+      if (currentJointState(joint_names, positions, state_error)) {
+        return true;
+      }
+      error = state_error;
+      std::this_thread::sleep_for(20ms);
+    } while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline);
+    return false;
+  }
+
   void publishFeedback(
     const std::shared_ptr<GoalHandleMotion> & goal_handle,
     const CompiledRoute & route,
@@ -601,10 +693,14 @@ private:
       std::chrono::duration<double>(expected_duration + execution_margin_sec_);
     while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
       if (cancel_requested_.load() || goal_handle->is_canceling()) {
-        controller_client_->async_cancel_goal(controller_goal);
+        std::string settle_error;
+        const bool settled = cancelControllerGoalAndWait(
+          controller_goal, route.trajectory.joint_names, settle_error);
         finish(
           goal_handle, false, ExecuteMotion::Result::ERROR_CANCELLED,
-          "motion route cancelled", started);
+          settled ? "motion route cancelled and arm settled" :
+          "motion route cancelled; arm settle not confirmed: " + settle_error,
+          started);
         return;
       }
       if (result_future.wait_for(50ms) == std::future_status::ready) {
@@ -613,6 +709,20 @@ private:
           wrapped.result &&
           wrapped.result->error_code == FollowTrajectory::Result::SUCCESSFUL)
         {
+          std::string final_error;
+          if (!waitForJointTarget(
+              route.trajectory.joint_names,
+              route.end_joints,
+              goal_position_tolerance_rad_,
+              final_state_timeout_sec_,
+              final_error))
+          {
+            finish(
+              goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
+              "controller reported success but final state was not confirmed: " + final_error,
+              started);
+            return;
+          }
           publishFeedback(goal_handle, route, 1.0);
           finish(
             goal_handle, true, ExecuteMotion::Result::ERROR_NONE,
@@ -620,6 +730,9 @@ private:
           return;
         }
         if (wrapped.code == rclcpp_action::ResultCode::CANCELED) {
+          std::string settle_error;
+          cancelControllerGoalAndWait(
+            controller_goal, route.trajectory.joint_names, settle_error);
           finish(
             goal_handle, false, ExecuteMotion::Result::ERROR_CANCELLED,
             "arm trajectory controller cancelled the route", started);
@@ -627,6 +740,12 @@ private:
         }
         std::string controller_message = wrapped.result ?
           wrapped.result->error_string : "no controller result";
+        std::string settle_error;
+        if (!cancelControllerGoalAndWait(
+            controller_goal, route.trajectory.joint_names, settle_error))
+        {
+          controller_message += "; arm settle not confirmed: " + settle_error;
+        }
         finish(
           goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
           "arm trajectory controller failed: " + controller_message, started);
@@ -641,10 +760,12 @@ private:
         expected_duration > 0.0 ? std::min(0.99, elapsed / expected_duration) : 0.0);
     }
 
-    controller_client_->async_cancel_goal(controller_goal);
+    std::string settle_error;
+    cancelControllerGoalAndWait(
+      controller_goal, route.trajectory.joint_names, settle_error);
     finish(
       goal_handle, false, ExecuteMotion::Result::ERROR_TIMEOUT,
-      "motion route exceeded controller execution timeout", started);
+      "motion route exceeded controller execution timeout; settle=" + settle_error, started);
   }
 
   rclcpp::Node::SharedPtr node_;
@@ -657,6 +778,8 @@ private:
   double settled_velocity_rad_sec_;
   double controller_wait_timeout_sec_;
   double execution_margin_sec_;
+  double final_state_timeout_sec_;
+  double cancel_settle_timeout_sec_;
   double trajectory_start_delay_sec_;
   double goal_position_tolerance_rad_;
   double goal_velocity_tolerance_rad_sec_;
@@ -673,6 +796,7 @@ private:
   rclcpp::Service<Trigger>::SharedPtr list_service_;
   rclcpp::Service<Trigger>::SharedPtr stop_service_;
   rclcpp::Service<SetSpeedScale>::SharedPtr speed_service_;
+  rclcpp::Service<Trigger>::SharedPtr health_service_;
 
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;

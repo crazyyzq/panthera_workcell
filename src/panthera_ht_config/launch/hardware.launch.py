@@ -135,7 +135,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'control_mode',
             default_value='position_velocity',
-            description='Control mode: position_velocity, pd_control, or full_control'
+            description=(
+                'Control mode: position_velocity, pd_control, or full_control'
+            )
         ),
         robot_state_publisher,
         controller_manager,

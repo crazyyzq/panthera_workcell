@@ -27,12 +27,13 @@ namespace
 constexpr char kBaseFrame[] = "base_link";
 constexpr char kArmGroup[] = "arm";
 constexpr char kHandFrame[] = "gripper_center";
-constexpr char kGripperTopic[] = "/gripper_controller/joint_trajectory";
+constexpr char kGripperAction[] = "/gripper_controller/follow_joint_trajectory";
 constexpr char kGripperJoint[] = "L_finger_joint";
 constexpr char kCupObjectId[] = "carried_cup";
 constexpr char kMotionAction[] = "/motion/execute";
 
 using ExecuteMotion = panthera_interfaces::action::ExecuteMotion;
+using FollowTrajectory = control_msgs::action::FollowJointTrajectory;
 
 double clampPosition(double value, double min_value, double max_value)
 {
@@ -335,6 +336,9 @@ ActionResult RobotActions::stop()
     fixed_point_.clear();
     active_outlet_ = OutletId::NONE;
   }
+  if (gripper_client_) {
+    gripper_client_->async_cancel_all_goals();
+  }
   if (!config_.simulation.enabled && arm_) {
     try {
       arm_->stop();
@@ -349,6 +353,9 @@ ActionResult RobotActions::stop()
 ActionResult RobotActions::reset()
 {
   RCLCPP_INFO(logger_, "robot reset requested");
+  if (gripper_client_) {
+    gripper_client_->async_cancel_all_goals();
+  }
   if (usesFixedMotion() && motion_client_) {
     motion_client_->async_cancel_all_goals();
     {
@@ -1118,8 +1125,6 @@ ActionResult RobotActions::initializeFixedMotionInterface()
       node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     motion_client_ = rclcpp_action::create_client<ExecuteMotion>(
       node_, kMotionAction, motion_callback_group_);
-    gripper_pub_ =
-      node_->create_publisher<trajectory_msgs::msg::JointTrajectory>(kGripperTopic, 10);
   } catch (const std::exception & exc) {
     return ActionResult::fail(
       std::string("initialize fixed motion interface failed: ") + exc.what());
@@ -1130,6 +1135,10 @@ ActionResult RobotActions::initializeFixedMotionInterface()
   {
     return ActionResult::fail(
       "fixed motion server unavailable at " + std::string(kMotionAction));
+  }
+  const auto gripper_result = initializeGripperAndJointStateInterfaces();
+  if (!gripper_result.success) {
+    return gripper_result;
   }
 
   {
@@ -1145,6 +1154,49 @@ ActionResult RobotActions::initializeFixedMotionInterface()
   return ActionResult::ok("fixed motion interface initialized");
 }
 
+ActionResult RobotActions::initializeGripperAndJointStateInterfaces()
+{
+  if (config_.simulation.enabled) {
+    return ActionResult::ok("gripper/joint-state interfaces skipped in simulation");
+  }
+
+  try {
+    gripper_callback_group_ =
+      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    gripper_client_ = rclcpp_action::create_client<FollowTrajectory>(
+      node_, kGripperAction, gripper_callback_group_);
+
+    joint_state_callback_group_ =
+      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    rclcpp::SubscriptionOptions joint_state_options;
+    joint_state_options.callback_group = joint_state_callback_group_;
+    joint_state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
+      "/joint_states",
+      rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(joint_state_mutex_);
+        if (!isPlausibleArmJointState(*msg, has_joint_state_ ? &latest_joint_state_ : nullptr)) {
+          return;
+        }
+        latest_joint_state_ = *msg;
+        latest_joint_state_received_ = node_->now();
+        has_joint_state_ = true;
+      },
+      joint_state_options);
+  } catch (const std::exception & exc) {
+    return ActionResult::fail(
+      std::string("initialize gripper/joint-state interfaces failed: ") + exc.what());
+  }
+
+  if (!gripper_client_->wait_for_action_server(
+      std::chrono::duration<double>(config_.gripper.actionServerWaitSec)))
+  {
+    return ActionResult::fail(
+      "gripper action server unavailable at " + std::string(kGripperAction));
+  }
+  return ActionResult::ok("gripper action and joint-state feedback ready");
+}
+
 ActionResult RobotActions::executeFixedRoute(
   const std::string & route_name,
   const std::string & expected_end_point,
@@ -1153,12 +1205,6 @@ ActionResult RobotActions::executeFixedRoute(
   if (!motion_client_) {
     return ActionResult::fail(label + " failed: fixed motion client is not initialized");
   }
-  if (!motion_client_->wait_for_action_server(
-      std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
-  {
-    return ActionResult::fail(label + " failed: motion server unavailable");
-  }
-
   ExecuteMotion::Goal goal;
   goal.route_name = route_name;
   goal.speed_scale = std::clamp(speed_scale_.load(), 0.10, 1.0);
@@ -1178,46 +1224,75 @@ ActionResult RobotActions::executeFixedRoute(
     goal.speed_scale,
     goal.dry_run ? "true" : "false");
 
-  auto goal_future = motion_client_->async_send_goal(goal);
-  if (goal_future.wait_for(
-      std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=
-    std::future_status::ready)
-  {
-    return ActionResult::fail(label + " failed: action goal response timeout");
-  }
+  std::string last_error;
+  for (int attempt = 0; attempt <= config_.motion.transientRetryCount; ++attempt) {
+    if (!motion_client_->wait_for_action_server(
+        std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
+    {
+      last_error = "motion server unavailable";
+    } else {
+      auto goal_future = motion_client_->async_send_goal(goal);
+      if (goal_future.wait_for(
+          std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=
+        std::future_status::ready)
+      {
+        // The future may still be accepted later; do not create a duplicate route goal.
+        return ActionResult::fail(label + " failed: action goal response timeout");
+      }
 
-  const auto goal_handle = goal_future.get();
-  if (!goal_handle) {
-    return ActionResult::fail(label + " failed: route goal rejected: " + route_name);
-  }
+      const auto goal_handle = goal_future.get();
+      if (!goal_handle) {
+        last_error = "route goal rejected before execution: " + route_name;
+      } else {
+        auto result_future = motion_client_->async_get_result(goal_handle);
+        if (result_future.wait_for(
+            std::chrono::duration<double>(config_.loop.actionTimeoutSec)) !=
+          std::future_status::ready)
+        {
+          const auto cancel_future = motion_client_->async_cancel_goal(goal_handle);
+          cancel_future.wait_for(std::chrono::duration<double>(config_.motion.cancelWaitSec));
+          std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+          fixed_point_.clear();
+          return ActionResult::fail(
+            label + " failed: route execution timeout and cancel requested: " + route_name);
+        }
 
-  auto result_future = motion_client_->async_get_result(goal_handle);
-  if (result_future.wait_for(
-      std::chrono::duration<double>(config_.loop.actionTimeoutSec)) !=
-    std::future_status::ready)
-  {
-    motion_client_->async_cancel_goal(goal_handle);
-    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
-    fixed_point_.clear();
-    return ActionResult::fail(label + " failed: route execution timeout: " + route_name);
-  }
+        const auto wrapped = result_future.get();
+        if (wrapped.code == rclcpp_action::ResultCode::SUCCEEDED &&
+          wrapped.result && wrapped.result->success)
+        {
+          std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+          fixed_point_ = expected_end_point;
+          return ActionResult::ok(
+            label + " ok route=" + route_name + " end=" + expected_end_point);
+        }
 
-  const auto wrapped = result_future.get();
-  if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
-    !wrapped.result || !wrapped.result->success)
-  {
-    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
-    fixed_point_.clear();
-    const std::string reason = wrapped.result ? wrapped.result->message : "missing action result";
-    return ActionResult::fail(label + " failed: " + reason);
-  }
+        const std::int32_t error_code = wrapped.result ?
+          wrapped.result->error_code : ExecuteMotion::Result::ERROR_CONTROLLER_FAILED;
+        last_error = wrapped.result ? wrapped.result->message : "missing action result";
+        const bool safe_to_retry =
+          error_code == ExecuteMotion::Result::ERROR_BUSY ||
+          error_code == ExecuteMotion::Result::ERROR_STATE_UNAVAILABLE ||
+          error_code == ExecuteMotion::Result::ERROR_CONTROLLER_UNAVAILABLE ||
+          error_code == ExecuteMotion::Result::ERROR_CONTROLLER_REJECTED;
+        if (!safe_to_retry) {
+          std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+          fixed_point_.clear();
+          return ActionResult::fail(label + " failed: " + last_error);
+        }
+      }
+    }
 
-  {
-    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
-    fixed_point_ = expected_end_point;
+    if (attempt < config_.motion.transientRetryCount) {
+      RCLCPP_WARN(
+        logger_, "%s transient failure attempt %d/%d: %s; retrying before motion",
+        label.c_str(), attempt + 1, config_.motion.transientRetryCount + 1,
+        last_error.c_str());
+      std::this_thread::sleep_for(
+        std::chrono::duration<double>(config_.motion.transientRetryDelaySec));
+    }
   }
-  return ActionResult::ok(
-    label + " ok route=" + route_name + " end=" + expected_end_point);
+  return ActionResult::fail(label + " failed after transient retries: " + last_error);
 }
 
 ActionResult RobotActions::executeFixedCleaning()
@@ -1332,35 +1407,21 @@ ActionResult RobotActions::initializeRealInterfaces()
     arm_->setGoalOrientationTolerance(config_.motion.goalOrientationTolerance);
     arm_->setGoalJointTolerance(config_.motion.goalJointTolerance);
 
-    gripper_pub_ =
-      node_->create_publisher<trajectory_msgs::msg::JointTrajectory>(kGripperTopic, 10);
-
-    joint_state_callback_group_ =
-      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
-    rclcpp::SubscriptionOptions joint_state_options;
-    joint_state_options.callback_group = joint_state_callback_group_;
-    joint_state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      "/joint_states",
-      rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-        std::lock_guard<std::mutex> lock(joint_state_mutex_);
-        if (!isPlausibleArmJointState(*msg, has_joint_state_ ? &latest_joint_state_ : nullptr)) {
-          return;
-        }
-        latest_joint_state_ = *msg;
-        has_joint_state_ = true;
-      },
-      joint_state_options);
   } catch (const std::exception & exc) {
     return ActionResult::fail(std::string("initialize real robot interfaces failed: ") + exc.what());
   }
 
+  const auto gripper_result = initializeGripperAndJointStateInterfaces();
+  if (!gripper_result.success) {
+    return gripper_result;
+  }
+
   RCLCPP_INFO(
     logger_,
-    "real robot interfaces initialized arm_group=%s hand_frame=%s gripper_topic=%s",
+    "real robot interfaces initialized arm_group=%s hand_frame=%s gripper_action=%s",
     kArmGroup,
     kHandFrame,
-    kGripperTopic);
+    kGripperAction);
   return ActionResult::ok("real robot interfaces initialized");
 }
 
@@ -1952,28 +2013,147 @@ ActionResult RobotActions::sendGripperTo(
   if (config_.simulation.enabled) {
     return simulateDelay(label);
   }
-  if (!gripper_pub_) {
-    return ActionResult::fail(label + " failed: gripper publisher is not initialized");
+  if (!gripper_client_) {
+    return ActionResult::fail(label + " failed: gripper action client is not initialized");
   }
 
   const double command_position =
     clampPosition(position, config_.gripper.closePosition, config_.gripper.openPosition);
-
-  trajectory_msgs::msg::JointTrajectory traj;
-  traj.header.stamp = node_->now();
-  traj.joint_names.push_back(kGripperJoint);
-
-  trajectory_msgs::msg::JointTrajectoryPoint point;
-  point.positions.push_back(command_position);
-  point.velocities.push_back(0.0);
   const double scaled_duration = effectiveDuration(duration_sec);
-  point.time_from_start = secondsToDuration(scaled_duration);
-  traj.points.push_back(point);
+  std::string last_error;
 
-  gripper_pub_->publish(traj);
-  std::this_thread::sleep_for(
-    std::chrono::milliseconds(static_cast<int>((scaled_duration + 0.2) * 1000.0)));
-  return ActionResult::ok(label + " ok");
+  for (int attempt = 0; attempt <= config_.gripper.retryCount; ++attempt) {
+    if (!gripper_client_->wait_for_action_server(
+        std::chrono::duration<double>(config_.gripper.actionServerWaitSec)))
+    {
+      last_error = "gripper action server unavailable";
+      continue;
+    }
+
+    FollowTrajectory::Goal goal;
+    goal.trajectory.header.stamp =
+      node_->now() + rclcpp::Duration::from_seconds(0.05);
+    goal.trajectory.joint_names.push_back(kGripperJoint);
+
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions.push_back(command_position);
+    point.velocities.push_back(0.0);
+    point.time_from_start = secondsToDuration(scaled_duration);
+    goal.trajectory.points.push_back(point);
+
+    control_msgs::msg::JointTolerance tolerance;
+    tolerance.name = kGripperJoint;
+    tolerance.position = config_.gripper.positionToleranceM;
+    tolerance.velocity = config_.gripper.settledVelocityToleranceMps;
+    goal.goal_tolerance.push_back(tolerance);
+    goal.goal_time_tolerance = secondsToDuration(config_.gripper.commandTimeoutMarginSec);
+
+    const auto goal_future = gripper_client_->async_send_goal(goal);
+    if (goal_future.wait_for(
+        std::chrono::duration<double>(config_.gripper.actionServerWaitSec)) !=
+      std::future_status::ready)
+    {
+      return ActionResult::fail(label + " failed: gripper goal response timeout");
+    }
+
+    const auto goal_handle = goal_future.get();
+    if (!goal_handle) {
+      last_error = "gripper controller rejected goal";
+      continue;
+    }
+
+    const auto result_future = gripper_client_->async_get_result(goal_handle);
+    const double result_timeout = scaled_duration + config_.gripper.commandTimeoutMarginSec;
+    if (result_future.wait_for(std::chrono::duration<double>(result_timeout)) ==
+      std::future_status::ready)
+    {
+      const auto wrapped = result_future.get();
+      if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
+        !wrapped.result || wrapped.result->error_code != FollowTrajectory::Result::SUCCESSFUL)
+      {
+        last_error = wrapped.result ? wrapped.result->error_string : "missing gripper result";
+      }
+    } else {
+      // A controller result can be delayed even after the gripper physically arrives.
+      // Confirm the encoder target before deciding whether cancellation/retry is needed.
+      std::string target_error;
+      if (waitForGripperTarget(
+          command_position,
+          std::chrono::duration<double>(config_.gripper.settleTimeoutSec),
+          target_error))
+      {
+        return ActionResult::ok(label + " ok (encoder-confirmed after result timeout)");
+      }
+      const auto cancel_future = gripper_client_->async_cancel_goal(goal_handle);
+      cancel_future.wait_for(
+        std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec));
+      last_error = "gripper result timeout; " + target_error;
+    }
+
+    std::string target_error;
+    if (waitForGripperTarget(
+        command_position,
+        std::chrono::duration<double>(config_.gripper.settleTimeoutSec),
+        target_error))
+    {
+      return ActionResult::ok(label + " ok (action and encoder confirmed)");
+    }
+    last_error += "; " + target_error;
+    if (attempt < config_.gripper.retryCount) {
+      RCLCPP_WARN(
+        logger_, "%s attempt %d/%d failed: %s; retrying idempotent gripper target",
+        label.c_str(), attempt + 1, config_.gripper.retryCount + 1, last_error.c_str());
+    }
+  }
+
+  return ActionResult::fail(label + " failed: " + last_error);
+}
+
+bool RobotActions::waitForGripperTarget(
+  double target_position,
+  std::chrono::duration<double> timeout,
+  std::string & error) const
+{
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  do {
+    sensor_msgs::msg::JointState state;
+    rclcpp::Time received;
+    {
+      std::lock_guard<std::mutex> lock(joint_state_mutex_);
+      if (has_joint_state_) {
+        state = latest_joint_state_;
+        received = latest_joint_state_received_;
+      }
+    }
+    if (state.name.empty()) {
+      error = "no joint state received for gripper verification";
+    } else if ((node_->now() - received).seconds() > 0.5) {
+      error = "joint state is stale during gripper verification";
+    } else {
+      double current_position = 0.0;
+      double current_velocity = std::numeric_limits<double>::infinity();
+      const bool has_position = lookupJointValue(
+        state, kGripperJoint, state.position, current_position);
+      const bool has_velocity = lookupJointValue(
+        state, kGripperJoint, state.velocity, current_velocity);
+      if (!has_position || !has_velocity) {
+        error = "joint state is missing gripper position or velocity";
+      } else {
+        const double position_error = std::abs(current_position - target_position);
+        if (position_error <= config_.gripper.positionToleranceM &&
+          std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps)
+        {
+          return true;
+        }
+        std::ostringstream out;
+        out << "gripper target not reached: position_error=" << position_error
+            << "m velocity=" << current_velocity << "m/s";
+        error = out.str();
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  } while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline);
+  return false;
 }
 
 ActionResult RobotActions::setCleaningMotor(bool enabled, const std::string & label)

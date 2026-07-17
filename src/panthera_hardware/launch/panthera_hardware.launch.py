@@ -28,7 +28,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "control_mode",
             default_value="position_velocity",
-            description="Control mode: position_velocity or pd_control",
+            description=(
+                "Control mode: position_velocity, pd_control, or full_control"
+            ),
         )
     )
     declared_arguments.append(

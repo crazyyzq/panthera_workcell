@@ -43,6 +43,9 @@ struct MotionConfig
   std::string backend{"fixed_cache"};
   std::string fixedStartPoint{"safe_joint_center"};
   double motionServerWaitSec{5.0};
+  int transientRetryCount{2};
+  double transientRetryDelaySec{0.25};
+  double cancelWaitSec{2.0};
   double velocityScale{0.10};
   double accelerationScale{0.10};
   double planningTimeSec{5.0};
@@ -73,6 +76,12 @@ struct GripperConfig
   double closePosition{0.002};
   double openDurationSec{1.5};
   double closeDurationSec{1.5};
+  double actionServerWaitSec{5.0};
+  double commandTimeoutMarginSec{2.0};
+  double positionToleranceM{0.003};
+  double settledVelocityToleranceMps{0.003};
+  double settleTimeoutSec{1.0};
+  int retryCount{1};
 };
 
 struct PositioningConfig

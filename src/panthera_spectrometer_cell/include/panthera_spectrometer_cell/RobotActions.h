@@ -1,12 +1,14 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <random>
 #include <string>
 #include <vector>
 
+#include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
@@ -53,6 +55,7 @@ private:
   ActionResult moveToSafePose(const std::string & label);
   ActionResult initializeRealInterfaces();
   ActionResult initializeFixedMotionInterface();
+  ActionResult initializeGripperAndJointStateInterfaces();
   ActionResult executeFixedRoute(
     const std::string & route_name,
     const std::string & expected_end_point,
@@ -72,6 +75,10 @@ private:
     double position,
     double duration_sec,
     const std::string & label);
+  bool waitForGripperTarget(
+    double target_position,
+    std::chrono::duration<double> timeout,
+    std::string & error) const;
   ActionResult setCleaningMotor(bool enabled, const std::string & label);
   ActionResult openGripper();
   ActionResult closeGripper();
@@ -99,11 +106,13 @@ private:
   mutable std::mutex fixed_state_mutex_;
   std::string fixed_point_;
   OutletId active_outlet_{OutletId::NONE};
-  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr gripper_pub_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_client_;
+  rclcpp::CallbackGroup::SharedPtr gripper_callback_group_;
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   mutable std::mutex joint_state_mutex_;
   sensor_msgs::msg::JointState latest_joint_state_;
+  rclcpp::Time latest_joint_state_received_;
   bool has_joint_state_{false};
   std::mutex cleaning_motor_mutex_;
   std::unique_ptr<panthera_rs485::SerialPort> cleaning_motor_serial_;

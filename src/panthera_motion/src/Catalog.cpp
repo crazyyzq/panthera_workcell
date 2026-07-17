@@ -170,6 +170,8 @@ MotionCatalog MotionCatalog::loadFromFile(const std::string & path)
     defaults, "velocity_scale", catalog.defaults.velocity_scale, "defaults");
   catalog.defaults.acceleration_scale = finiteDouble(
     defaults, "acceleration_scale", catalog.defaults.acceleration_scale, "defaults");
+  catalog.defaults.max_jerk_rad_sec3 = finiteDouble(
+    defaults, "max_jerk_rad_sec3", catalog.defaults.max_jerk_rad_sec3, "defaults");
   catalog.defaults.joint_step_rad = finiteDouble(
     defaults, "joint_step_rad", catalog.defaults.joint_step_rad, "defaults");
   catalog.defaults.cartesian_step_m = finiteDouble(
@@ -234,6 +236,14 @@ MotionCatalog MotionCatalog::loadFromFile(const std::string & path)
       segment.name = readString(segment_node, "name", "segment_" + std::to_string(index + 1));
       segment.type = segmentTypeFromString(readString(segment_node, "type", "joint"));
       segment.to = readString(segment_node, "to", "");
+      if (segment_node["velocity_scale"]) {
+        segment.velocity_scale = finiteDouble(
+          segment_node, "velocity_scale", route.velocity_scale, context);
+      }
+      if (segment_node["acceleration_scale"]) {
+        segment.acceleration_scale = finiteDouble(
+          segment_node, "acceleration_scale", route.acceleration_scale, context);
+      }
       segment.joint_step_rad = finiteDouble(
         segment_node, "joint_step_rad", catalog.defaults.joint_step_rad, context);
       segment.cartesian_step_m = finiteDouble(
@@ -291,7 +301,8 @@ ValidationResult MotionCatalog::validate() const
   }
   if (defaults.joint_step_rad <= 0.0 || defaults.cartesian_step_m <= 0.0 ||
     defaults.max_joint_jump_rad <= 0.0 || defaults.max_lateral_error_m < 0.0 ||
-    defaults.ik_timeout_sec <= 0.0 || defaults.ik_attempts <= 0)
+    defaults.max_jerk_rad_sec3 <= 0.0 || defaults.ik_timeout_sec <= 0.0 ||
+    defaults.ik_attempts <= 0)
   {
     return ValidationResult::fail("motion catalog defaults contain invalid limits");
   }
@@ -393,6 +404,15 @@ ValidationResult MotionCatalog::validate() const
       {
         return ValidationResult::fail(
           "route '" + route.name + "' segment '" + segment.name + "' has invalid limits");
+      }
+      if ((segment.velocity_scale &&
+        (*segment.velocity_scale <= 0.0 || *segment.velocity_scale > 1.0)) ||
+        (segment.acceleration_scale &&
+        (*segment.acceleration_scale <= 0.0 || *segment.acceleration_scale > 1.0)))
+      {
+        return ValidationResult::fail(
+          "route '" + route.name + "' segment '" + segment.name +
+          "' velocity/acceleration scales must be in (0, 1]");
       }
       const auto & axis = segment.constraints.vertical_axis;
       if (!axis.empty() && axis != "x" && axis != "y" && axis != "z") {

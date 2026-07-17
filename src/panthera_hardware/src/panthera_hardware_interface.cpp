@@ -83,6 +83,14 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
   }
   RCLCPP_INFO(rclcpp::get_logger("PantheraHardwareInterface"),
               "Control mode: %s", control_mode_.c_str());
+  if (control_mode_ != "position_velocity" &&
+    control_mode_ != "pd_control" && control_mode_ != "full_control")
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("PantheraHardwareInterface"),
+      "Unsupported control_mode '%s'", control_mode_.c_str());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
 
   // Get gripper rad to meter conversion factor
   if (info_.hardware_parameters.find("gripper_rad_to_m") != info_.hardware_parameters.end())
@@ -103,16 +111,38 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
     readDoubleParameter(info_, "state_filter_max_gripper_jump_m", 0.004);
   state_filter_accept_after_count_ =
     std::max(1, readIntParameter(info_, "state_filter_accept_after_count", 3));
+  state_velocity_filter_enabled_ =
+    readBoolParameter(info_, "state_velocity_filter_enabled", true);
+  state_velocity_median_window_ =
+    std::max(1, readIntParameter(info_, "state_velocity_median_window", 21));
+  if (state_velocity_median_window_ % 2 == 0) {
+    ++state_velocity_median_window_;
+  }
+  state_velocity_arm_deadband_rad_sec_ =
+    std::max(
+    0.0, readDoubleParameter(
+      info_, "state_velocity_arm_deadband_rad_sec", 0.03));
+  state_velocity_gripper_deadband_m_sec_ =
+    std::max(
+    0.0, readDoubleParameter(
+      info_, "state_velocity_gripper_deadband_m_sec", 0.001));
   RCLCPP_INFO(
     rclcpp::get_logger("PantheraHardwareInterface"),
-    "State filter: enabled=%s arm_jump=%.4frad gripper_jump=%.4fm accept_after=%d",
+    "State filter: enabled=%s arm_jump=%.4frad gripper_jump=%.4fm accept_after=%d "
+    "velocity_enabled=%s median_window=%d arm_deadband=%.4frad/s "
+    "gripper_deadband=%.4fm/s",
     state_filter_enabled_ ? "true" : "false",
     state_filter_max_arm_jump_rad_,
     state_filter_max_gripper_jump_m_,
-    state_filter_accept_after_count_);
+    state_filter_accept_after_count_,
+    state_velocity_filter_enabled_ ? "true" : "false",
+    state_velocity_median_window_,
+    state_velocity_arm_deadband_rad_sec_,
+    state_velocity_gripper_deadband_m_sec_);
 
   // Check if velocity and effort commands are enabled
-  use_velocity_commands_ = (control_mode_ == "full_control" || control_mode_ == "position_velocity");
+  use_velocity_commands_ =
+    control_mode_ == "full_control" || control_mode_ == "position_velocity";
   use_effort_commands_ = (control_mode_ == "full_control");
 
   // Initialize state and command storage
@@ -121,6 +151,7 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
   hw_efforts_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   raw_position_candidates_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   raw_position_candidate_counts_.resize(info_.joints.size(), 0);
+  raw_velocity_windows_.resize(info_.joints.size());
   hw_commands_positions_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_commands_velocities_.resize(info_.joints.size(), 0.0);
   hw_commands_efforts_.resize(info_.joints.size(), 0.0);
@@ -383,8 +414,23 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_deactivate(
 {
   RCLCPP_INFO(rclcpp::get_logger("PantheraHardwareInterface"), "Deactivating...");
 
-  // Optionally send stop command or hold position
-  // For safety, we'll just log the deactivation
+  try
+  {
+    if (robot_)
+    {
+      // Repeat the vendor stop frame to tolerate a single dropped serial frame.
+      robot_->set_stop();
+      robot_->set_stop();
+      robot_->set_stop();
+    }
+  }
+  catch (const std::exception & e)
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("PantheraHardwareInterface"),
+      "Failed to stop hardware while deactivating: %s", e.what());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
 
   RCLCPP_INFO(rclcpp::get_logger("PantheraHardwareInterface"), "Successfully deactivated!");
 
@@ -448,6 +494,32 @@ double PantheraHardwareInterface::filterPositionSample(
   return last_position;
 }
 
+double PantheraHardwareInterface::filterVelocitySample(
+  size_t joint_index,
+  double raw_velocity,
+  double deadband)
+{
+  if (
+    !state_velocity_filter_enabled_ ||
+    joint_index >= raw_velocity_windows_.size() ||
+    !std::isfinite(raw_velocity))
+  {
+    return raw_velocity;
+  }
+
+  auto & window = raw_velocity_windows_[joint_index];
+  window.push_back(raw_velocity);
+  while (window.size() > static_cast<size_t>(state_velocity_median_window_)) {
+    window.pop_front();
+  }
+
+  std::vector<double> sorted(window.begin(), window.end());
+  const auto middle = sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2);
+  std::nth_element(sorted.begin(), middle, sorted.end());
+  const double filtered = *middle;
+  return std::abs(filtered) < deadband ? 0.0 : filtered;
+}
+
 hardware_interface::return_type PantheraHardwareInterface::read(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
@@ -477,7 +549,8 @@ hardware_interface::return_type PantheraHardwareInterface::read(
     for (size_t i = 0; i < 6; i++)
     {
       hw_positions_[i] = filterPositionSample(i, positions[i], state_filter_max_arm_jump_rad_);
-      hw_velocities_[i] = velocities[i];
+      hw_velocities_[i] = filterVelocitySample(
+        i, velocities[i], state_velocity_arm_deadband_rad_sec_);
       hw_efforts_[i] = torques[i];
     }
 
@@ -489,7 +562,10 @@ hardware_interface::return_type PantheraHardwareInterface::read(
       const double raw_gripper_position = gripper_rad * gripper_rad_to_m_;
       hw_positions_[6] =
         filterPositionSample(6, raw_gripper_position, state_filter_max_gripper_jump_m_);
-      hw_velocities_[6] = robot_->getCurrentVelGripper() * gripper_rad_to_m_;
+      hw_velocities_[6] = filterVelocitySample(
+        6,
+        robot_->getCurrentVelGripper() * gripper_rad_to_m_,
+        state_velocity_gripper_deadband_m_sec_);
       hw_efforts_[6] = robot_->getCurrentTorqueGripper();
     }
 
@@ -529,26 +605,49 @@ hardware_interface::return_type PantheraHardwareInterface::write(
     std::vector<double> arm_max_velocities(max_velocities_.begin(), max_velocities_.begin() + 6);
     std::vector<double> arm_kp(kp_gains_.begin(), kp_gains_.begin() + 6);
     std::vector<double> arm_kd(kd_gains_.begin(), kd_gains_.begin() + 6);
+    for (std::size_t index = 0; index < arm_positions.size(); ++index)
+    {
+      if (!std::isfinite(arm_positions[index]) || !std::isfinite(arm_velocities[index]) ||
+        !std::isfinite(arm_efforts[index]))
+      {
+        RCLCPP_ERROR_THROTTLE(
+          rclcpp::get_logger("PantheraHardwareInterface"),
+          *rclcpp::Clock::make_shared(), 1000,
+          "Rejected non-finite command for arm joint %zu", index + 1);
+        return hardware_interface::return_type::ERROR;
+      }
+      arm_velocities[index] = std::clamp(
+        arm_velocities[index], -arm_max_velocities[index], arm_max_velocities[index]);
+      arm_efforts[index] = std::clamp(
+        arm_efforts[index], -arm_max_torques[index], arm_max_torques[index]);
+    }
 
-    // Control 6 arm joints
+    // Control 6 arm joints. Never report a successful hardware cycle when the
+    // vendor SDK rejected the command.
+    bool arm_command_ok = false;
     if (control_mode_ == "full_control")
     {
       // Full control mode: use position, velocity, and effort commands
-      robot_->posVelTorqueKpKd(arm_positions, arm_velocities,
-                               arm_efforts, arm_kp, arm_kd);
+      arm_command_ok = robot_->posVelTorqueKpKd(
+        arm_positions, arm_velocities, arm_efforts, arm_kp, arm_kd);
     }
     else if (control_mode_ == "position_velocity")
     {
-      // Position-Velocity-MaxTorque control mode
-      std::vector<double> velocities = use_velocity_commands_ ? arm_velocities : arm_max_velocities;
-      robot_->posVelMaxTorque(arm_positions, velocities, arm_max_torques, false);
+      // The vendor cooperative mode interprets velocity as a positive speed
+      // ceiling, not a signed trajectory setpoint. Trajectory timing already
+      // defines the desired motion; feeding its instantaneous velocity caused
+      // repeated slow/stop commands near spline knots and visible stutter.
+      const std::vector<double> & velocities = arm_max_velocities;
+      arm_command_ok = robot_->posVelMaxTorque(
+        arm_positions, velocities, arm_max_torques, false);
     }
     else if (control_mode_ == "pd_control")
     {
       // PD control mode (MIT mode with zero velocity and torque)
       std::vector<double> zero_vel(6, 0.0);
       std::vector<double> zero_torque(6, 0.0);
-      robot_->posVelTorqueKpKd(arm_positions, zero_vel, zero_torque, arm_kp, arm_kd);
+      arm_command_ok = robot_->posVelTorqueKpKd(
+        arm_positions, zero_vel, zero_torque, arm_kp, arm_kd);
     }
     else
     {
@@ -558,13 +657,25 @@ hardware_interface::return_type PantheraHardwareInterface::write(
       return hardware_interface::return_type::ERROR;
     }
 
+    if (!arm_command_ok)
+    {
+      RCLCPP_ERROR_THROTTLE(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        *rclcpp::Clock::make_shared(), 1000,
+        "Vendor SDK rejected an arm command in control mode '%s'", control_mode_.c_str());
+      return hardware_interface::return_type::ERROR;
+    }
+
     // Control gripper (7th joint, index 6) if present
     // Convert from meters to radians for hardware
     if (info_.joints.size() > 6)
     {
       double gripper_pos_m = hw_commands_positions_[6];
       double gripper_pos_rad = gripper_pos_m / gripper_rad_to_m_;
-      double gripper_vel_m = use_velocity_commands_ ? hw_commands_velocities_[6] : max_velocities_[6];
+      double gripper_vel_m =
+        control_mode_ == "full_control" ? hw_commands_velocities_[6] : max_velocities_[6];
+      gripper_vel_m = std::clamp(
+        gripper_vel_m, -max_velocities_[6], max_velocities_[6]);
       double gripper_vel_rad = gripper_vel_m / gripper_rad_to_m_;
       double gripper_max_torque = max_torques_[6];
 
@@ -574,13 +685,21 @@ hardware_interface::return_type PantheraHardwareInterface::write(
         double gripper_torque = hw_commands_efforts_[6];
         double gripper_kp = kp_gains_[6];
         double gripper_kd = kd_gains_[6];
-        robot_->gripperControlMIT(gripper_pos_rad, gripper_vel_rad, gripper_torque,
-                                   gripper_kp, gripper_kd);
+        if (!robot_->gripperControlMIT(
+            gripper_pos_rad, gripper_vel_rad, gripper_torque,
+            gripper_kp, gripper_kd))
+        {
+          return hardware_interface::return_type::ERROR;
+        }
       }
       else
       {
         // Use posVelMaxTorque mode for gripper
-        robot_->gripperControl(gripper_pos_rad, gripper_vel_rad, gripper_max_torque);
+        if (!robot_->gripperControl(
+            gripper_pos_rad, std::abs(gripper_vel_rad), gripper_max_torque))
+        {
+          return hardware_interface::return_type::ERROR;
+        }
       }
     }
   }

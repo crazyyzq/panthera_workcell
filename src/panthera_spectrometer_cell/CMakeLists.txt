@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(control_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -51,6 +52,7 @@ target_include_directories(recover_current_cycle
 
 ament_target_dependencies(spectrometer_cell_node
   ament_index_cpp
+  control_msgs
   rclcpp
   rclcpp_action
   geometry_msgs
@@ -66,6 +68,7 @@ ament_target_dependencies(spectrometer_cell_node
 
 ament_target_dependencies(recover_current_cycle
   ament_index_cpp
+  control_msgs
   rclcpp
   rclcpp_action
   geometry_msgs

@@ -46,6 +46,97 @@ double durationToSeconds(const builtin_interfaces::msg::Duration & duration)
   return static_cast<double>(duration.sec) + static_cast<double>(duration.nanosec) * 1e-9;
 }
 
+double quinticPeakJerk(
+  double position0,
+  double velocity0,
+  double acceleration0,
+  double position1,
+  double velocity1,
+  double acceleration1,
+  double duration)
+{
+  if (!std::isfinite(duration) || duration <= 1e-9) {
+    return std::numeric_limits<double>::infinity();
+  }
+  const double displacement = position1 - position0;
+  const double duration2 = duration * duration;
+  const double duration3 = duration2 * duration;
+  const double duration4 = duration3 * duration;
+  const double duration5 = duration4 * duration;
+  const double c3 =
+    (20.0 * displacement - (8.0 * velocity1 + 12.0 * velocity0) * duration -
+    (3.0 * acceleration0 - acceleration1) * duration2) / (2.0 * duration3);
+  const double c4 =
+    (-30.0 * displacement + (14.0 * velocity1 + 16.0 * velocity0) * duration +
+    (3.0 * acceleration0 - 2.0 * acceleration1) * duration2) / (2.0 * duration4);
+  const double c5 =
+    (12.0 * displacement - (6.0 * velocity1 + 6.0 * velocity0) * duration -
+    (acceleration0 - acceleration1) * duration2) / (2.0 * duration5);
+  const auto jerk = [c3, c4, c5](double time) {
+      return 6.0 * c3 + 24.0 * c4 * time + 60.0 * c5 * time * time;
+    };
+  double peak = std::max(std::abs(jerk(0.0)), std::abs(jerk(duration)));
+  if (std::abs(c5) > 1e-12) {
+    const double critical_time = -c4 / (5.0 * c5);
+    if (critical_time > 0.0 && critical_time < duration) {
+      peak = std::max(peak, std::abs(jerk(critical_time)));
+    }
+  }
+  return peak;
+}
+
+ValidationResult enforceQuinticJerkLimit(
+  trajectory_msgs::msg::JointTrajectory & trajectory,
+  double max_jerk_rad_sec3)
+{
+  if (trajectory.points.size() < 2 || max_jerk_rad_sec3 <= 0.0) {
+    return ValidationResult::fail("trajectory jerk limit input is invalid");
+  }
+  double peak_jerk = 0.0;
+  for (std::size_t index = 1; index < trajectory.points.size(); ++index) {
+    const auto & previous = trajectory.points[index - 1];
+    const auto & current = trajectory.points[index];
+    const double interval =
+      durationToSeconds(current.time_from_start) -
+      durationToSeconds(previous.time_from_start);
+    const std::size_t joint_count = trajectory.joint_names.size();
+    if (previous.positions.size() != joint_count || current.positions.size() != joint_count ||
+      previous.velocities.size() != joint_count || current.velocities.size() != joint_count ||
+      previous.accelerations.size() != joint_count || current.accelerations.size() != joint_count)
+    {
+      return ValidationResult::fail(
+        "trajectory points must contain position, velocity, and acceleration for every joint");
+    }
+    for (std::size_t joint = 0; joint < joint_count; ++joint) {
+      peak_jerk = std::max(
+        peak_jerk,
+        quinticPeakJerk(
+          previous.positions[joint], previous.velocities[joint],
+          previous.accelerations[joint], current.positions[joint],
+          current.velocities[joint], current.accelerations[joint], interval));
+    }
+  }
+  if (!std::isfinite(peak_jerk)) {
+    return ValidationResult::fail("trajectory contains a non-finite quintic jerk");
+  }
+  if (peak_jerk <= max_jerk_rad_sec3) {
+    return ValidationResult::ok();
+  }
+
+  const double stretch = std::cbrt(peak_jerk / max_jerk_rad_sec3) * 1.001;
+  for (auto & point : trajectory.points) {
+    point.time_from_start = secondsToDuration(
+      durationToSeconds(point.time_from_start) * stretch);
+    for (auto & velocity : point.velocities) {
+      velocity /= stretch;
+    }
+    for (auto & acceleration : point.accelerations) {
+      acceleration /= stretch * stretch;
+    }
+  }
+  return ValidationResult::ok();
+}
+
 Eigen::Isometry3d poseToEigen(const PoseDefinition & pose)
 {
   Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
@@ -113,6 +204,13 @@ std::size_t interpolationSteps(double magnitude, double step)
 }
 
 }  // namespace
+
+ValidationResult enforceTrajectoryJerkLimit(
+  trajectory_msgs::msg::JointTrajectory & trajectory,
+  double max_jerk_rad_sec3)
+{
+  return enforceQuinticJerkLimit(trajectory, max_jerk_rad_sec3);
+}
 
 struct TrajectoryCompiler::Impl
 {
@@ -476,9 +574,19 @@ struct TrajectoryCompiler::Impl
     }
     trajectory.addSuffixWayPoint(start_state, 0.0);
 
+    struct SegmentProfile
+    {
+      std::size_t start_index;
+      std::size_t end_index;
+      double velocity_scale;
+      double acceleration_scale;
+    };
+    std::vector<SegmentProfile> profiles;
+
     output.name = route.name;
     output.start_joints = current;
     for (const auto & segment : route.segments) {
+      const std::size_t start_index = trajectory.getWayPointCount() - 1;
       output.segment_names.push_back(segment.name);
       if (segment.type == SegmentType::JOINT) {
         result = appendJointSegment(catalog, route, segment, current, trajectory);
@@ -488,23 +596,102 @@ struct TrajectoryCompiler::Impl
       if (!result.success) {
         return result;
       }
+      profiles.push_back(
+        SegmentProfile{
+          start_index,
+          trajectory.getWayPointCount() - 1,
+          segment.velocity_scale.value_or(route.velocity_scale),
+          segment.acceleration_scale.value_or(route.acceleration_scale)});
     }
 
     if (trajectory.getWayPointCount() < 2) {
       return ValidationResult::fail("route '" + route.name + "' compiled fewer than 2 waypoints");
     }
 
+    double maximum_velocity_scale = route.velocity_scale;
+    double maximum_acceleration_scale = route.acceleration_scale;
+    for (const auto & profile : profiles) {
+      maximum_velocity_scale = std::max(maximum_velocity_scale, profile.velocity_scale);
+      maximum_acceleration_scale =
+        std::max(maximum_acceleration_scale, profile.acceleration_scale);
+    }
+
     trajectory_processing::IterativeParabolicTimeParameterization time_parameterization;
     if (!time_parameterization.computeTimeStamps(
-        trajectory, route.velocity_scale, route.acceleration_scale))
+        trajectory, maximum_velocity_scale, maximum_acceleration_scale))
     {
       return ValidationResult::fail("route '" + route.name + "' time parameterization failed");
+    }
+
+    for (std::size_t index = 0; index < trajectory.getWayPointCount(); ++index) {
+      auto timed_state = trajectory.getWayPoint(index);
+      result = checkState(
+        timed_state,
+        catalog,
+        "route '" + route.name + "' timed sample " + std::to_string(index));
+      if (!result.success) {
+        return result;
+      }
     }
 
     moveit_msgs::msg::RobotTrajectory message;
     trajectory.getRobotTrajectoryMsg(message);
     output.trajectory = std::move(message.joint_trajectory);
     output.trajectory.header.frame_id = catalog.base_frame;
+
+    std::vector<double> interval_stretch(output.trajectory.points.size(), 1.0);
+    for (const auto & profile : profiles) {
+      const double stretch = std::max(
+        maximum_velocity_scale / profile.velocity_scale,
+        std::sqrt(maximum_acceleration_scale / profile.acceleration_scale));
+      for (std::size_t index = profile.start_index + 1;
+        index <= profile.end_index && index < interval_stretch.size(); ++index)
+      {
+        interval_stretch[index] = stretch;
+      }
+    }
+
+    std::vector<double> original_times;
+    original_times.reserve(output.trajectory.points.size());
+    for (const auto & point : output.trajectory.points) {
+      original_times.push_back(durationToSeconds(point.time_from_start));
+    }
+    double scaled_time = 0.0;
+    for (std::size_t index = 0; index < output.trajectory.points.size(); ++index) {
+      if (index > 0) {
+        scaled_time +=
+          (original_times[index] - original_times[index - 1]) * interval_stretch[index];
+      }
+      auto & point = output.trajectory.points[index];
+      point.time_from_start = secondsToDuration(scaled_time);
+
+      const double incoming = index == 0 ? interval_stretch[1] : interval_stretch[index];
+      const double outgoing = index + 1 < interval_stretch.size() ?
+        interval_stretch[index + 1] : incoming;
+      if (index == 0 || index + 1 == interval_stretch.size()) {
+        std::fill(point.velocities.begin(), point.velocities.end(), 0.0);
+        std::fill(point.accelerations.begin(), point.accelerations.end(), 0.0);
+      } else {
+        // Keep one continuous waypoint velocity across a speed-class boundary.
+        // The slower adjacent interval wins, so a profile change no longer forces
+        // an unnecessary full stop while still respecting both segment caps.
+        const double waypoint_stretch = std::max(incoming, outgoing);
+        for (auto & velocity : point.velocities) {
+          velocity /= waypoint_stretch;
+        }
+        for (auto & acceleration : point.accelerations) {
+          acceleration /= waypoint_stretch * waypoint_stretch;
+        }
+      }
+    }
+
+    result = enforceTrajectoryJerkLimit(
+      output.trajectory, catalog.defaults.max_jerk_rad_sec3);
+    if (!result.success) {
+      return ValidationResult::fail(
+        "route '" + route.name + "' jerk limiting failed: " + result.message);
+    }
+
     output.end_joints = current;
     output.duration_sec = trajectoryDurationSec(output.trajectory);
     output.content_hash = hashTrajectory(output.trajectory);

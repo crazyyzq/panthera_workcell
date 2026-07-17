@@ -18,8 +18,12 @@ robot:
   - 0.0
   - 0.0
 defaults:
-  velocity_scale: 0.2
-  acceleration_scale: 0.15
+  # Temporary commissioning profile: every route and segment uses the full
+  # configured joint velocity and acceleration limits.
+  velocity_scale: 1.0
+  acceleration_scale: 1.0
+  # Ruckig jerk limit keeps full-speed moves from changing acceleration abruptly.
+  max_jerk_rad_sec3: 100.0
   joint_step_rad: 0.05
   cartesian_step_m: 0.005
   max_joint_jump_rad: 0.35
@@ -290,16 +294,16 @@ points:
 routes:
   home_to_safe_center:
     start: home_near
-    velocity_scale: 0.08
-    acceleration_scale: 0.08
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: recover_to_safe
       type: joint
       to: safe_joint_center
   safe_center_to_home:
     start: safe_joint_center
-    velocity_scale: 0.08
-    acceleration_scale: 0.08
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: maintenance_home
       type: joint
@@ -322,9 +326,13 @@ routes:
     - name: transfer_above_outlet_1
       type: joint
       to: outlet_1_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_pick_outlet_1
       type: linear
       to: outlet_1_grasp
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -334,9 +342,13 @@ routes:
     - name: transfer_above_outlet_2
       type: joint
       to: outlet_2_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_pick_outlet_2
       type: linear
       to: outlet_2_grasp
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -346,15 +358,21 @@ routes:
     - name: vertical_lift_outlet_1
       type: linear
       to: outlet_1_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: transfer_to_spectrometer
       type: joint
       to: spectrometer_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_place_spectrometer
       type: linear
       to: spectrometer_place
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -364,15 +382,21 @@ routes:
     - name: vertical_lift_outlet_2
       type: linear
       to: outlet_2_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: transfer_to_spectrometer
       type: joint
       to: spectrometer_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_place_spectrometer
       type: linear
       to: spectrometer_place
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -382,6 +406,8 @@ routes:
     - name: vertical_leave_after_place
       type: linear
       to: spectrometer_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -391,6 +417,8 @@ routes:
     - name: vertical_pick_spectrometer
       type: linear
       to: spectrometer_pick
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -400,30 +428,36 @@ routes:
     - name: vertical_lift_spectrometer
       type: linear
       to: spectrometer_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: transfer_to_cleaning
       type: joint
       to: clean_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_enter_dump
       type: linear
       to: clean_dump
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
   clean_dump_to_pour:
     start: clean_dump
-    velocity_scale: 0.5
-    acceleration_scale: 0.1
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: rotate_wrist_to_pour_limit
       type: joint
       to: clean_dump_pour
   clean_dump_pour_shake_once:
     start: clean_dump_pour
-    velocity_scale: 0.4
-    acceleration_scale: 0.1
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: shake_relief
       type: joint
@@ -433,16 +467,16 @@ routes:
       to: clean_dump_pour
   clean_dump_pour_to_upright:
     start: clean_dump_pour
-    velocity_scale: 0.5
-    acceleration_scale: 0.1
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: return_wrist_upright
       type: joint
       to: clean_dump
   clean_dump_to_clean_hover:
     start: clean_dump
-    velocity_scale: 0.1
-    acceleration_scale: 0.08
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: vertical_leave_dump
       type: linear
@@ -452,8 +486,8 @@ routes:
         keep_orientation: true
   clean_dump_to_brush_entry:
     start: clean_dump
-    velocity_scale: 0.1
-    acceleration_scale: 0.08
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: align_outside_brush
       type: joint
@@ -461,18 +495,20 @@ routes:
     - name: approach_brush_entry
       type: linear
       to: brush_entry
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
   brush_entry_to_center:
     start: brush_entry
-    velocity_scale: 0.06
-    acceleration_scale: 0.06
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: insert_into_brush
       type: linear
       to: brush_center
   brush_center_to_outer:
     start: brush_center
-    velocity_scale: 0.06
-    acceleration_scale: 0.06
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: exit_brush_center
       type: linear
@@ -482,8 +518,8 @@ routes:
       to: brush_outer
   brush_outer_to_clean_hover:
     start: brush_outer
-    velocity_scale: 0.1
-    acceleration_scale: 0.08
+    velocity_scale: 1.0
+    acceleration_scale: 1.0
     segments:
     - name: leave_brush_area
       type: joint
@@ -494,9 +530,13 @@ routes:
     - name: transfer_above_outlet_1
       type: joint
       to: outlet_1_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_return_outlet_1
       type: linear
       to: outlet_1_grasp
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -506,9 +546,13 @@ routes:
     - name: transfer_above_outlet_2
       type: joint
       to: outlet_2_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
     - name: vertical_return_outlet_2
       type: linear
       to: outlet_2_grasp
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -518,21 +562,29 @@ routes:
     - name: vertical_leave_outlet_1
       type: linear
       to: outlet_1_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: return_to_shared_wait
       type: joint
       to: outlet_wait
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
   outlet_2_return_to_wait:
     start: outlet_2_grasp
     segments:
     - name: vertical_leave_outlet_2
       type: linear
       to: outlet_2_hover
+      velocity_scale: 1.0
+      acceleration_scale: 1.0
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: return_to_shared_wait
       type: joint
       to: outlet_wait
+      velocity_scale: 1.0
+      acceleration_scale: 1.0

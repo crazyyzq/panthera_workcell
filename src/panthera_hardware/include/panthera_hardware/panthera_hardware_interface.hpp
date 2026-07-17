@@ -1,6 +1,7 @@
 #ifndef PANTHERA_HARDWARE__PANTHERA_HARDWARE_INTERFACE_HPP_
 #define PANTHERA_HARDWARE__PANTHERA_HARDWARE_INTERFACE_HPP_
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,6 +61,7 @@ private:
   std::vector<double> hw_efforts_;
   std::vector<double> raw_position_candidates_;
   std::vector<int> raw_position_candidate_counts_;
+  std::vector<std::deque<double>> raw_velocity_windows_;
 
   // Joint commands
   std::vector<double> hw_commands_positions_;
@@ -73,7 +75,7 @@ private:
   std::vector<double> kd_gains_;
 
   // Control mode
-  std::string control_mode_;  // "position_velocity", "pd_control", or "full_control"
+  std::string control_mode_;
 
   // Gripper conversion: radians to meters
   double gripper_rad_to_m_;  // Conversion factor for gripper position (rad to m)
@@ -87,11 +89,20 @@ private:
   double state_filter_max_arm_jump_rad_;
   double state_filter_max_gripper_jump_m_;
   int state_filter_accept_after_count_;
+  bool state_velocity_filter_enabled_;
+  int state_velocity_median_window_;
+  double state_velocity_arm_deadband_rad_sec_;
+  double state_velocity_gripper_deadband_m_sec_;
 
   double filterPositionSample(
     size_t joint_index,
     double raw_position,
     double max_jump);
+
+  double filterVelocitySample(
+    size_t joint_index,
+    double raw_velocity,
+    double deadband);
 };
 
 }  // namespace panthera_hardware

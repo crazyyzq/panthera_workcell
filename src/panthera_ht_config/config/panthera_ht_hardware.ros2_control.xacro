@@ -13,6 +13,11 @@
                 <param name="state_filter_max_arm_jump_rad">0.06</param>
                 <param name="state_filter_max_gripper_jump_m">0.004</param>
                 <param name="state_filter_accept_after_count">3</param>
+                <!-- The SDK velocity estimate is quantized and alternates around zero at rest. -->
+                <param name="state_velocity_filter_enabled">true</param>
+                <param name="state_velocity_median_window">21</param>
+                <param name="state_velocity_arm_deadband_rad_sec">0.03</param>
+                <param name="state_velocity_gripper_deadband_m_sec">0.001</param>
             </hardware>
 
             <!-- Joint 1 -->

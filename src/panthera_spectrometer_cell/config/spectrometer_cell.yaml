@@ -73,6 +73,10 @@ motion:
   # 启动真实流程前机械臂必须实际位于此点，Motion Server 仍会用编码器做0.05rad校验。
   fixed_start_point: safe_joint_center
   motion_server_wait_sec: 15.0
+  # Only retry failures that are known to occur before physical motion starts.
+  transient_retry_count: 2
+  transient_retry_delay_sec: 0.25
+  cancel_wait_sec: 2.0
 
   # ========== MoveIt 全局规划参数 ==========
   # 这些参数影响所有机械臂动作。现场调点时通常不用改，除非规划经常失败或速度明显不合适。
@@ -211,6 +215,14 @@ gripper:
 
   # 闭合夹爪轨迹时长，单位 s。
   close_duration_sec: 1.5
+
+  # Closed-loop FollowJointTrajectory command and recovery settings.
+  action_server_wait_sec: 5.0
+  command_timeout_margin_sec: 2.0
+  position_tolerance_m: 0.003
+  settled_velocity_tolerance_mps: 0.003
+  settle_timeout_sec: 1.0
+  retry_count: 1
 
 simulation:
   # true 表示只模拟流程，不驱动真实机械臂。

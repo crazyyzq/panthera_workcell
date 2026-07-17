@@ -1,0 +1,103 @@
+arm_group: arm
+base_frame: base_link
+hand_frame: gripper_center
+
+planning:
+  planning_time_sec: 2.0
+  planning_attempts: 3
+  velocity_scale: 0.08
+  acceleration_scale: 0.08
+
+safe_joint_poses:
+  home_safe: [0.000, 0.010, 0.010, 0.000, 0.000, 0.000]
+  center_raised: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+orientations:
+  moveit_outlet_yaw0:
+    rpy: [0.0, 0.0, -1.5708]
+  moveit_spectrometer_yaw_pos90:
+    rpy: [0.0, 0.0, 0.0]
+  moveit_clean_yaw_180:
+    rpy: [0.0, 0.0, 1.5708]
+  roll180_yaw_pos90:
+    rpy: [3.1416, 0.0, 1.5708]
+  roll180_yaw_neg90:
+    rpy: [3.1416, 0.0, -1.5708]
+  pitch180_yaw_pos90:
+    rpy: [0.0, 3.1416, 1.5708]
+  pitch180_yaw_neg90:
+    rpy: [0.0, 3.1416, -1.5708]
+  clean_dump_normal:
+    rpy: [0.0, 1.5708, 0.0]
+  clean_dump_yaw_pos90:
+    rpy: [0.0, 1.5708, 1.5708]
+  clean_dump_yaw_neg90:
+    rpy: [0.0, 1.5708, -1.5708]
+  clean_dump_yaw_180:
+    rpy: [0.0, 1.5708, 3.1416]
+
+targets:
+  - name: outlet_1_approach_z180
+    station: OUTLET_1
+    xyz: [-0.02500, -0.28853, 0.180]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: outlet_1_pre_z060
+    station: OUTLET_1
+    xyz: [-0.02500, -0.28853, 0.060]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: outlet_1_grip_z120
+    station: OUTLET_1
+    xyz: [-0.02500, -0.42853, 0.140]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: outlet_1_grip_z060
+    station: OUTLET_1
+    xyz: [-0.02500, -0.42853, 0.060]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: outlet_2_approach_z180
+    station: OUTLET_2
+    xyz: [0.15500, -0.28853, 0.180]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: outlet_2_pre_z060
+    station: OUTLET_2
+    xyz: [0.15500, -0.28853, 0.060]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: outlet_2_grip_z060
+    station: OUTLET_2
+    xyz: [0.15500, -0.42853, 0.060]
+    orientations: [moveit_outlet_yaw0]
+
+  - name: spectrometer_pre_y444_z250
+    station: SPECTROMETER
+    xyz: [0.58414, -0.26103, 0.340]
+    orientations: [moveit_spectrometer_yaw_pos90]
+
+  - name: spectrometer_reference_y584_z250
+    station: SPECTROMETER
+    xyz: [0.58414, -0.12103, 0.290]
+    orientations: [moveit_spectrometer_yaw_pos90]
+
+  - name: clean_pre_x260_z130
+    station: CLEAN
+    xyz: [0.250, 0.260, 0.130]
+    orientations: [moveit_clean_yaw_180]
+
+  - name: clean_ready_x400_z130
+    station: CLEAN
+    xyz: [0.250, 0.400, 0.120]
+    orientations: [moveit_clean_yaw_180]
+
+  - name: clean_approach_x400_z240
+    station: CLEAN
+    xyz: [0.250, 0.400, 0.240]
+    orientations: [moveit_clean_yaw_180]
+
+  - name: legacy_outlet_1_center_yaw0_check
+    station: OUTLET_1
+    xyz: [-0.02500, -0.42853, 0.140]
+    orientations: [moveit_outlet_yaw0]

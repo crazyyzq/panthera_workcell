@@ -1,0 +1,7 @@
+string name
+---
+bool success
+bool value
+bool active
+uint32 gpio
+string message

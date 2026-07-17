@@ -1,0 +1,5 @@
+string workflow_name
+bool dry_run
+---
+bool success
+string message

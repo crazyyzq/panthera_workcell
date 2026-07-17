@@ -1,0 +1,56 @@
+gpio_io_node:
+  ros__parameters:
+    # Keep false until the B1S-3588 optional terminal block is confirmed to be
+    # the DIDO board and the wiring has been checked.
+    enabled: false
+    backend: sysfs
+    source: gpio_dido
+
+    poll_rate_hz: 20.0
+    debounce_ms: 30
+    publish_initial_state: true
+    publish_external_signal: true
+    external_signal_topic: /workflow/external_signal
+    trigger_on_change: true
+    trigger_active_only: true
+    min_trigger_interval_sec: 1.0
+
+    auto_run_workflow: false
+    workflow_service: /run_workflow
+    dry_run_workflow: false
+    # Real DO writes are blocked unless this is true. Mock mode ignores this
+    # guard so software tests can still call /gpio_io_node/set_output.
+    allow_output_writes: false
+
+    input_topic: /io/digital_inputs
+    output_topic: /io/digital_outputs
+
+    # Format:
+    #   name:gpio[:active_high|active_low[:code[:workflow_name[:detail]]]]
+    #
+    # B1S-3588 manual DIDO mapping:
+    #   DI-P1 GPIO3_C4 -> Linux GPIO 116
+    #   DI-P2 GPIO3_C5 -> Linux GPIO 117
+    #   DI-P3 GPIO4_B4 -> Linux GPIO 140
+    #   DI-P4 GPIO4_B5 -> Linux GPIO 141
+    #
+    # On the current controller inspected on 2026-06-12 these pins were muxed
+    # to CAN/SPI/reset functions, so keep enabled=false unless the hardware
+    # option is changed to the DIDO board.
+    inputs:
+      - "di1:116:active_low:1:cup_pick_place:io_di1_active"
+      - "di2:117:active_low:2:laser_pick_example:io_di2_active"
+      - "di3:140:active_low:3::io_di3_active"
+      - "di4:141:active_low:4::io_di4_active"
+
+    # Format:
+    #   name:gpio[:active_high|active_low[:initial_value]]
+    #
+    # B1S-3588 manual DIDO mapping:
+    #   DO-P1 GPIO1_A1 -> Linux GPIO 33
+    #   DO-P2 GPIO1_A0 -> Linux GPIO 32
+    #   DO-P3 GPIO1_A2 -> Linux GPIO 34
+    outputs:
+      - "do1:33:active_high:false"
+      - "do2:32:active_high:false"
+      - "do3:34:active_high:false"

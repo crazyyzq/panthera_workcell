@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panthera 光谱检测工作站</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">P</div>
+      <div>
+        <h1>Panthera 光谱检测工作站</h1>
+        <div class="subtitle">ROS2 Web HMI</div>
+      </div>
+    </div>
+    <div class="top-status">
+      <span id="connectionBadge" class="badge badge-warn">连接中</span>
+      <span id="serviceBadge" class="badge">服务 --</span>
+      <span id="modeBadge" class="badge">模式 --</span>
+      <span id="stateBadge" class="badge">UNKNOWN</span>
+    </div>
+  </header>
+
+  <nav class="page-tabs" aria-label="HMI pages">
+    <button class="page-tab active" data-page-target="dashboard" type="button">运行控制</button>
+    <button class="page-tab" data-page-target="points" type="button">点位调试</button>
+    <button class="page-tab" data-page-target="logs" type="button">事件日志</button>
+  </nav>
+
+  <main class="layout">
+    <section class="panel status-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>单元状态</h2>
+        <span id="stateAge" class="muted">--</span>
+      </div>
+      <div class="state-readout" id="stateText">UNKNOWN</div>
+      <div class="status-strip">
+        <span id="stateDuration">持续 --</span>
+        <span id="previousState">上一步 --</span>
+        <span id="transitionReason">原因 --</span>
+      </div>
+      <div class="metrics compact">
+        <div class="metric">
+          <span class="label">运行模式</span>
+          <strong id="modeText">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">Cycle</span>
+          <strong id="cycleId">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">当前出料口</span>
+          <strong id="outletId">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">待处理队列</span>
+          <strong id="pendingQueue">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">杯子状态</span>
+          <strong id="cupFlags">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">光谱仪状态</span>
+          <strong id="spectrometerFlags">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">当前命令</span>
+          <strong id="activeCommand">--</strong>
+        </div>
+        <div class="metric">
+          <span class="label">出料口状态</span>
+          <strong id="outletStatus">--</strong>
+        </div>
+      </div>
+      <div id="errorBox" class="error-box hidden"></div>
+    </section>
+
+    <section class="panel camera-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>Gemini305 相机</h2>
+        <div class="camera-actions">
+          <div class="segmented" aria-label="camera mode">
+            <button id="rgbTab" class="segment active" data-camera-mode="rgb" type="button">RGB</button>
+            <button id="depthTab" class="segment" data-camera-mode="depth" type="button">深度</button>
+          </div>
+          <button id="restartCameraButton" class="cmd neutral compact" type="button">重启相机</button>
+        </div>
+      </div>
+      <div id="cameraFrame" class="camera-frame">
+        <img id="cameraImage" src="/api/camera/rgb.bmp" alt="camera stream">
+      </div>
+      <div class="camera-meta">
+        <span id="cameraHealth" class="pill pill-warn">无图像</span>
+        <span id="cameraInfo">--</span>
+        <span id="cameraAge">--</span>
+      </div>
+    </section>
+
+    <section class="panel command-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>操作台</h2>
+        <span id="commandMode" class="muted">人工触发</span>
+      </div>
+
+      <div class="command-section safety-section">
+        <div class="section-title">安全</div>
+        <div class="estop-zone" id="estopZone">
+          <button class="estop-button" id="estopButton" data-command="simulate_estop" type="button" title="立即触发急停">
+            <span class="estop-cap">
+              <span class="estop-main">急停</span>
+              <span class="estop-en">EMERGENCY STOP</span>
+            </span>
+          </button>
+        </div>
+        <div class="button-grid">
+          <button class="cmd neutral" data-command="clear_estop" data-confirm="确认机械急停已释放，再清除软件急停状态。" type="button">清除急停</button>
+          <button class="cmd warn" data-command="request_reset" data-confirm="确认现场安全，执行人工复位。" type="button">人工复位</button>
+        </div>
+        <div class="safety-sequence" id="safetySequence">急停后顺序：释放硬件急停 -> 清除急停 -> 人工复位 -> 启动自动</div>
+      </div>
+
+      <div class="command-section">
+        <div class="section-title">自动运行</div>
+        <div class="button-grid">
+          <button class="cmd primary" data-command="auto_mode" type="button">启动自动</button>
+          <button class="cmd neutral" data-command="manual_mode" type="button">暂停自动</button>
+          <button class="cmd primary" data-command="auto_mode" type="button">恢复自动</button>
+          <button class="cmd neutral" data-command="step_once" type="button">单步下一状态</button>
+        </div>
+      </div>
+
+      <div class="command-section speed-section">
+        <div class="section-title">动作速度</div>
+        <div class="speed-control">
+          <input id="speedScaleSlider" type="range" min="20" max="120" step="5" value="100">
+          <strong id="speedScaleValue">100%</strong>
+        </div>
+        <div class="button-grid">
+          <button id="applySpeedScale" class="cmd primary" type="button">应用速度</button>
+          <button id="resetSpeedScale" class="cmd neutral" type="button">恢复 100%</button>
+        </div>
+      </div>
+
+      <div class="command-section state-debug">
+        <div class="section-title">状态机调试</div>
+        <div class="form-grid">
+          <label>
+            <span>目标状态</span>
+            <select id="targetStateSelect"></select>
+          </label>
+          <label>
+            <span>请求原因</span>
+            <input id="stateRequestReason" type="text" placeholder="调试、排故或人工确认原因">
+          </label>
+          <label class="check-line">
+            <input id="forceStateRequest" type="checkbox">
+            <span>强制请求</span>
+          </label>
+          <button id="publishStateRequest" class="cmd warn" data-confirm="状态请求不会直接改状态，但可能触发复位、暂停或急停服务。确认继续？" type="button">发布目标状态请求</button>
+        </div>
+      </div>
+
+      <div class="command-section pose-tuner-panel">
+        <div class="section-title">点位调试</div>
+        <label class="switch-line">
+          <input id="poseTunerDebugMode" type="checkbox">
+          <span>调试模式</span>
+          <strong id="poseTunerModeText">关闭</strong>
+        </label>
+        <div class="form-grid">
+          <label>
+            <span>目标点位</span>
+            <select id="poseTunerTargetSelect" disabled>
+              <option value="">请先开启调试模式</option>
+            </select>
+          </label>
+          <div class="pose-tuner-target-card" id="poseTunerTargetCard">
+            <span>未选择点位</span>
+          </div>
+          <div class="button-grid">
+            <button id="poseTunerDryRun" class="cmd neutral" type="button" disabled>只规划 dry_run</button>
+            <button id="poseTunerExecute" class="cmd warn" type="button" disabled>真实执行</button>
+            <button id="poseTunerStop" class="cmd neutral" type="button">停止 MoveIt</button>
+            <button id="poseTunerReload" class="cmd neutral" type="button" disabled>刷新点位</button>
+          </div>
+        </div>
+        <div class="pose-tuner-result" id="poseTunerResult">调试模式关闭</div>
+        <div class="pose-tuner-log" id="poseTunerLog"></div>
+      </div>
+
+      <div class="command-section">
+        <div class="section-title">真实流程调试</div>
+        <div class="button-grid">
+          <button class="cmd primary" data-command="actual_cycle_outlet_1" data-confirm="确认 OUTLET_1 杯子、光谱仪、清理位周围安全，启动真实循环。" type="button">OUTLET_1 真实循环</button>
+          <button class="cmd primary" data-command="actual_cycle_outlet_2" data-confirm="确认 OUTLET_2 杯子、光谱仪、清理位周围安全，启动真实循环。" type="button">OUTLET_2 真实循环</button>
+          <button class="cmd warn" data-command="detection_done" data-confirm="确认光谱仪检测已经完成，机械臂将重新测距并取回杯子。" type="button">检测完成</button>
+          <button class="cmd neutral" data-command="workflow_arm_home" type="button">回安全位</button>
+        </div>
+        <div class="coordinate-card">
+          <span>OUTLET_1 (-25, -428.53, 100) mm</span>
+          <span>OUTLET_2 (155, -428.53, 100) mm</span>
+          <span>光谱仪基准 (584.14, -121.03, 290) mm @ 激光 150 mm</span>
+          <span>清理位 (250, 400, 120) mm</span>
+        </div>
+      </div>
+
+      <div class="command-section">
+        <div class="section-title">流程信号模拟</div>
+        <div class="button-grid">
+          <button class="cmd primary" data-command="outlet_1_done" type="button">OUTLET_1 出料完成</button>
+          <button class="cmd primary" data-command="outlet_2_done" type="button">OUTLET_2 出料完成</button>
+        </div>
+        <div class="recent-event">
+          <span class="label">最近流程信号</span>
+          <strong id="recentEventName">--</strong>
+          <span id="recentEventDetail">--</span>
+        </div>
+      </div>
+
+      <div class="command-section">
+        <div class="section-title">手动动作</div>
+        <div class="button-grid">
+          <button class="cmd neutral" data-command="workflow_outlet_1_pick_check_actual" data-confirm="确认机械臂周围安全，仅检查 OUTLET_1 上方/取杯点路径。" type="button">OUTLET_1 点位检查</button>
+          <button class="cmd neutral" data-command="workflow_outlet_2_pick_check_actual" data-confirm="确认机械臂周围安全，仅检查 OUTLET_2 上方/取杯点路径。" type="button">OUTLET_2 点位检查</button>
+          <button class="cmd neutral" data-command="workflow_spectrometer_place_check_actual" data-confirm="确认光谱仪附近安全，仅检查光谱仪基准点路径。" type="button">光谱仪点位检查</button>
+          <button class="cmd neutral" data-command="workflow_clean_dump_check_actual" data-confirm="确认清理位附近安全，仅检查倒料点路径。" type="button">清理位点检</button>
+          <button class="cmd primary" data-command="workflow_visible_motion_check" data-confirm="确认机械臂周围安全，执行可见幅度动作检查。" type="button">可见动作检查</button>
+          <button class="cmd primary" data-command="workflow_fixed_large_motion_demo" data-confirm="确认机械臂周围安全，执行较大幅度运动验证。" type="button">大幅运动验证</button>
+          <button class="cmd neutral" data-command="workflow_arm_home" type="button">回安全位</button>
+          <button class="cmd neutral" data-command="workflow_gripper_open" type="button">夹爪打开</button>
+          <button class="cmd neutral" data-command="workflow_gripper_close" type="button">夹爪闭合</button>
+          <button class="cmd warn" data-command="workflow_cup_pick_place" data-confirm="确认夹取路径、杯子和工装安全，执行完整抓放流程。" type="button">完整抓放流程</button>
+        </div>
+      </div>
+
+      <div id="commandResult" class="command-result"></div>
+    </section>
+
+    <section class="panel point-config-panel" data-page="points">
+      <div class="panel-head">
+        <h2>点位配置调试</h2>
+        <div class="point-config-actions">
+          <span id="pointConfigPath" class="muted">--</span>
+          <button id="pointConfigReload" class="cmd neutral compact" type="button">重新读取</button>
+          <button id="pointConfigSave" class="cmd primary compact" type="button">保存配置</button>
+          <button id="pointConfigApplyReload" class="cmd warn compact" type="button">重载生效</button>
+        </div>
+      </div>
+      <div class="point-config-alert">
+        保存只写入 YAML 文件，不会立即移动机械臂；点击“重载生效”后，空闲或暂停状态下的运行节点会重新读取配置。
+      </div>
+      <div class="point-config-grid">
+        <div class="point-config-list">
+          <div class="section-title">named_poses</div>
+          <select id="pointPoseSelect" size="12"></select>
+        </div>
+        <div class="point-config-editor">
+          <div class="section-title">当前点位</div>
+          <div class="pose-edit-title" id="pointPoseTitle">未选择点位</div>
+          <div class="point-input-grid">
+            <label><span>X m</span><input id="pointX" type="number" step="0.001"></label>
+            <label><span>Y m</span><input id="pointY" type="number" step="0.001"></label>
+            <label><span>Z m</span><input id="pointZ" type="number" step="0.001"></label>
+            <label><span>Roll rad</span><input id="pointRoll" type="number" step="0.001"></label>
+            <label><span>Pitch rad</span><input id="pointPitch" type="number" step="0.001"></label>
+            <label><span>Yaw rad</span><input id="pointYaw" type="number" step="0.001"></label>
+          </div>
+          <div class="point-config-hint" id="pointPoseHint">坐标是 base_link 下 gripper_center 目标点，单位 m/rad。</div>
+        </div>
+        <div class="point-config-params">
+          <div class="section-title">路径和传感器参数</div>
+          <div id="pointParamEditor" class="point-param-editor"></div>
+        </div>
+      </div>
+      <div id="pointConfigResult" class="command-result"></div>
+    </section>
+
+    <section class="panel laser-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>激光测距</h2>
+        <span id="laserAge" class="muted">--</span>
+      </div>
+      <div class="large-number" id="laserDistance">--</div>
+      <div class="laser-grid">
+        <div><span>原始距离</span><strong id="laserRaw">--</strong></div>
+        <div><span>滤波距离</span><strong id="laserFiltered">--</strong></div>
+        <div><span>轴向坐标</span><strong id="laserAxis">--</strong></div>
+        <div><span>状态</span><strong id="laserStatus">--</strong></div>
+      </div>
+      <div class="laser-history">
+        <div><span>放杯前</span><strong id="placeLaser">--</strong></div>
+        <div><span>取杯前</span><strong id="pickLaser">--</strong></div>
+      </div>
+    </section>
+
+    <section class="panel tool-pose-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>夹取中心实时位姿</h2>
+        <span id="toolPoseAge" class="muted">--</span>
+      </div>
+      <div class="pose-frame-line">
+        <span id="toolPoseFrames">base_link -> gripper_center</span>
+        <strong id="toolPoseStatus">--</strong>
+      </div>
+      <div class="pose-grid">
+        <div><span>X</span><strong id="toolPoseX">--</strong></div>
+        <div><span>Y</span><strong id="toolPoseY">--</strong></div>
+        <div><span>Z</span><strong id="toolPoseZ">--</strong></div>
+        <div><span>qx</span><strong id="toolQuatX">--</strong></div>
+        <div><span>qy</span><strong id="toolQuatY">--</strong></div>
+        <div><span>qz</span><strong id="toolQuatZ">--</strong></div>
+        <div><span>qw</span><strong id="toolQuatW">--</strong></div>
+        <div><span>RPY deg</span><strong id="toolPoseRpy">--</strong></div>
+      </div>
+    </section>
+
+    <section class="panel flow-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>状态机流程</h2>
+      </div>
+      <div id="flowList" class="flow-list"></div>
+    </section>
+
+    <section class="panel joints-panel" data-page="dashboard">
+      <div class="panel-head">
+        <h2>关节状态</h2>
+        <span id="jointAge" class="muted">--</span>
+      </div>
+      <div id="jointList" class="joint-list"></div>
+    </section>
+
+    <section class="panel log-panel" data-page="logs">
+      <div class="panel-head">
+        <h2>事件记录</h2>
+      </div>
+      <div id="eventLog" class="event-log"></div>
+    </section>
+  </main>
+
+  <div id="confirmOverlay" class="confirm-overlay hidden" role="dialog" aria-modal="true">
+    <div class="confirm-dialog">
+      <h2 id="confirmTitle">确认操作</h2>
+      <p id="confirmMessage">--</p>
+      <div class="confirm-actions">
+        <button id="confirmCancel" class="cmd neutral" type="button">取消</button>
+        <button id="confirmOk" class="cmd warn" type="button">确认执行</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

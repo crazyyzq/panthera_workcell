@@ -1,0 +1,656 @@
+pose_sources:
+  cup:
+    topic: /detected_cup_pose
+    max_age_sec: 1.0
+  laser_object:
+    topic: /laser/object_pose
+    max_age_sec: 0.5
+
+defaults:
+  # Default posture is the current physical posture: gripper points to base_link +Y.
+  orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  cartesian_eef_step: 0.005
+  cartesian_jump_threshold: 0.0
+  cartesian_min_fraction: 0.95
+
+workflows:
+  cup_pick_place:
+    steps:
+      - name: open gripper before pick
+        type: gripper
+        position: 0.050
+        duration_sec: 1.2
+
+      - name: move safe before outlet 1 pick
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+      - name: moveJ outlet 1 high over cup
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+      - name: moveJ outlet 1 reachable grasp height
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+      - name: close gripper on cup
+        type: gripper
+        position: 0.002
+        duration_sec: 1.5
+
+      - name: moveJ lift from outlet 1
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+      - name: move safe after outlet 1 pick
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+      - name: moveJ spectrometer pre at laser 150mm
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+      - name: moveJ spectrometer place at laser 150mm
+        type: move_pose
+        position: [0.58414, -0.12103, 0.290]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+      - name: open gripper at spectrometer
+        type: gripper
+        position: 0.050
+        duration_sec: 1.2
+
+      - name: moveJ spectrometer retreat
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+      - name: move safe after spectrometer place
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+      - name: moveJ spectrometer pre before pick
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+      - name: moveJ spectrometer pick at remeasured position
+        type: move_pose
+        position: [0.58414, -0.12103, 0.290]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+      - name: close gripper at spectrometer
+        type: gripper
+        position: 0.002
+        duration_sec: 1.5
+
+      - name: moveJ spectrometer retreat after pick
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+      - name: move safe after spectrometer pick
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+      - name: moveJ clean ready
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+      - name: pour cup at clean station
+        type: move_pose
+        position: [0.250, 0.400, 0.120]
+        orientation_xyzw: [-0.5, 0.5, 0.5, 0.5]
+        cartesian: false
+
+      - name: shake cup back
+        type: move_pose
+        position: [0.250, 0.400, 0.120]
+        orientation_xyzw: [-0.45, 0.55, 0.45, 0.55]
+        cartesian: false
+
+      - name: upright cup after clean
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+      - name: move safe after clean
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+      - name: moveJ outlet 1 return high
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+      - name: moveJ outlet 1 return target
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+      - name: release cup at outlet 1
+        type: gripper
+        position: 0.050
+        duration_sec: 1.2
+
+      - name: moveJ outlet 1 return high after release
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+      - name: return near home
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+  outlet_1_pick_check_actual:
+    steps:
+      - name: open gripper
+        type: gripper
+        position: 0.050
+        duration_sec: 1.0
+      - name: move safe
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+      - name: moveJ outlet 1 approach high
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+      - name: moveL outlet 1 pre grasp
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+      - name: moveL outlet 1 grasp
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+      - name: moveL outlet 1 retreat
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  outlet_2_pick_check_actual:
+    steps:
+      - name: open gripper
+        type: gripper
+        position: 0.050
+        duration_sec: 1.0
+      - name: move safe
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+      - name: moveJ outlet 2 approach high
+        type: move_pose
+        position: [0.15500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+      - name: moveL outlet 2 pre grasp
+        type: move_pose
+        position: [0.15500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+      - name: moveL outlet 2 grasp
+        type: move_pose
+        position: [0.15500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+      - name: moveL outlet 2 retreat
+        type: move_pose
+        position: [0.15500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  spectrometer_place_check_actual:
+    steps:
+      - name: move safe
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+      - name: moveJ spectrometer approach high
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+      - name: moveL spectrometer pre
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+      - name: moveL spectrometer reference at laser 150mm
+        type: move_pose
+        position: [0.58414, -0.12103, 0.290]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+      - name: moveL spectrometer retreat
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+        cartesian: false
+
+  clean_dump_check_actual:
+    steps:
+      - name: move safe
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+      - name: moveJ clean approach high
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+      - name: moveL clean pre
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+      - name: moveL clean ready
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+      - name: pour check
+        type: move_pose
+        position: [0.250, 0.400, 0.120]
+        orientation_xyzw: [-0.5, 0.5, 0.5, 0.5]
+        cartesian: false
+      - name: shake check
+        type: move_pose
+        position: [0.250, 0.400, 0.120]
+        orientation_xyzw: [-0.45, 0.55, 0.45, 0.55]
+        cartesian: false
+      - name: upright check
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_z140:
+    steps:
+      - name: probe outlet 1 z140
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        cartesian: false
+
+  probe_outlet_1_z120:
+    steps:
+      - name: probe outlet 1 z120
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        cartesian: false
+
+  probe_outlet_1_z100:
+    steps:
+      - name: probe outlet 1 z100
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        cartesian: false
+
+  probe_outlet_1_z080:
+    steps:
+      - name: probe outlet 1 z080
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.080]
+        cartesian: false
+
+  probe_outlet_1_z060:
+    steps:
+      - name: probe outlet 1 z060
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.060]
+        cartesian: false
+
+  probe_outlet_2_z140:
+    steps:
+      - name: probe outlet 2 z140
+        type: move_pose
+        position: [0.15500, -0.42853, 0.140]
+        cartesian: false
+
+  probe_outlet_2_z120:
+    steps:
+      - name: probe outlet 2 z120
+        type: move_pose
+        position: [0.15500, -0.42853, 0.140]
+        cartesian: false
+
+  probe_outlet_2_z100:
+    steps:
+      - name: probe outlet 2 z100
+        type: move_pose
+        position: [0.15500, -0.42853, 0.140]
+        cartesian: false
+
+  probe_outlet_2_z080:
+    steps:
+      - name: probe outlet 2 z080
+        type: move_pose
+        position: [0.15500, -0.42853, 0.080]
+        cartesian: false
+
+  probe_outlet_2_z060:
+    steps:
+      - name: probe outlet 2 z060
+        type: move_pose
+        position: [0.15500, -0.42853, 0.060]
+        cartesian: false
+
+  probe_spectrometer_y584_z370:
+    steps:
+      - name: probe spectrometer y584 z370
+        type: move_pose
+        position: [0.58414, -0.12103, 0.370]
+        cartesian: false
+
+  probe_spectrometer_y584_z300:
+    steps:
+      - name: probe spectrometer y584 z300
+        type: move_pose
+        position: [0.58414, -0.12103, 0.300]
+        cartesian: false
+
+  probe_spectrometer_y520_z300:
+    steps:
+      - name: probe spectrometer y520 z300
+        type: move_pose
+        position: [0.58414, -0.18517, 0.300]
+        cartesian: false
+
+  probe_spectrometer_y480_z300:
+    steps:
+      - name: probe spectrometer y480 z300
+        type: move_pose
+        position: [0.58414, -0.22517, 0.300]
+        cartesian: false
+
+  probe_clean_x400_z240:
+    steps:
+      - name: probe clean x-400 z240
+        type: move_pose
+        position: [0.250, 0.400, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_clean_x350_z240:
+    steps:
+      - name: probe clean x-350 z240
+        type: move_pose
+        position: [0.250, 0.350, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_clean_x300_z240:
+    steps:
+      - name: probe clean x-300 z240
+        type: move_pose
+        position: [0.250, 0.300, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_yaw_neg90_z180:
+    steps:
+      - name: probe outlet 1 yaw neg90 z180
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.180]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_yaw_neg90_z140:
+    steps:
+      - name: probe outlet 1 yaw neg90 z140
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_yaw_neg90_z120:
+    steps:
+      - name: probe outlet 1 yaw neg90 z120
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_yaw_neg90_z100:
+    steps:
+      - name: probe outlet 1 yaw neg90 z100
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.140]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_yaw_neg90_z080:
+    steps:
+      - name: probe outlet 1 yaw neg90 z080
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.080]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  probe_outlet_1_yaw_neg90_z060:
+    steps:
+      - name: probe outlet 1 yaw neg90 z060
+        type: move_pose
+        position: [-0.02500, -0.42853, 0.060]
+        orientation_xyzw: [0.0, 0.0, -0.707107, 0.707107]
+        cartesian: false
+
+  probe_spectrometer_y560_z300:
+    steps:
+      - name: probe spectrometer y560 z300
+        type: move_pose
+        position: [0.58414, -0.14517, 0.300]
+        cartesian: false
+
+  probe_spectrometer_y540_z300:
+    steps:
+      - name: probe spectrometer y540 z300
+        type: move_pose
+        position: [0.58414, -0.16517, 0.300]
+        cartesian: false
+
+  probe_spectrometer_y520_z250:
+    steps:
+      - name: probe spectrometer y520 z250
+        type: move_pose
+        position: [0.58414, -0.18517, 0.340]
+        cartesian: false
+
+  probe_spectrometer_y520_z350:
+    steps:
+      - name: probe spectrometer y520 z350
+        type: move_pose
+        position: [0.58414, -0.18517, 0.350]
+        cartesian: false
+
+  probe_spectrometer_x160_y584_z300:
+    steps:
+      - name: probe spectrometer x160 y584 z300
+        type: move_pose
+        position: [0.16000, 0.58414, 0.300]
+        cartesian: false
+
+  probe_spectrometer_x200_y584_z300:
+    steps:
+      - name: probe spectrometer x200 y584 z300
+        type: move_pose
+        position: [0.20000, 0.58414, 0.300]
+        cartesian: false
+
+  probe_clean_x200_y250_z240:
+    steps:
+      - name: probe clean x-200 y250 z240
+        type: move_pose
+        position: [-0.200, 0.250, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_clean_x100_y250_z240:
+    steps:
+      - name: probe clean x-100 y250 z240
+        type: move_pose
+        position: [-0.100, 0.250, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_clean_x000_y250_z240:
+    steps:
+      - name: probe clean x000 y250 z240
+        type: move_pose
+        position: [0.000, 0.250, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  probe_clean_x100pos_y250_z240:
+    steps:
+      - name: probe clean x100 y250 z240
+        type: move_pose
+        position: [0.100, 0.250, 0.240]
+        orientation_xyzw: [0.0, 0.0, 0.707107, 0.707107]
+        cartesian: false
+
+  laser_pick_example:
+    steps:
+      - name: wait for laser pose
+        type: wait_for_pose
+        source: laser_object
+        timeout_sec: 3.0
+
+      - name: move above laser object
+        type: move_pose
+        source: laser_object
+        offset_xyz: [0.0, 0.0, 0.12]
+        cartesian: false
+
+  rs485_state_then_pick:
+    steps:
+      - name: wait for external object-ready signal
+        type: wait_for_signal
+        topic: /workflow/external_signal
+        signal_name: station_state
+        code: 1
+        active: true
+        timeout_sec: 30.0
+
+      - name: run normal cup pick after signal
+        type: wait_for_pose
+        source: cup
+        timeout_sec: 5.0
+
+      - name: open gripper
+        type: gripper
+        position: 0.050
+        duration_sec: 2.0
+
+      - name: move to pre-grasp
+        type: move_pose
+        source: cup
+        offset_xyz: [0.04, 0.0, 0.15]
+        cartesian: false
+
+  fixed_large_motion_demo:
+    steps:
+      - name: close gripper before large motion
+        type: gripper
+        position: 0.002
+        duration_sec: 1.2
+
+      - name: move to large right-up pose
+        type: move_joint
+        positions: [0.120, 0.160, 0.160, 0.000, 0.000, 0.320]
+
+      - name: open gripper at right-up pose
+        type: gripper
+        position: 0.050
+        duration_sec: 1.5
+
+      - name: settle after open
+        type: sleep
+        seconds: 0.3
+
+      - name: move to large left-up pose
+        type: move_joint
+        positions: [-0.080, 0.140, 0.140, 0.000, 0.000, -0.220]
+
+      - name: close gripper at left-up pose
+        type: gripper
+        position: 0.002
+        duration_sec: 1.5
+
+      - name: move to center raised pose
+        type: move_joint
+        positions: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+      - name: return near home
+        type: move_joint
+        positions: [0.000, 0.010, 0.010, 0.000, 0.000, 0.000]
+
+      - name: final settle
+        type: sleep
+        seconds: 0.5
+
+  gripper_open:
+    steps:
+      - name: open gripper
+        type: gripper
+        position: 0.050
+        duration_sec: 1.2
+
+  gripper_close:
+    steps:
+      - name: close gripper
+        type: gripper
+        position: 0.002
+        duration_sec: 1.2
+
+  arm_home:
+    steps:
+      - name: return near home
+        type: move_joint
+        positions: [0.000, 0.010, 0.010, 0.000, 0.000, 0.000]
+
+  visible_motion_check:
+    steps:
+      - name: move to outlet 1 approach
+        type: move_pose
+        position: [-0.02500, -0.28853, 0.180]
+        cartesian: false
+
+      - name: open gripper
+        type: gripper
+        position: 0.050
+        duration_sec: 1.2
+
+      - name: move to outlet 2 approach
+        type: move_pose
+        position: [0.15500, -0.28853, 0.180]
+        cartesian: false
+
+      - name: close gripper
+        type: gripper
+        position: 0.002
+        duration_sec: 1.2
+
+      - name: return near home
+        type: move_joint
+        positions: [0.000, 0.010, 0.010, 0.000, 0.000, 0.000]
+
+

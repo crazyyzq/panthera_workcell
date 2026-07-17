@@ -1,0 +1,65 @@
+laser_distance_node:
+  ros__parameters:
+    # B1S-3588 RS485 ports from the manual include /dev/ttyS3, /dev/ttyS4,
+    # /dev/ttyS7 and /dev/ttyS8. The board controls RS485 direction itself.
+    port: /dev/ttyS4
+    baudrate: 9600
+    timeout_ms: 200
+    slave_id: 1
+
+    # Laser manual: distance is Modbus RTU function 0x04, register 0x0000,
+    # quantity 2 registers. The manual does not specify numeric encoding, so
+    # decode_mode and scale are configurable.
+    distance_register: 0
+    # Tested with the 120..280 mm sensor on /dev/ttyS4:
+    # raw registers 0x0000 0x05BC => 1468 * 0.1 = 146.8 mm.
+    decode_mode: uint32_abcd
+    scale: 0.1
+    # Keep the published value equal to the decoded sensor value. Use
+    # laser_offset_mm launch argument only for temporary diagnostics.
+    offset_mm: 0.0
+    unit: mm
+    poll_rate_hz: 5.0
+    reconnect_interval_sec: 2.0
+    reopen_after_failures: 5
+
+    source: laser_displacement
+    frame_id: laser
+    distance_topic: /sensors/laser/distance
+
+    # Enable this only after measuring/calibrating the laser origin in base_link.
+    publish_pose: false
+    pose_topic: /laser/object_pose
+    pose_frame_id: base_link
+    pose_axis: z
+    pose_origin_xyz: [0.0, 0.0, 0.0]
+
+rs485_state_signal_node:
+  ros__parameters:
+    port: /dev/ttyS3
+    baudrate: 9600
+    timeout_ms: 200
+    slave_id: 1
+    register_type: holding
+    register_address: 0
+    poll_rate_hz: 10.0
+    reconnect_interval_sec: 2.0
+    reopen_after_failures: 5
+
+    source: rs485_process_state
+    signal_name: station_state
+    active_nonzero: true
+    publish_topic: /workflow/external_signal
+
+    # Format: "code:workflow_name[:detail]".
+    # Set auto_run_workflow=true when the external machine should directly
+    # select and start a workflow. Otherwise workflow YAML can wait for the
+    # signal with type: wait_for_signal.
+    state_map:
+      - "1:cup_pick_place:object_ready"
+      - "2:laser_pick_example:laser_ready"
+    auto_run_workflow: false
+    trigger_on_change: true
+    dry_run: false
+    workflow_service: /run_workflow
+    min_trigger_interval_sec: 1.0

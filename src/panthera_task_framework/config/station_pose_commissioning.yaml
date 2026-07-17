@@ -1,0 +1,93 @@
+arm_group: arm
+base_frame: base_link
+hand_frame: gripper_center
+
+planning:
+  planning_time_sec: 10.0
+  planning_attempts: 10
+  velocity_scale: 0.08
+  acceleration_scale: 0.08
+
+# These are planning-only start states. The commissioning node sets MoveIt's
+# start state to these joint values and checks whether each station pose is
+# reachable. It never executes robot motion.
+safe_joint_poses:
+  home_safe: [0.000, 0.010, 0.010, 0.000, 0.000, 0.000]
+  center_raised: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+  right_raised: [0.120, 0.160, 0.160, 0.000, 0.000, 0.320]
+  left_raised: [-0.080, 0.140, 0.140, 0.000, 0.000, -0.220]
+
+orientations:
+  spectrometer_normal:
+    rpy: [0.0, 0.0, 0.0]
+  outlet_yaw_pos90:
+    rpy: [0.0, 0.0, -1.5708]
+  outlet_yaw_neg90:
+    rpy: [0.0, 0.0, 1.5708]
+  yaw_180:
+    rpy: [0.0, 0.0, 3.1416]
+  clean_yaw_neg90:
+    rpy: [0.0, 0.0, 1.5708]
+  clean_dump_yaw_neg90:
+    rpy: [0.0, 1.5708, 1.5708]
+
+targets:
+  - name: outlet_1_approach
+    station: OUTLET_1
+    xyz: [-0.02500, -0.42853, 0.180]
+    orientations: [outlet_yaw_pos90, outlet_yaw_neg90, spectrometer_normal, yaw_180]
+
+  - name: outlet_1_grip_z060
+    station: OUTLET_1
+    xyz: [-0.02500, -0.42853, 0.060]
+    orientations: [outlet_yaw_pos90, outlet_yaw_neg90, spectrometer_normal, yaw_180]
+
+  - name: outlet_1_grip_z100
+    station: OUTLET_1
+    xyz: [-0.02500, -0.42853, 0.140]
+    orientations: [outlet_yaw_pos90, outlet_yaw_neg90, spectrometer_normal, yaw_180]
+
+  - name: outlet_2_approach
+    station: OUTLET_2
+    xyz: [0.15500, -0.42853, 0.180]
+    orientations: [outlet_yaw_pos90, outlet_yaw_neg90, spectrometer_normal, yaw_180]
+
+  - name: outlet_2_grip_z060
+    station: OUTLET_2
+    xyz: [0.15500, -0.42853, 0.060]
+    orientations: [outlet_yaw_pos90, outlet_yaw_neg90, spectrometer_normal, yaw_180]
+
+  - name: spectrometer_reference_approach_y584
+    station: SPECTROMETER
+    xyz: [0.58414, -0.12103, 0.370]
+    orientations: [spectrometer_normal, outlet_yaw_pos90, outlet_yaw_neg90, yaw_180]
+
+  - name: spectrometer_reference_y584
+    station: SPECTROMETER
+    xyz: [0.58414, -0.12103, 0.290]
+    orientations: [spectrometer_normal, outlet_yaw_pos90, outlet_yaw_neg90, yaw_180]
+
+  - name: spectrometer_probe_y540_z300
+    station: SPECTROMETER
+    xyz: [0.58414, -0.16517, 0.300]
+    orientations: [spectrometer_normal, outlet_yaw_pos90, outlet_yaw_neg90, yaw_180]
+
+  - name: spectrometer_probe_y520_z250
+    station: SPECTROMETER
+    xyz: [0.58414, -0.18517, 0.340]
+    orientations: [spectrometer_normal, outlet_yaw_pos90, outlet_yaw_neg90, yaw_180]
+
+  - name: clean_approach
+    station: CLEAN
+    xyz: [0.250, 0.400, 0.240]
+    orientations: [clean_yaw_neg90, spectrometer_normal, outlet_yaw_pos90, yaw_180]
+
+  - name: clean_dump
+    station: CLEAN
+    xyz: [0.250, 0.400, 0.100]
+    orientations: [clean_dump_yaw_neg90]
+
+  - name: clean_probe_x000
+    station: CLEAN
+    xyz: [0.000, 0.250, 0.240]
+    orientations: [clean_yaw_neg90, spectrometer_normal, outlet_yaw_pos90, yaw_180]

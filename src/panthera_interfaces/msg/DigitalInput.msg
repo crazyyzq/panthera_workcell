@@ -1,0 +1,9 @@
+std_msgs/Header header
+string source
+string name
+uint32 gpio
+bool value
+bool active
+bool changed
+string active_mode
+string status

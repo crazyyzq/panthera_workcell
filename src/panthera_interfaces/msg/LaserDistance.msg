@@ -1,0 +1,9 @@
+std_msgs/Header header
+string source
+uint8 slave_id
+bool valid
+float64 distance_mm
+float64 distance_m
+uint16[] raw_registers
+string decode_mode
+string status

@@ -1,0 +1,556 @@
+# 光谱检测流水线机械臂主配置
+#
+# 坐标约定:
+# - 所有 xyz 坐标默认都是 base_link 坐标系下 gripper_center 的目标点。
+# - xyz 单位是 m，不是 mm。例: 100 mm 要写 0.100。
+# - rpy 单位是 rad。90 deg = 1.5708，180 deg = 3.14159265。
+# - 姿态 rpy 的顺序是 roll, pitch, yaw。
+# - 本文件里的“杯子中心坐标”最终都要换算成 gripper_center 目标点；如果夹爪中心和杯子中心有固定偏差，
+#   优先直接把对应 named_poses.*.xyz 调到实际能夹住的位置。
+#
+# 生效方式:
+# - 修改本文件后，优先在 HMI 点位页点击“重载生效”；必要时再重启 spectrometer_cell 节点。
+# - 如果 HMI 的“重载生效”按钮是灰色，说明当前状态机节点还没加载 reload 服务；重启状态机或一键启动后再用。
+# - HMI 上的速度滑块只影响运行时速度倍率，不会改写本文件。
+# - 微调点位时建议每次只改 0.005 到 0.020 m，先用单步或 pose_tuner 验证，再跑全流程。
+#
+# 最常改的地方:
+# - 出料口取杯/放回点: named_poses.outlet_1_* 和 named_poses.outlet_2_*。
+# - 光谱仪基准点: named_poses.spectrometer_base。
+# - 光谱仪随激光变化的轴和换算: spectrometer_axis。
+# - 清理/倒料点: named_poses.clean_* 和 cleaning。
+# - 毛刷清洁点: named_poses.clean_brush 和 cleaning.brush_*。
+# - 取杯后抬高避障: motion.outlet_transfer_z。
+# - 中间过渡高度/绕障偏移: motion.outlet_*、motion.spectrometer_*、motion.clean_*。
+#
+# 现场调试推荐顺序:
+# 1. 先确认 HMI 上 gripper_center 实时坐标和 base_link 坐标方向正确。
+# 2. 调 outlet_1_pick / outlet_2_pick，只让夹爪能稳定夹杯。
+# 3. 调 outlet_1_return / outlet_2_return，让杯子能准确放回原位置。
+# 4. 调 spectrometer_base，并用激光 150mm 作为基准确认放杯点。
+# 5. 移动光谱仪后检查 spectrometer_axis.axis_scale_m_per_mm 正负方向。
+# 6. 调 clean_dump，再调 cleaning.pour_angle_rad / shake_*。
+# 7. 单点都通过后，再跑完整循环。
+#
+# 常见现象怎么改:
+# - 夹取左右偏: 改对应 named_poses.*_pick.xyz 的 X/Y。
+# - 夹取高度不对: 优先改 motion.outlet_grip_z；如果两个出料口高度不同，再单独改 named_poses.*_pick.xyz[2]。
+# - 取杯后被挡: 改高 motion.outlet_transfer_z。
+# - 进出料口路线撞挡板: 调 motion.outlet_approach_y、motion.outlet_near_y、motion.outlet_high_z。
+# - 光谱仪目标随激光反方向跑: 只改 spectrometer_axis.axis_scale_m_per_mm 的正负号。
+# - 放杯准、取杯不准: 单独调 spectrometer_axis.pick_offset_xyz。
+# - 取杯准、放杯不准: 单独调 spectrometer_axis.place_offset_xyz。
+# - 倒料碰限位或不彻底: 调 cleaning.pour_angle_rad、shake_angle_rad、shake_count。
+# - 毛刷清洁不到位: 调 named_poses.clean_brush 和 cleaning.brush_stroke_offset_xyz。
+
+loop:
+  # 状态机 tick 频率，单位 Hz。10Hz 足够，太高只会增加 CPU 占用。
+  tick_rate_hz: 10.0
+
+  # WAIT_DISCHARGE 状态下没有出料信号时，每隔多少秒打印一次等待提示。
+  # 这不是错误超时，程序会继续长期等待。
+  wait_discharge_soft_timeout_sec: 10.0
+
+  # 单个机械臂动作的最大等待时间，单位 s。动作规划或执行超过该时间会进入 ERROR。
+  action_timeout_sec: 90.0
+
+  # 读取传感器的最大等待时间，单位 s。激光/485/IO 超过该时间无数据会进入 ERROR。
+  sensor_timeout_sec: 5.0
+
+  # 发送光谱仪开始检测命令后的等待超时，单位 s。
+  spectrometer_start_timeout_sec: 10.0
+
+  # 等待光谱仪检测完成的超时，单位 s。
+  detection_timeout_sec: 180.0
+
+  # ERROR/ESTOP 后人工复位动作的超时，单位 s。
+  reset_timeout_sec: 30.0
+
+motion:
+  # ========== MoveIt 全局规划参数 ==========
+  # 这些参数影响所有机械臂动作。现场调点时通常不用改，除非规划经常失败或速度明显不合适。
+
+  # MoveIt 规划出来的机械臂基础速度比例，范围通常 0.01 到 1.0。
+  # 最终速度 = velocity_scale * HMI速度倍率，并会被代码限制在 0.01 到 1.0。
+  velocity_scale: 0.10
+
+  # MoveIt 规划出来的基础加速度比例，范围通常 0.01 到 1.0。
+  acceleration_scale: 0.10
+
+  # 单次 MoveIt 规划允许的时间，单位 s。复杂绕障规划可以适当加大。
+  planning_time_sec: 8.0
+
+  # MoveIt 规划尝试次数。规划偶尔失败时可加大，但会拖慢响应。
+  planning_attempts: 10
+
+  # 末端位置容差，单位 m。越小越精确，但越难规划成功。
+  goal_position_tolerance: 0.005
+
+  # 末端姿态容差，单位 rad。越小越严格。
+  goal_orientation_tolerance: 0.05
+
+  # 关节目标容差，单位 rad。
+  goal_joint_tolerance: 0.01
+
+  # ========== 笛卡尔规划参数 ==========
+  # 大范围移动使用普通 MoveIt pose 规划。
+  # 贴近杯口/光谱仪的最后下降和抬升段使用 Cartesian 直线规划，避免低位横移。
+
+  # 笛卡尔规划步长，单位 m。数值越小，直线下降/抬升采样越密；
+  # 太小会增加规划时间。
+  cartesian_eef_step: 0.005
+
+  # 笛卡尔规划跳变阈值。0.0 表示关闭跳变检查。
+  cartesian_jump_threshold: 0.0
+
+  # 笛卡尔路径最小成功比例。贴近杯口的直线段低于该比例会直接失败停流程。
+  cartesian_min_fraction: 0.95
+
+  # ========== 出料口路径参数 ==========
+  # 出料口取杯路径:
+  #   outlet_*_pick_approach 抬到上方高度
+  #   -> (pick.x, pick.y, 上方高度) 目标正上方
+  #   -> Cartesian 竖直下降到 (pick.x, pick.y, outlet_grip_z)
+  #   -> 夹爪闭合
+  #   -> Cartesian 竖直抬回目标正上方
+  #
+  # 出料口放回路径类似，只是目标点来自 outlet_*_return:
+  #   先到 return 正上方，再 Cartesian 竖直下降放杯，开夹爪后竖直抬起。
+  # 所以:
+  # - 水平位置不准: 改 named_poses.outlet_*_pick 或 outlet_*_return 的 xyz。
+  # - 整体进出口路径不好: 改这里的 outlet_approach_y / outlet_near_y / outlet_high_z。
+  # - 拿到杯子后被挡: 改 outlet_transfer_z。
+
+  # 出料口动作的旧绕障 Y 坐标，单位 m。
+  # 当前正式取杯/放回已经改成“目标正上方 -> Cartesian 竖直下降”，不再用低位 Y 向靠近。
+  # 该值主要保留给旧调试点/兼容配置。
+  outlet_approach_y: -0.35
+
+  # 出料口靠近杯子前的旧中间 Y 坐标，单位 m。
+  # 当前正式取杯/放回不再走低位 near_y 横移，保留给旧调试点/兼容配置。
+  outlet_near_y: -0.39
+
+  # 出料口旧高位过渡 Z，单位 m。
+  # 当前正式取杯/放回的目标正上方高度会取 outlet_transfer_z、outlet_high_z、
+  # outlet_grip_z+50mm、目标点Z+50mm 中的最大值。
+  outlet_high_z: 0.17
+
+  # 出料口夹取/放回时的 gripper_center Z，单位 m。
+  # 注意这不是杯子中心 Z，而是实际验证过的末端夹取高度。
+  outlet_grip_z: 0.16
+
+  # 取到杯子后先抬升到这个 Z，再规划去光谱仪，单位 m。
+  # 有遮挡物时优先调高这里，例如 0.400。
+  outlet_transfer_z: 0.45
+
+  # ========== 光谱仪路径参数 ==========
+  # 光谱仪目标点不是固定点，由 spectrometer_axis 根据激光读数计算:
+  #   target = named_poses.spectrometer_base
+  #   target += place_offset_xyz 或 pick_offset_xyz
+  #   target[axis] += (laser_mm - axis_zero_laser_mm) * axis_scale_m_per_mm
+  #
+  # 放杯路径:
+  #   (target.x + spectrometer_approach_x_offset, target.y, spectrometer_high_z)
+  #   -> (target.x, target.y, spectrometer_high_z) 目标正上方
+  #   -> Cartesian 竖直下降到 target
+  #   -> 打开夹爪
+  #   -> Cartesian 竖直抬回目标正上方
+  #
+  # 取杯前会重新测激光，再按同样公式计算取杯点。
+
+  # 光谱仪前后退让的 X 偏移，单位 m。
+  # 放杯/取杯前先到 target.x + 该值的高位侧方点，再移动到目标正上方。
+  # 最后进入光谱仪目标点时只做 Cartesian 竖直下降，不再在目标高度横插。
+  # 当前为负值，表示从光谱仪目标点的 -X 方向接近。
+  spectrometer_approach_x_offset: -0.14
+
+  # 光谱仪区域高位过渡 Z，单位 m。
+  # 光谱仪放杯后等待、取杯后抬升都使用这个高度。
+  spectrometer_high_z: 0.45
+
+  # ========== 清理/倒料路径参数 ==========
+  # 清理路径:
+  #   clean_approach
+  #   -> (clean_dump.x, clean_approach_y, clean_high_z)
+  #   -> (clean_dump.x, clean_approach_y, clean_pre_z)
+  #   -> (clean_dump.x, clean_dump.y, clean_ready_z)
+  #   -> clean_dump
+  #   -> wrist pour and shake
+  #   -> clean_brush
+  #   -> brush strokes
+  #   -> clean_ready
+  #   -> clean_approach_y / clean_high_z
+  #   -> clean_leave
+  #
+  # 倒料位置不准改 clean_dump；进入清理区容易碰，改下面 clean_* 过渡参数。
+
+  # 清理区域高位过渡 Z，单位 m。
+  clean_high_z: 0.2
+
+  # 清理区域前后退让 Y 坐标，单位 m。
+  # 进入清理点前先到该 Y，再到 clean_dump。
+  clean_approach_y: 0.2
+
+  # 清理区域倒料前的低位过渡 Z，单位 m。
+  clean_pre_z: 0.2
+
+  # 到达倒料点前的准备高度，单位 m。
+  clean_ready_z: 0.2
+
+  # 回安全关节位。数组顺序必须和 arm 规划组关节顺序一致，单位 rad。
+  # stop_workcell.sh 正常关闭前会尽量让机械臂回到这个安全位。
+  # 如果回零姿态不理想，只改这一行；不要把 named_poses 当作关节位使用。
+  safe_joint_pose: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
+
+gripper:
+  # 夹爪参数只控制位置轨迹，不等同于电机力矩。
+  # 如果“已经闭合但夹不紧”，先确认夹爪驱动器力矩/电流参数，再微调 close_position。
+
+  # 夹爪打开位置，单位 m 或控制器定义的位置单位。
+  open_position: 0.050
+
+  # 夹爪闭合位置，单位 m 或控制器定义的位置单位。
+  # 数值越小通常夹得越紧，但实际夹持力还受夹爪驱动器电流/力矩参数影响。
+  close_position: 0.000
+
+  # 打开夹爪轨迹时长，单位 s。
+  open_duration_sec: 1.5
+
+  # 闭合夹爪轨迹时长，单位 s。
+  close_duration_sec: 1.5
+
+simulation:
+  # true 表示只模拟流程，不驱动真实机械臂。
+  # 真实设备调试时通过 launch 参数或本文件改成 false。
+  enabled: true
+
+  # 模拟模式下是否自动周期性产生出料信号。
+  auto_generate_discharge: false
+
+  # 自动模拟出料间隔，单位 s。
+  auto_discharge_interval_sec: 3.0
+
+  # 模拟光谱仪检测耗时，单位 s。
+  fake_detection_time_sec: 2.0
+
+  # 模拟每个动作的延迟，单位 ms。
+  action_delay_ms: 250
+
+  # 模拟动作随机失败概率，0.0 表示不随机失败。
+  random_failure_rate: 0.0
+
+  # 随机种子，便于复现模拟测试。
+  random_seed: 42
+
+outlets:
+  # 这里是“出料口编号 -> 点位名称”的绑定表，现场调坐标时通常不改这里。
+  # 只有新增 OUTLET_3、改信号名、或换一套 named_poses 名字时才改。
+
+  # 出料口 1 的流程绑定。
+  OUTLET_1:
+    # 传感器层识别的出料完成信号名，后续接 RS485/IO 时用它做映射。
+    discharge_signal: outlet_1_done
+
+    # 取杯接近点名称，必须存在于 named_poses。
+    pick_approach_pose: outlet_1_pick_approach
+
+    # 取杯目标点名称，必须存在于 named_poses。
+    pick_pose: outlet_1_pick
+
+    # 放回接近点名称，必须存在于 named_poses。
+    return_approach_pose: outlet_1_return_approach
+
+    # 放回目标点名称，必须存在于 named_poses。
+    return_pose: outlet_1_return
+
+  # 出料口 2 的流程绑定。后续增加 OUTLET_3 时，按同样结构扩展。
+  OUTLET_2:
+    discharge_signal: outlet_2_done
+    pick_approach_pose: outlet_2_pick_approach
+    pick_pose: outlet_2_pick
+    return_approach_pose: outlet_2_return_approach
+    return_pose: outlet_2_return
+
+spectrometer_axis:
+  # ========== 光谱仪激光换算 ==========
+  # 这个段落决定“激光读数 -> 光谱仪实际目标坐标”。
+  # 注意: 放杯前测一次，取杯前还会再测一次；检测后光谱仪停在哪里，就按新读数取杯。
+
+  # 激光传感器有效量程，单位 mm。读数超出范围会判定无效并进入 ERROR。
+  laser_min_mm: 120.0
+  laser_max_mm: 280.0
+
+  # 光谱仪基准坐标对应的激光距离，单位 mm。
+  # 当前设定: 激光读数 150mm 时，使用 named_poses.spectrometer_base 的坐标。
+  axis_zero_laser_mm: 150.0
+
+  # 激光每变化 1mm，目标坐标沿 axis 变化多少 m。
+  # 0.001 表示激光增加 1mm，目标坐标增加 0.001m。
+  # 如果方向反了，把它改成 -0.001。
+  axis_scale_m_per_mm: 0.001
+
+  # 光谱仪基础放杯点名称，必须存在于 named_poses。
+  base_pose_name: spectrometer_base
+
+  # 光谱仪移动轴。只能填 x/y/z。你当前场景是 Y 轴变化。
+  axis: x
+
+  # 放杯点相对 spectrometer_base 的补偿，单位 m。
+  # 用于只想微调放杯，不影响取杯基准的情况。
+  # 例: 放杯偏右 3mm，就按实际坐标方向改对应轴 0.003 或 -0.003。
+  place_offset_xyz: [0.0, 0.0, 0.0]
+
+  # 取杯点相对 spectrometer_base 的补偿，单位 m。
+  # 检测后会重新测激光，再加这个补偿，不会复用放杯前位置。
+  # 当前取杯比放杯低 20mm，避免光谱仪上放杯高度偏高导致夹爪抓不到。
+  pick_offset_xyz: [0.0, 0.0, -0.02]
+
+cleaning:
+  # ========== 倒料动作 ==========
+  # clean_approach / clean_dump / clean_leave 是空间点位。
+  # pour_* / shake_* 是到达 clean_dump 之后，第 6 轴附近执行的倒料动作参数。
+
+  # 清理区进入姿态名称，必须存在于 named_poses。
+  approach_pose: clean_approach
+
+  # 倒料目标姿态名称，必须存在于 named_poses。
+  dump_pose: clean_dump
+
+  # 用哪个关节执行倒料翻转。5 通常对应第 6 轴，单位是关节数组下标，从 0 开始。
+  # 不确定时不要改；改错会导致其他关节大幅翻转。
+  pour_wrist_joint_index: 5
+
+  # 倒料旋转方向: -1=关节负向，1=关节正向，0=按剩余行程自动选择。
+  # 当前设备倒料应走第 6 轴负向；若现场仍相反，在前端改成 1。
+  pour_direction: -1
+
+  # 倒料翻转角度，单位 rad。
+  # URDF/硬件限位如果达不到 180deg，代码会顶到可达限位。
+  pour_angle_rad: 3.141593
+
+  # 倒料翻转动作速度比例。想倒料更快可以加大，但要注意限位冲击。
+  # 只影响倒料关节动作，不影响搬运路径速度。
+  pour_velocity_scale: 0.5
+
+  # 倒料翻转动作加速度比例。
+  pour_acceleration_scale: 0.1
+
+  # 翻到倒料角度后的停留时间，单位 s。
+  pour_hold_sec: 0.15
+
+  # 倒料后的摆动次数。
+  shake_count: 1
+
+  # 每次摆动的角度幅度，单位 rad。
+  shake_angle_rad: 0.4
+
+  # 每次摆动后的短暂停留，单位 s。
+  shake_hold_sec: 0.05
+
+  # 是否在倒料抖动后进入毛刷点位做二次清洁。
+  brush_enabled: true
+
+  # 毛刷清洁中心点名称，必须存在于 named_poses。
+  # 这是杯子实际进入毛刷后的清洁中心，不再作为从外部直接规划进入的点。
+  brush_pose: clean_brush
+
+  # 毛刷靠近/进入/退出动作的速度比例，只影响毛刷段，不影响倒料和搬运路径。
+  brush_velocity_scale: 0.04
+
+  # 毛刷靠近/进入/退出动作的加速度比例。
+  brush_acceleration_scale: 0.04
+
+  # 毛刷外侧对准点偏移，单位 m，坐标系是 clean_brush 姿态下的 gripper_center 局部坐标，
+  # 不是 base_link 世界坐标。
+  # 进入毛刷前先到 clean_brush + local_offset，让杯子中心先按夹爪/杯口方向对准毛刷；
+  # 然后 Cartesian 平移进入 clean_brush，清洁完再沿同一条局部方向原路退出。
+  # 当前 [0, 0, -0.04] 表示沿夹爪平面法向，也就是 gripper_center 局部 -Z，
+  # 退 40mm 到毛刷近外侧；再沿局部 +Z 笛卡尔平移套入毛刷。
+  # 如果现场方向正反相反，只改第三个数的正负号，不要再改到局部 X/Y。
+  brush_approach_offset_xyz: [0.0, 0.0, -0.04]
+
+  # 毛刷远外侧安全点，单位 m，坐标系同样是 clean_brush 姿态下的 gripper_center 局部坐标。
+  # 进入时先到此点，再沿直线靠近 brush_approach_offset_xyz；退出时严格反向，
+  # 先退出到 brush_approach_offset_xyz，再缩回此点，之后才允许夹爪/第六轴回正。
+  # 应和 brush_approach_offset_xyz 同方向，且距离更大；当前 80mm 是该姿态经 IK 验证的可达远外侧点。
+  brush_upright_retreat_offset_xyz: [0.0, 0.0, -0.08]
+
+  # 毛刷内部往复次数。每次会在已经进入毛刷后，从中心点分别 Cartesian 移动到 -offset 和 +offset。
+  # offset 同样按 gripper_center 局部坐标解释。
+  # 如果只需要“平移进去停留一下再平移出来”，把 offset 保持为 [0,0,0] 即可。
+  brush_stroke_count: 1
+
+  # 毛刷内部往复偏移，单位 m，按 gripper_center 局部坐标解释。现场可按毛刷方向调整。
+  brush_stroke_offset_xyz: [0.0, 0.0, 0.0]
+
+  # 每个毛刷往复端点的短暂停留，单位 s。
+  brush_hold_sec: 1.0
+
+  # 杯子完全退出到 brush_upright_retreat_offset_xyz 后，电机继续转动的时间，单位 s。
+  # 这段结束后才发送停止字符，并且之后才允许第六轴/夹爪回正。
+  brush_motor_stop_delay_sec: 0.5
+
+  # ========== 清洁电机串口控制 ==========
+  # 杯子准备从毛刷外侧进入 clean_brush 前发送单个 ASCII 字符 '1'，不带换行；
+  # 杯子从 clean_brush 平移退出到外侧后发送单个 ASCII 字符 '0'，不带换行。
+  # 串口格式固定为 115200 8N1，即 8 数据位、1 停止位、无校验；
+  # device 建议使用 /dev/serial/by-id/... 稳定路径。
+  motor_serial_enabled: true
+  motor_serial_device: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+  motor_serial_baudrate: 115200
+  motor_start_byte: 49  # ASCII '1'
+  motor_stop_byte: 48   # ASCII '0'
+
+  # 清理完成后离开姿态名称，必须存在于 named_poses。
+  leave_pose: clean_leave
+
+named_poses:
+  # ========== 所有可调空间点位 ==========
+  # 每个 named pose 都是 gripper_center 在 base_link 下的目标位姿:
+  #   xyz: [X, Y, Z]，单位 m
+  #   rpy: [roll, pitch, yaw]，单位 rad
+  #
+  # 调点经验:
+  # - 每次只改一个方向，每次 0.005 到 0.020。
+  # - 先用 HMI 的点位调试 dry_run，再真实执行。
+  # - 如果路径到不了，先调高过渡高度，不要先大幅改姿态。
+  # - 出料口姿态当前 yaw=-1.5708；光谱仪当前 yaw=0；清理区当前 yaw=1.5708。
+
+  # 等待出料时机械臂可以停靠的中间位。
+  # 如果 WAIT_DISCHARGE 进入等待位失败，可以先调这个点。
+  outlet_wait_mid:
+    xyz: [0.03, -0.35, 0.19]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 1 取杯入口安全点。
+  # 这不是杯子正上方，而是进入出料口区域前的可规划停靠点。
+  # 真正夹取点在 outlet_1_pick；中间绕障点由 motion.outlet_* 生成。
+  # 如果去 OUTLET_1 前会擦到工装，优先调这个点和 motion.outlet_approach_y。
+  outlet_1_pick_approach:
+    xyz: [-0.03, -0.35, 0.17]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 1 取杯实际夹取点。
+  # 夹不住 OUTLET_1 的杯子，主要改这里的 xyz 和 rpy。
+  # 但高度若两个出料口一致，建议优先改 motion.outlet_grip_z。
+  outlet_1_pick:
+    xyz: [-0.03, -0.44, 0.17]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 1 放回入口/离开安全点。
+  # 放回 OUTLET_1 前的安全点。放回路径碰撞时调这里。
+  outlet_1_return_approach:
+    xyz: [-0.03, -0.41, 0.4]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 1 放回实际目标点。杯子必须回到原出料口时用这个点。
+  # 如果取杯准但放回偏，改这里，不要改 outlet_1_pick。
+  outlet_1_return:
+    xyz: [-0.03, -0.44, 0.17]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 2 取杯入口安全点。
+  # 如果去 OUTLET_2 前会擦到工装，优先调这个点和 motion.outlet_approach_y。
+  outlet_2_pick_approach:
+    xyz: [0.155, -0.35, 0.18]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 2 取杯实际夹取点。
+  # 夹不住 OUTLET_2 的杯子，主要改这里的 xyz 和 rpy。
+  outlet_2_pick:
+    xyz: [0.155, -0.42853, 0.14]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 2 放回入口/离开安全点。
+  # 放回 OUTLET_2 前的安全点。放回路径碰撞时调这里。
+  outlet_2_return_approach:
+    xyz: [0.155, -0.35, 0.4]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 出料口 2 放回实际目标点。
+  # 如果取杯准但放回偏，改这里，不要改 outlet_2_pick。
+  outlet_2_return:
+    xyz: [0.155, -0.42853, 0.14]
+    rpy: [0.0, 0.0, -1.5708]
+
+  # 光谱仪基准放杯/取杯点。
+  # 当激光读数等于 spectrometer_axis.axis_zero_laser_mm 时，目标点就是该点加 offset。
+  # 激光变化后，只沿 spectrometer_axis.axis 指定轴修正。
+  # 先在激光约 150mm 时调准这个点，再调 axis_scale_m_per_mm。
+  spectrometer_base:
+    xyz: [0.57, -0.12, 0.33]
+    rpy: [0.0, 0.0, 0.0]
+
+  # 光谱仪附近等待参考点。当前主要用于调试/人工移动，保留给后续流程扩展。
+  # 如果以后需要光谱仪检测等待姿态，可以用这个点。
+  spectrometer_wait_ref:
+    xyz: [0.44414, -0.12103, 0.45]
+    rpy: [0.0, 0.0, 0.0]
+
+  # 清理区接近点。
+  # 进入清理区前的安全点。若去倒料点路上碰撞，先调这里和 motion.clean_*。
+  clean_approach:
+    xyz: [0.0, 0.26, 0.3]
+    rpy: [0.0, 0.0, 1.5708]
+
+  # 清理区倒料点。
+  # 杯口应该在清理区上方合适位置；倒料翻转发生在到达此点之后。
+  # 倒料位置不准主要改这里，倒料角度不够再改 cleaning.pour_angle_rad。
+  clean_dump:
+    xyz: [0.2, 0.5, 0.2]
+    rpy: [0.0, 0.0, 1.5708]
+
+  # 清理区毛刷中心点。
+  # 倒料抖动完成后，流程会把 cleaning.brush_approach_offset_xyz 按 clean_brush 的夹爪姿态
+  # 转成 base_link 偏移，先到外侧对准点，再 Cartesian 平移进入 clean_brush，清洁后原路平移退出。
+  # 初始值放在 clean_dump 附近，现场要按毛刷实际中心位置在 HMI 点位页微调。
+  clean_brush:
+    xyz: [0.25, 0.66, 0.215]
+    rpy: [30.0, 0.0, 1.5708]
+
+  # 清理完成后的离开点。
+  # 倒完料后离开清理区的安全点。
+  clean_leave:
+    xyz: [0.15, 0.3, 0.45]
+    rpy: [0.0, 0.0, 1.5708]
+
+collision_objects:
+  # MoveIt 障碍物。当前全部 disabled，先跑通真实动作。
+  # 后续启用时要确保模型尺寸保守，否则会导致规划失败。
+  # 现场调试阶段如果规划莫名失败，先确认这里是否仍是 enabled: false。
+  conveyor:
+    enabled: false
+    type: box
+    frame_id: base_link
+    xyz: [0.080, -0.350, 0.020]
+    rpy: [0.0, 0.0, 0.0]
+    size_xyz: [0.900, 0.320, 0.040]
+
+  # 光谱仪主体障碍物。
+  spectrometer_body:
+    enabled: false
+    type: box
+    frame_id: base_link
+    xyz: [0.58414, -0.12103, 0.145]
+    rpy: [0.0, 0.0, 0.0]
+    size_xyz: [0.300, 0.250, 0.160]
+
+  # 出料口 1 杯子/治具障碍物。当前禁用，避免杯子自身碰撞阻塞调试。
+  outlet_1_fixture:
+    enabled: false
+    type: cylinder
+    frame_id: base_link
+    xyz: [-0.02500, -0.42853, 0.140]
+    rpy: [0.0, 0.0, 0.0]
+    radius: 0.0475
+    height: 0.055
+
+  # 出料口 2 杯子/治具障碍物。
+  outlet_2_fixture:
+    enabled: false
+    type: cylinder
+    frame_id: base_link
+    xyz: [0.15500, -0.42853, 0.140]
+    rpy: [0.0, 0.0, 0.0]
+    radius: 0.0475
+    height: 0.055

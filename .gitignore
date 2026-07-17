@@ -1,0 +1,38 @@
+# ROS 2 / colcon outputs
+/build/
+/install/
+/log/
+/Log/
+/validation_logs/
+
+# Runtime state
+/.runtime/
+/.last_*
+*.pid
+nohup.out
+
+# Generated and editor caches
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.cache/
+.vscode/
+.idea/
+*~
+*.swp
+*.swo
+
+# HMI and manual configuration backups (Git is the source of history)
+*.bak
+*.bak_*
+*.backup
+**/bakeup/
+
+# Exporter/build logs accidentally stored beside source
+**/export.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini

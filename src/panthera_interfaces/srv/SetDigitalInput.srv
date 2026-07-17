@@ -1,0 +1,11 @@
+# Mock/testing service for digital inputs. Real physical inputs cannot be driven
+# by software; GPIO nodes should reject this service unless they are using a
+# mock/simulation backend.
+string name
+bool active
+---
+bool success
+bool value
+bool active
+uint32 gpio
+string message

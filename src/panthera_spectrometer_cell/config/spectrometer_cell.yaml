@@ -149,19 +149,15 @@ motion:
   #   target += place_offset_xyz 或 pick_offset_xyz
   #   target[axis] += (laser_mm - axis_zero_laser_mm) * axis_scale_m_per_mm
   #
-  # 放杯路径:
-  #   (target.x + spectrometer_approach_x_offset, target.y, spectrometer_high_z)
-  #   -> (target.x, target.y, spectrometer_high_z) 目标正上方
+  # 精简后的放杯路径:
+  #   (target.x, target.y, spectrometer_high_z) 目标正上方
   #   -> Cartesian 竖直下降到 target
   #   -> 打开夹爪
   #   -> Cartesian 竖直抬回目标正上方
   #
   # 取杯前会重新测激光，再按同样公式计算取杯点。
 
-  # 光谱仪前后退让的 X 偏移，单位 m。
-  # 放杯/取杯前先到 target.x + 该值的高位侧方点，再移动到目标正上方。
-  # 最后进入光谱仪目标点时只做 Cartesian 竖直下降，不再在目标高度横插。
-  # 当前为负值，表示从光谱仪目标点的 -X 方向接近。
+  # 迁移兼容字段，精简路线已不再使用侧方 approach；不要在日常调点时修改。
   spectrometer_approach_x_offset: -0.14
 
   # 光谱仪区域高位过渡 Z，单位 m。
@@ -169,32 +165,22 @@ motion:
   spectrometer_high_z: 0.45
 
   # ========== 清理/倒料路径参数 ==========
-  # 清理路径:
-  #   clean_approach
-  #   -> (clean_dump.x, clean_approach_y, clean_high_z)
-  #   -> (clean_dump.x, clean_approach_y, clean_pre_z)
-  #   -> (clean_dump.x, clean_dump.y, clean_ready_z)
-  #   -> clean_dump
+  # 精简后的清理路径:
+  #   clean_dump 正上方的 clean_high_z
+  #   -> Cartesian 竖直下降到 clean_dump
   #   -> wrist pour and shake
   #   -> clean_brush
   #   -> brush strokes
-  #   -> clean_ready
-  #   -> clean_approach_y / clean_high_z
-  #   -> clean_leave
+  #   -> 回 clean_dump 正上方
   #
-  # 倒料位置不准改 clean_dump；进入清理区容易碰，改下面 clean_* 过渡参数。
+  # 倒料位置不准只改 clean_dump；正常流程不再维护多个等价中间点。
 
   # 清理区域高位过渡 Z，单位 m。
-  clean_high_z: 0.2
+  clean_high_z: 0.45
 
-  # 清理区域前后退让 Y 坐标，单位 m。
-  # 进入清理点前先到该 Y，再到 clean_dump。
+  # 以下三个是迁移兼容字段，精简路线不再使用。
   clean_approach_y: 0.2
-
-  # 清理区域倒料前的低位过渡 Z，单位 m。
   clean_pre_z: 0.2
-
-  # 到达倒料点前的准备高度，单位 m。
   clean_ready_z: 0.2
 
   # 回安全关节位。数组顺序必须和 arm 规划组关节顺序一致，单位 rad。
@@ -513,7 +499,7 @@ named_poses:
   # 初始值放在 clean_dump 附近，现场要按毛刷实际中心位置在 HMI 点位页微调。
   clean_brush:
     xyz: [0.25, 0.66, 0.215]
-    rpy: [30.0, 0.0, 1.5708]
+    rpy: [0.523599, 0.0, 1.5708]
 
   # 清理完成后的离开点。
   # 倒完料后离开清理区的安全点。

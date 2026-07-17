@@ -55,9 +55,18 @@ This file contains durable repository context and operating rules for future age
 - MoveIt and the new motion server use a `0.05 rad` start tolerance. Do not loosen it without measured encoder/repeatability evidence.
 - The spectrometer state machine calls robot actions synchronously, so its configured action timeout cannot interrupt a blocked action.
 - Real E-stop, outlet signals and spectrometer-complete integration are not fully wired; some paths still use manual/simulation services.
-- `src/panthera_spectrometer_cell/config/spectrometer_cell.yaml` contains `clean_brush.rpy[0]: 30.0` although the file declares radians. Confirm whether 30 degrees was intended before any brush motion.
+- The legacy `clean_brush` roll has been normalized from the invalid-looking `30.0 rad`
+  to `0.523599 rad` (30 degrees). This is an engineering assumption, not completed
+  physical validation; confirm brush direction at low speed before insertion.
 - Spectrometer sensor correction axis is inconsistent across historical docs/config (X versus Y). Confirm physical direction before enabling sensor mode.
 - HMI exposes full point/route CRUD for `motion_catalog.yaml`. Saves use schema checks, Motion Server compilation, atomic replacement and automatic rollback. The lower legacy state-machine parameter editor remains only during migration.
+- The optimized catalog has 15 points and 18 routes. Only 6 points carry the `tunable`
+  tag and appear in the normal HMI view; `advanced` hover/recovery points are hidden by
+  default. Do not reintroduce per-action approach/pre/near/retreat points unless measured
+  collision evidence requires them.
+- Normal station motion uses one hover directly above each process point and a strict
+  vertical final segment. Cross-station transfers should be continuous cached routes,
+  not sequences that stop at every intermediate sample.
 - Historical `.bak_*`, `bakeup/`, zip and export artifacts exist. Do not confuse them with canonical configuration.
 
 ## Build and validation
@@ -124,7 +133,7 @@ Runtime outputs belong in `build/`, `install/`, `log/`, `validation_logs/` and `
 
 ## Open confirmations required before hardware acceptance
 
-- Meaning/unit of the current `clean_brush` roll value.
+- Low-speed physical confirmation of the assumed 30-degree brush roll and insertion axis.
 - Final fixed spectrometer TCP and future sensor correction axis.
 - Physical E-stop, outlet-ready and spectrometer-done wiring/interfaces.
 - Approved production speed/acceleration and cycle-time target.

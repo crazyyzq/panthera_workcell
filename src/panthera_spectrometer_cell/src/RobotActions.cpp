@@ -411,12 +411,6 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
     return ActionResult::fail(
       "pickFromOutlet failed: missing pick pose " + outlet_config->pickPose);
   }
-  const auto configured_approach_pose = config_.findPose(outlet_config->pickApproachPose);
-  if (!configured_approach_pose) {
-    return ActionResult::fail(
-      "pickFromOutlet failed: missing pick approach pose " + outlet_config->pickApproachPose);
-  }
-
   const double overhead_z =
     std::max({
       config_.motion.outletTransferZ,
@@ -424,11 +418,6 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
       config_.motion.outletGripZ + 0.05,
       target_pose->xyz[2] + 0.05,
     });
-  const PoseConfig configured_approach_high =
-    poseWithNameAndZ(
-      *configured_approach_pose,
-      outlet_config->name + "_pick_configured_approach_high",
-      overhead_z);
   const PoseConfig above_grasp =
     poseWithNameXyz(
       *target_pose,
@@ -452,11 +441,6 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
       overhead_z);
 
   ActionResult result = openGripper();
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(configured_approach_high, "moveJ outlet pick configured approach high");
   if (!result.success) {
     return result;
   }
@@ -498,12 +482,6 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
     return ActionResult::fail(
       "returnCupToOutlet failed: missing return pose " + outlet_config->returnPose);
   }
-  const auto configured_approach_pose = config_.findPose(outlet_config->returnApproachPose);
-  if (!configured_approach_pose) {
-    return ActionResult::fail(
-      "returnCupToOutlet failed: missing return approach pose " + outlet_config->returnApproachPose);
-  }
-
   const double overhead_z =
     std::max({
       config_.motion.outletTransferZ,
@@ -511,11 +489,6 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
       config_.motion.outletGripZ + 0.05,
       target_pose->xyz[2] + 0.05,
     });
-  const PoseConfig configured_approach_high =
-    poseWithNameAndZ(
-      *configured_approach_pose,
-      outlet_config->name + "_return_configured_approach_high",
-      overhead_z);
   const PoseConfig above_return =
     poseWithNameXyz(
       *target_pose,
@@ -531,13 +504,7 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
       target_pose->xyz[1],
       config_.motion.outletGripZ);
 
-  ActionResult result =
-    moveToPoseJoint(configured_approach_high, "moveJ outlet return configured approach high");
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(above_return, "moveJ outlet return above target");
+  ActionResult result = moveToPoseJoint(above_return, "moveJ outlet return above target");
   if (!result.success) {
     return result;
   }
@@ -557,12 +524,7 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
     return result;
   }
 
-  result = moveToPoseCartesian(above_return, "cartesian lift from outlet return target");
-  if (!result.success) {
-    return result;
-  }
-
-  return moveToPoseJoint(configured_approach_high, "moveJ outlet return configured leave high");
+  return moveToPoseCartesian(above_return, "cartesian lift from outlet return target");
 }
 
 ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
@@ -583,13 +545,6 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     axis_position_mm,
     poseToString(target).c_str());
 
-  const PoseConfig approach_high =
-    poseWithNameXyz(
-      target,
-      "spectrometer_place_approach_high",
-      target.xyz[0] + config_.motion.spectrometerApproachXOffset,
-      target.xyz[1],
-      config_.motion.spectrometerHighZ);
   const PoseConfig above_place =
     poseWithNameAndZ(
       target,
@@ -597,19 +552,6 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
       std::max(config_.motion.spectrometerHighZ, target.xyz[2] + 0.05));
   const PoseConfig place =
     poseWithNameAndZ(target, "spectrometer_place_target", target.xyz[2]);
-  const PoseConfig wait_pose =
-    poseWithNameXyz(
-      target,
-      "spectrometer_wait",
-      target.xyz[0] + config_.motion.spectrometerApproachXOffset,
-      target.xyz[1],
-      config_.motion.spectrometerHighZ);
-
-  result = moveToPoseJoint(approach_high, "moveJ spectrometer place approach high");
-  if (!result.success) {
-    return result;
-  }
-
   result = moveToPoseJoint(above_place, "moveJ spectrometer place above target");
   if (!result.success) {
     return result;
@@ -630,12 +572,7 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     return result;
   }
 
-  result = moveToPoseCartesian(above_place, "cartesian lift from spectrometer place target");
-  if (!result.success) {
-    return result;
-  }
-
-  return moveToPoseJoint(wait_pose, "moveJ spectrometer wait after place");
+  return moveToPoseCartesian(above_place, "cartesian lift from spectrometer place target");
 }
 
 ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
@@ -656,13 +593,6 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
     axis_position_mm,
     poseToString(target).c_str());
 
-  const PoseConfig approach_high =
-    poseWithNameXyz(
-      target,
-      "spectrometer_pick_approach_high",
-      target.xyz[0] + config_.motion.spectrometerApproachXOffset,
-      target.xyz[1],
-      config_.motion.spectrometerHighZ);
   const PoseConfig above_pick =
     poseWithNameAndZ(
       target,
@@ -670,11 +600,6 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
       std::max(config_.motion.spectrometerHighZ, target.xyz[2] + 0.05));
   const PoseConfig pick =
     poseWithNameAndZ(target, "spectrometer_pick_target", target.xyz[2]);
-
-  result = moveToPoseJoint(approach_high, "moveJ spectrometer pick approach high");
-  if (!result.success) {
-    return result;
-  }
 
   result = moveToPoseJoint(above_pick, "moveJ spectrometer pick above target");
   if (!result.success) {
@@ -703,67 +628,22 @@ ActionResult RobotActions::cleanCup()
 {
   RCLCPP_INFO(logger_, "clean cup");
 
-  const auto approach_pose = config_.findPose(config_.cleaning.approachPose);
-  const auto ready_pose = config_.findPose(config_.cleaning.dumpPose);
-  const auto leave_pose = config_.findPose(config_.cleaning.leavePose);
-  if (!approach_pose || !ready_pose || !leave_pose) {
-    return ActionResult::fail("clean cup failed: missing clean approach/dump/leave pose");
+  const auto dump_pose = config_.findPose(config_.cleaning.dumpPose);
+  if (!dump_pose) {
+    return ActionResult::fail("clean cup failed: missing clean dump pose");
   }
 
-  const PoseConfig approach_high =
-    poseWithNameXyz(
-      *ready_pose,
-      "clean_approach_high",
-      ready_pose->xyz[0],
-      config_.motion.cleanApproachY,
-      config_.motion.cleanHighZ);
-  const PoseConfig pre_clean =
-    poseWithNameXyz(
-      *ready_pose,
-      "clean_pre",
-      ready_pose->xyz[0],
-      config_.motion.cleanApproachY,
-      config_.motion.cleanPreZ);
-  const PoseConfig ready =
-    poseWithNameAndZ(*ready_pose, "clean_ready_high", config_.motion.cleanReadyZ);
+  const PoseConfig hover =
+    poseWithNameAndZ(*dump_pose, "clean_hover", config_.motion.cleanHighZ);
   const PoseConfig dump =
-    poseWithNameAndZ(*ready_pose, "clean_dump", ready_pose->xyz[2]);
-  const PoseConfig retreat =
-    poseWithNameXyz(
-      *ready_pose,
-      "clean_retreat_pre",
-      ready_pose->xyz[0],
-      config_.motion.cleanApproachY,
-      config_.motion.cleanPreZ);
-  const PoseConfig retreat_high =
-    poseWithNameXyz(
-      *ready_pose,
-      "clean_retreat_high",
-      ready_pose->xyz[0],
-      config_.motion.cleanApproachY,
-      config_.motion.cleanHighZ);
+    poseWithNameAndZ(*dump_pose, "clean_dump", dump_pose->xyz[2]);
 
-  ActionResult result = moveToPoseJoint(*approach_pose, "moveJ clean configured approach");
+  ActionResult result = moveToPoseJoint(hover, "moveJ clean hover");
   if (!result.success) {
     return result;
   }
 
-  result = moveToPoseJoint(approach_high, "moveJ clean approach high");
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(pre_clean, "moveJ clean pre");
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(ready, "moveJ clean ready high");
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(dump, "moveJ clean dump");
+  result = moveToPoseCartesian(dump, "cartesian descend clean dump");
   if (!result.success) {
     return result;
   }
@@ -778,22 +658,7 @@ ActionResult RobotActions::cleanCup()
     return result;
   }
 
-  result = moveToPoseJoint(ready, "moveJ clean back to ready");
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(retreat, "moveJ clean retreat pre");
-  if (!result.success) {
-    return result;
-  }
-
-  result = moveToPoseJoint(retreat_high, "moveJ clean retreat high");
-  if (!result.success) {
-    return result;
-  }
-
-  return moveToPoseJoint(*leave_pose, "moveJ clean configured leave");
+  return moveToPoseJoint(hover, "moveJ clean hover after cleaning");
 }
 
 ActionResult RobotActions::brushCleanCup()

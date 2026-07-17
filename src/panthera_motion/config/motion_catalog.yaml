@@ -1,55 +1,466 @@
 schema_version: 1
-
 robot:
   group: arm
   base_frame: base_link
   tool_frame: gripper_center
-  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
-  # Deterministic IK seed used only when a pose point has no explicit ik_seed.
-  default_ik_seed: [0.0, 0.18, 0.18, 0.0, 0.0, 0.0]
-
+  joint_names:
+  - joint1
+  - joint2
+  - joint3
+  - joint4
+  - joint5
+  - joint6
+  default_ik_seed:
+  - 0.0
+  - 0.18
+  - 0.18
+  - 0.0
+  - 0.0
+  - 0.0
 defaults:
-  # Compile conservative base trajectories once. Runtime speed_scale may only slow
-  # these trajectories down (0.10 .. 1.0), never exceed the compiled limits.
-  velocity_scale: 0.10
-  acceleration_scale: 0.10
+  velocity_scale: 0.2
+  acceleration_scale: 0.15
   joint_step_rad: 0.05
   cartesian_step_m: 0.005
   max_joint_jump_rad: 0.35
   max_lateral_error_m: 0.001
-  ik_timeout_sec: 0.10
-  ik_attempts: 10
-
+  ik_timeout_sec: 0.1
+  ik_attempts: 20
 points:
-  # Initial catalog contains only the two previously documented commissioning
-  # joint poses. It is intentionally safe to compile without guessing TCP/IK
-  # branches. Production TCP points will be migrated after they are recorded or
-  # their existing values are confirmed through dry-run commissioning.
   home_near:
-    description: Existing near-home joint pose from the legacy workflow.
-    joints: [0.0, 0.01, 0.01, 0.0, 0.0, 0.0]
-    tags: [system, recovery]
-
+    description: 机械臂近零位，仅用于维护和关机回位。
+    joints:
+    - 0.0
+    - 0.01
+    - 0.01
+    - 0.0
+    - 0.0
+    - 0.0
+    tags:
+    - system
+    - recovery
+    - advanced
   safe_joint_center:
-    description: Existing safe transition joint pose used by legacy commissioning.
-    joints: [0.0, 0.18, 0.18, 0.0, 0.0, 0.0]
-    tags: [system, recovery]
-
+    description: 已有安全关节位，仅用于初始化、复位和异常恢复。
+    joints:
+    - 0.0
+    - 0.18
+    - 0.18
+    - 0.0
+    - 0.0
+    - 0.0
+    tags:
+    - system
+    - recovery
+    - advanced
+  outlet_wait:
+    description: 两个出料口之间的高位等待点；正常循环不回安全关节位。
+    pose:
+      xyz:
+      - 0.03
+      - -0.35
+      - 0.45
+      rpy:
+      - 0.0
+      - 0.0
+      - -1.5708
+    ik_seed: safe_joint_center
+    tags:
+    - outlet
+    - safety
+    - advanced
+  outlet_1_hover:
+    description: 出料口1夹取点正上方的垂直进退点。
+    pose:
+      xyz:
+      - -0.03
+      - -0.44
+      - 0.45
+      rpy:
+      - 0.0
+      - 0.0
+      - -1.5708
+    ik_seed: outlet_wait
+    tags:
+    - outlet
+    - safety
+    - advanced
+  outlet_1_grasp:
+    description: 出料口1实际夹取/放回点；日常只调这个点。
+    pose:
+      xyz:
+      - -0.03
+      - -0.44
+      - 0.16
+      rpy:
+      - 0.0
+      - 0.0
+      - -1.5708
+    ik_seed: outlet_1_hover
+    tags:
+    - process
+    - outlet
+    - tunable
+  outlet_2_hover:
+    description: 出料口2夹取点正上方的垂直进退点。
+    pose:
+      xyz:
+      - 0.155
+      - -0.42853
+      - 0.45
+      rpy:
+      - 0.0
+      - 0.0
+      - -1.5708
+    ik_seed: outlet_wait
+    tags:
+    - outlet
+    - safety
+    - advanced
+  outlet_2_grasp:
+    description: 出料口2实际夹取/放回点；日常只调这个点。
+    pose:
+      xyz:
+      - 0.155
+      - -0.42853
+      - 0.16
+      rpy:
+      - 0.0
+      - 0.0
+      - -1.5708
+    ik_seed: outlet_2_hover
+    tags:
+    - process
+    - outlet
+    - tunable
+  spectrometer_hover:
+    description: 光谱仪工艺点正上方；放杯后直接在这里等待检测。
+    pose:
+      xyz:
+      - 0.57
+      - -0.12
+      - 0.45
+      rpy:
+      - 0.0
+      - 0.0
+      - 0.0
+    ik_seed: outlet_2_hover
+    tags:
+    - spectrometer
+    - safety
+    - advanced
+  spectrometer_place:
+    description: 固定工位光谱仪放杯点。
+    pose:
+      xyz:
+      - 0.57
+      - -0.12
+      - 0.33
+      rpy:
+      - 0.0
+      - 0.0
+      - 0.0
+    ik_seed: spectrometer_hover
+    tags:
+    - process
+    - spectrometer
+    - tunable
+  spectrometer_pick:
+    description: 光谱仪取杯点；当前比放杯点低20mm。
+    pose:
+      xyz:
+      - 0.57
+      - -0.12
+      - 0.31
+      rpy:
+      - 0.0
+      - 0.0
+      - 0.0
+    ik_seed: spectrometer_hover
+    tags:
+    - process
+    - spectrometer
+    - tunable
+  clean_hover:
+    description: 倒料点正上方的共享进退点，替代旧的四个重复过渡点。
+    pose:
+      xyz:
+      - 0.2
+      - 0.5
+      - 0.45
+      rpy:
+      - 0.0
+      - 0.0
+      - 1.5708
+    ik_seed: spectrometer_hover
+    tags:
+    - cleaning
+    - safety
+    - advanced
+  clean_dump:
+    description: 杯子倒料工艺点。
+    pose:
+      xyz:
+      - 0.2
+      - 0.5
+      - 0.2
+      rpy:
+      - 0.0
+      - 0.0
+      - 1.5708
+    ik_seed: clean_hover
+    tags:
+    - process
+    - cleaning
+    - tunable
+  brush_outer:
+    description: 毛刷远外侧安全点，由毛刷中心沿工具局部-Z退出80mm。
+    pose:
+      xyz:
+      - 0.21
+      - 0.66
+      - 0.145718
+      rpy:
+      - 0.523599
+      - 0.0
+      - 1.5708
+    ik_seed: clean_dump
+    tags:
+    - cleaning
+    - safety
+    - advanced
+  brush_entry:
+    description: 毛刷入口点，由毛刷中心沿工具局部-Z退出40mm。
+    pose:
+      xyz:
+      - 0.23
+      - 0.66
+      - 0.180359
+      rpy:
+      - 0.523599
+      - 0.0
+      - 1.5708
+    ik_seed: brush_outer
+    tags:
+    - cleaning
+    - safety
+    - advanced
+  brush_center:
+    description: 毛刷实际清洁中心；日常只调这个点。
+    pose:
+      xyz:
+      - 0.25
+      - 0.66
+      - 0.215
+      rpy:
+      - 0.523599
+      - 0.0
+      - 1.5708
+    ik_seed: brush_entry
+    tags:
+    - process
+    - cleaning
+    - tunable
 routes:
   home_to_safe_center:
     start: home_near
     velocity_scale: 0.08
     acceleration_scale: 0.08
     segments:
-      - name: move_to_safe_joint_center
-        type: joint
-        to: safe_joint_center
-
+    - name: recover_to_safe
+      type: joint
+      to: safe_joint_center
   safe_center_to_home:
     start: safe_joint_center
     velocity_scale: 0.08
     acceleration_scale: 0.08
     segments:
-      - name: move_to_home_near
-        type: joint
-        to: home_near
+    - name: maintenance_home
+      type: joint
+      to: home_near
+  safe_center_to_outlet_wait:
+    start: safe_joint_center
+    segments:
+    - name: enter_production_wait
+      type: joint
+      to: outlet_wait
+  outlet_wait_to_safe_center:
+    start: outlet_wait
+    segments:
+    - name: leave_production_area
+      type: joint
+      to: safe_joint_center
+  outlet_wait_to_outlet_1_grasp:
+    start: outlet_wait
+    segments:
+    - name: transfer_above_outlet_1
+      type: joint
+      to: outlet_1_hover
+    - name: vertical_pick_outlet_1
+      type: linear
+      to: outlet_1_grasp
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  outlet_wait_to_outlet_2_grasp:
+    start: outlet_wait
+    segments:
+    - name: transfer_above_outlet_2
+      type: joint
+      to: outlet_2_hover
+    - name: vertical_pick_outlet_2
+      type: linear
+      to: outlet_2_grasp
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  outlet_1_grasp_to_spectrometer_place:
+    start: outlet_1_grasp
+    segments:
+    - name: vertical_lift_outlet_1
+      type: linear
+      to: outlet_1_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: transfer_to_spectrometer
+      type: joint
+      to: spectrometer_hover
+    - name: vertical_place_spectrometer
+      type: linear
+      to: spectrometer_place
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  outlet_2_grasp_to_spectrometer_place:
+    start: outlet_2_grasp
+    segments:
+    - name: vertical_lift_outlet_2
+      type: linear
+      to: outlet_2_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: transfer_to_spectrometer
+      type: joint
+      to: spectrometer_hover
+    - name: vertical_place_spectrometer
+      type: linear
+      to: spectrometer_place
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  spectrometer_place_to_hover:
+    start: spectrometer_place
+    segments:
+    - name: vertical_leave_after_place
+      type: linear
+      to: spectrometer_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  spectrometer_hover_to_pick:
+    start: spectrometer_hover
+    segments:
+    - name: vertical_pick_spectrometer
+      type: linear
+      to: spectrometer_pick
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  spectrometer_pick_to_clean_dump:
+    start: spectrometer_pick
+    segments:
+    - name: vertical_lift_spectrometer
+      type: linear
+      to: spectrometer_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: transfer_to_cleaning
+      type: joint
+      to: clean_hover
+    - name: vertical_enter_dump
+      type: linear
+      to: clean_dump
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  clean_dump_to_brush_entry:
+    start: clean_dump
+    velocity_scale: 0.1
+    acceleration_scale: 0.08
+    segments:
+    - name: align_outside_brush
+      type: joint
+      to: brush_outer
+    - name: approach_brush_entry
+      type: linear
+      to: brush_entry
+  brush_entry_to_center:
+    start: brush_entry
+    velocity_scale: 0.06
+    acceleration_scale: 0.06
+    segments:
+    - name: insert_into_brush
+      type: linear
+      to: brush_center
+  brush_center_to_outer:
+    start: brush_center
+    velocity_scale: 0.06
+    acceleration_scale: 0.06
+    segments:
+    - name: exit_brush_center
+      type: linear
+      to: brush_entry
+    - name: retract_from_brush
+      type: linear
+      to: brush_outer
+  clean_hover_to_outlet_1_return:
+    start: clean_hover
+    segments:
+    - name: transfer_above_outlet_1
+      type: joint
+      to: outlet_1_hover
+    - name: vertical_return_outlet_1
+      type: linear
+      to: outlet_1_grasp
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  clean_hover_to_outlet_2_return:
+    start: clean_hover
+    segments:
+    - name: transfer_above_outlet_2
+      type: joint
+      to: outlet_2_hover
+    - name: vertical_return_outlet_2
+      type: linear
+      to: outlet_2_grasp
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  outlet_1_return_to_wait:
+    start: outlet_1_grasp
+    segments:
+    - name: vertical_leave_outlet_1
+      type: linear
+      to: outlet_1_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: return_to_shared_wait
+      type: joint
+      to: outlet_wait
+  outlet_2_return_to_wait:
+    start: outlet_2_grasp
+    segments:
+    - name: vertical_leave_outlet_2
+      type: linear
+      to: outlet_2_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: return_to_shared_wait
+      type: joint
+      to: outlet_wait

@@ -249,11 +249,12 @@
         </div>
       </div>
       <div class="point-config-alert">
-        点位或路线保存时会先做引用校验，再由 Motion Server 完整编译；编译失败会自动恢复旧文件和旧缓存，不会移动机械臂。
+        日常只需调整 6 个工艺点。位置用毫米、姿态用角度填写；安全过渡点和路线放在高级设置中。保存会完整编译校验，失败自动回滚且不会移动机械臂。
       </div>
       <div class="point-config-grid">
         <div class="point-config-list">
-          <div class="section-title">points</div>
+          <div class="section-title">工艺点位</div>
+          <label class="catalog-filter"><input id="motionShowAdvancedPoints" type="checkbox"> 显示安全/维护点</label>
           <select id="motionPointSelect" size="10"></select>
           <div class="point-config-actions">
             <button id="motionPointAdd" class="cmd neutral compact" type="button">新增</button>
@@ -261,19 +262,34 @@
           </div>
         </div>
         <div class="point-config-editor">
-          <div class="section-title">点位定义（JSON）</div>
-          <textarea id="motionPointEditor" rows="14" spellcheck="false"></textarea>
+          <div class="section-title">当前工艺点</div>
+          <div class="pose-edit-title" id="motionPointTitle">未选择点位</div>
+          <div id="motionPointDescription" class="catalog-point-description">--</div>
+          <div class="point-input-grid catalog-pose-inputs">
+            <label><span>X mm</span><input id="motionPointX" type="number" step="1"></label>
+            <label><span>Y mm</span><input id="motionPointY" type="number" step="1"></label>
+            <label><span>Z mm</span><input id="motionPointZ" type="number" step="1"></label>
+            <label><span>Roll °</span><input id="motionPointRoll" type="number" step="1"></label>
+            <label><span>Pitch °</span><input id="motionPointPitch" type="number" step="1"></label>
+            <label><span>Yaw °</span><input id="motionPointYaw" type="number" step="1"></label>
+          </div>
+          <div id="motionPointTags" class="point-config-hint">分类: --</div>
           <div id="motionPointReferences" class="point-config-hint">引用: --</div>
+          <details class="catalog-advanced-editor">
+            <summary>高级：原始点位 JSON / IK 种子</summary>
+            <textarea id="motionPointEditor" rows="14" spellcheck="false"></textarea>
+          </details>
         </div>
-        <div class="point-config-list">
-          <div class="section-title">routes</div>
+        <details class="point-config-list catalog-route-editor">
+          <summary>高级：固定路线结构（一般无需修改）</summary>
+          <div class="section-title">连续路线</div>
           <select id="motionRouteSelect" size="10"></select>
           <div class="point-config-actions">
             <button id="motionRouteAdd" class="cmd neutral compact" type="button">新增</button>
             <button id="motionRouteDelete" class="cmd warn compact" type="button">删除</button>
           </div>
           <textarea id="motionRouteEditor" rows="14" spellcheck="false"></textarea>
-        </div>
+        </details>
       </div>
       <div id="motionCatalogResult" class="command-result"></div>
     </section>

@@ -89,6 +89,7 @@ let motionCatalogReferences = {};
 let motionCatalogSelectedPoint = '';
 let motionCatalogSelectedRoute = '';
 let motionCatalogDirty = false;
+let motionCatalogShowAdvancedPoints = false;
 let activePage = localStorage.getItem('panthera_hmi_page') || 'dashboard';
 
 const pointMotionLabels = {
@@ -674,6 +675,63 @@ function setMotionCatalogResult(text, ok = true) {
   box.classList.toggle('success', ok && !!text);
 }
 
+function motionPointTags(point) {
+  return point && Array.isArray(point.tags) ? point.tags : [];
+}
+
+function isDailyTunableMotionPoint(point) {
+  return motionPointTags(point).includes('tunable');
+}
+
+function setMotionPoseInputs(point) {
+  const ids = [
+    'motionPointX', 'motionPointY', 'motionPointZ',
+    'motionPointRoll', 'motionPointPitch', 'motionPointYaw',
+  ];
+  const pose = point && point.pose;
+  const validPose = pose && Array.isArray(pose.xyz) && pose.xyz.length === 3 &&
+    Array.isArray(pose.rpy) && pose.rpy.length === 3;
+  const values = validPose
+    ? [
+        ...pose.xyz.map((value) => Number(value) * 1000.0),
+        ...pose.rpy.map((value) => Number(value) * 180.0 / Math.PI),
+      ]
+    : Array(6).fill('');
+  ids.forEach((id, index) => {
+    const input = $(id);
+    if (!input) {
+      return;
+    }
+    input.disabled = !validPose;
+    input.value = validPose && Number.isFinite(values[index])
+      ? String(Number(values[index].toFixed(index < 3 ? 3 : 2)))
+      : '';
+  });
+  if (!validPose && point) {
+    setMotionCatalogResult('该点是关节维护点；如需修改请展开高级 JSON。', true);
+  }
+}
+
+function syncMotionPointForm() {
+  if (!motionCatalog || !motionCatalogSelectedPoint) {
+    return;
+  }
+  const point = motionCatalog.points[motionCatalogSelectedPoint];
+  if (!point || !point.pose) {
+    return;
+  }
+  const positionIds = ['motionPointX', 'motionPointY', 'motionPointZ'];
+  const orientationIds = ['motionPointRoll', 'motionPointPitch', 'motionPointYaw'];
+  const position = positionIds.map((id) => numericInputValue(id) / 1000.0);
+  const orientation = orientationIds.map((id) => numericInputValue(id) * Math.PI / 180.0);
+  point.pose.xyz = position;
+  point.pose.rpy = orientation;
+  const pointEditor = $('motionPointEditor');
+  if (pointEditor) {
+    pointEditor.value = JSON.stringify(point, null, 2);
+  }
+}
+
 function syncMotionCatalogEditors() {
   if (!motionCatalog) {
     return;
@@ -682,6 +740,7 @@ function syncMotionCatalogEditors() {
   if (motionCatalogSelectedPoint && pointEditor) {
     motionCatalog.points[motionCatalogSelectedPoint] = JSON.parse(pointEditor.value);
   }
+  syncMotionPointForm();
   const routeEditor = $('motionRouteEditor');
   if (motionCatalogSelectedRoute && routeEditor) {
     motionCatalog.routes[motionCatalogSelectedRoute] = JSON.parse(routeEditor.value);
@@ -694,15 +753,27 @@ function renderMotionCatalog() {
   }
   const pointSelect = $('motionPointSelect');
   const routeSelect = $('motionRouteSelect');
-  const pointNames = Object.keys(motionCatalog.points || {}).sort();
+  const advancedToggle = $('motionShowAdvancedPoints');
+  const allPointNames = Object.keys(motionCatalog.points || {}).sort();
+  const dailyPointNames = allPointNames.filter(
+    (name) => isDailyTunableMotionPoint(motionCatalog.points[name]));
+  const pointNames = motionCatalogShowAdvancedPoints || dailyPointNames.length === 0
+    ? allPointNames
+    : dailyPointNames;
   const routeNames = Object.keys(motionCatalog.routes || {}).sort();
+
+  if (advancedToggle) {
+    advancedToggle.checked = motionCatalogShowAdvancedPoints;
+  }
 
   if (pointSelect) {
     pointSelect.innerHTML = '';
     pointNames.forEach((name) => {
       const option = document.createElement('option');
       option.value = name;
-      option.textContent = name;
+      const point = motionCatalog.points[name] || {};
+      option.textContent = isDailyTunableMotionPoint(point) ? `● ${name}` : name;
+      option.title = point.description || name;
       pointSelect.appendChild(option);
     });
     if (!pointNames.includes(motionCatalogSelectedPoint)) {
@@ -725,12 +796,21 @@ function renderMotionCatalog() {
   }
 
   const pointEditor = $('motionPointEditor');
+  const selectedPoint = motionCatalogSelectedPoint
+    ? motionCatalog.points[motionCatalogSelectedPoint]
+    : null;
   if (pointEditor) {
     pointEditor.value = motionCatalogSelectedPoint
-      ? JSON.stringify(motionCatalog.points[motionCatalogSelectedPoint], null, 2)
+      ? JSON.stringify(selectedPoint, null, 2)
       : '';
     pointEditor.disabled = !motionCatalogSelectedPoint;
   }
+  setText('motionPointTitle', motionCatalogSelectedPoint || '未选择点位');
+  setText('motionPointDescription', selectedPoint ? (selectedPoint.description || '无说明') : '--');
+  setText(
+    'motionPointTags',
+    `分类: ${selectedPoint && motionPointTags(selectedPoint).length ? motionPointTags(selectedPoint).join(' / ') : '--'}`);
+  setMotionPoseInputs(selectedPoint);
   const routeEditor = $('motionRouteEditor');
   if (routeEditor) {
     routeEditor.value = motionCatalogSelectedRoute
@@ -783,11 +863,11 @@ function addMotionPoint() {
     setMotionCatalogResult(`点位已存在: ${name}`, false);
     return;
   }
-  const jointCount = ((motionCatalog.robot || {}).joint_names || []).length || 6;
   motionCatalog.points[name] = {
-    description: 'New commissioning point; edit and compile before use.',
-    joints: Array(jointCount).fill(0),
-    tags: ['commissioning'],
+    description: '新增工艺点；请先填写坐标，再保存并编译校验。',
+    pose: {xyz: [0.0, 0.0, 0.0], rpy: [0.0, 0.0, 0.0]},
+    ik_seed: 'safe_joint_center',
+    tags: ['process', 'tunable', 'commissioning'],
   };
   motionCatalogReferences[name] = [];
   motionCatalogSelectedPoint = name;
@@ -2045,6 +2125,35 @@ function wireButtons() {
       }
     });
   }
+  const motionShowAdvancedPoints = $('motionShowAdvancedPoints');
+  if (motionShowAdvancedPoints) {
+    motionShowAdvancedPoints.addEventListener('change', () => {
+      try {
+        syncMotionCatalogEditors();
+        motionCatalogShowAdvancedPoints = motionShowAdvancedPoints.checked;
+        renderMotionCatalog();
+      } catch (error) {
+        setMotionCatalogResult(`点位格式错误: ${error}`, false);
+      }
+    });
+  }
+  [
+    'motionPointX', 'motionPointY', 'motionPointZ',
+    'motionPointRoll', 'motionPointPitch', 'motionPointYaw',
+  ].forEach((id) => {
+    const input = $(id);
+    if (input) {
+      input.addEventListener('change', () => {
+        try {
+          syncMotionPointForm();
+          motionCatalogDirty = true;
+          setMotionCatalogResult('点位草稿已修改；保存后会编译全部关联路线。', true);
+        } catch (error) {
+          setMotionCatalogResult(`点位数值错误: ${error}`, false);
+        }
+      });
+    }
+  });
   const motionRouteSelect = $('motionRouteSelect');
   if (motionRouteSelect) {
     motionRouteSelect.addEventListener('change', () => {

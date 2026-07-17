@@ -480,6 +480,55 @@ h2 {
   align-items: start;
 }
 
+.catalog-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.catalog-filter input {
+  width: 16px;
+  height: 16px;
+}
+
+.catalog-point-description {
+  min-height: 38px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.catalog-pose-inputs input:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+.catalog-advanced-editor,
+.catalog-route-editor {
+  margin-top: 12px;
+}
+
+.catalog-advanced-editor summary,
+.catalog-route-editor > summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.catalog-route-editor {
+  margin-top: 0;
+}
+
+.catalog-route-editor[open] > summary {
+  margin-bottom: 12px;
+}
+
 .point-config-list,
 .point-config-editor,
 .point-config-params {

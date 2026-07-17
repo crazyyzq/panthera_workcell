@@ -35,7 +35,7 @@ ros2 action send_goal /motion/execute \
 ```
 
 Bring up the real controllers with the motion server as the only arm-trajectory
-owner (commissioning catalog remains limited to the two confirmed joint poses):
+owner:
 
 ```bash
 ros2 launch panthera_motion fixed_motion_bringup.launch.py \
@@ -52,6 +52,8 @@ joint values, a TCP pose, or both. Pose-only points are solved deterministically
 from `ik_seed`. A route has one fixed start point and ordered `joint` or `linear`
 segments. `linear` segments may require a strict X/Y/Z vertical constraint.
 
-The initial catalog contains only legacy joint commissioning poses. Production
-TCP routes will be migrated after their physical values and IK branches are
-confirmed; no unconfirmed Cartesian point is silently enabled.
+The catalog contains 6 operator-facing process points, shared safety hovers, and
+18 deterministic routes. Normal tuning should change only points tagged
+`tunable`; points tagged `advanced` are recovery or clearance points. Every
+route compiles against the robot model, but real execution still requires the
+staged low-speed commissioning procedure.

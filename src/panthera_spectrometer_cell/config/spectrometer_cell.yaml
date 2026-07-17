@@ -271,6 +271,13 @@ outlets:
     return_approach_pose: outlet_2_return_approach
     return_pose: outlet_2_return
 
+positioning:
+  # 当前工位位置固定，默认不依赖激光节点。fixed 模式返回下面的标称轴位置，
+  # 因而 (fixed_axis_position_mm - axis_zero_laser_mm) 为 0，使用光谱仪基准点。
+  # 未来完成轴向、标定和安全验收后，改为 sensor_offset 即可恢复两次测量语义。
+  mode: fixed
+  fixed_axis_position_mm: 150.0
+
 spectrometer_axis:
   # ========== 光谱仪激光换算 ==========
   # 这个段落决定“激光读数 -> 光谱仪实际目标坐标”。

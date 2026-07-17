@@ -25,6 +25,7 @@ This file contains durable repository context and operating rules for future age
 - `src/panthera_web_hmi`: ROS/Web bridge and static HMI.
 - `src/panthera_rs485`: serial/Modbus, laser and RS485 state adapters.
 - `src/panthera_io`: optional GPIO/DIDO adapter; real GPIO is disabled by default because the installed interface board/pinmux is not confirmed.
+- `src/panthera_motion`: deterministic catalog compiler, cache and single-owner `FollowJointTrajectory` executor. Use this for new production motion.
 - `docs/FIXED_TRAJECTORY_REFACTOR_PLAN.md`: authoritative implementation plan for the fixed-trajectory refactor.
 
 ## Current motion facts
@@ -32,7 +33,7 @@ This file contains durable repository context and operating rules for future age
 - The arm controller is `joint_trajectory_controller/JointTrajectoryController` at 100 Hz.
 - Arm joints are `joint1` through `joint6`; gripper command joint is `L_finger_joint`; `R_finger_joint` is mimic/passive.
 - The controller exposes standard `FollowJointTrajectory` and can execute deterministic precompiled trajectories without MoveIt planning at production runtime.
-- Current `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` both own MoveGroup interfaces and replan every motion. The default startup can launch both. This is a command-ownership hazard.
+- Legacy `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` still replan with MoveIt and are migration-only. Their default HMI launch flags are disabled so they do not run beside another legacy owner.
 - Target architecture: one motion server is the only arm trajectory owner. MoveIt is retained for commissioning, IK, collision checks and trajectory compilation, not per-step production planning.
 - Fixed positioning is the current default requirement. Laser-based position correction must remain available behind an explicit `fixed | sensor_offset` mode.
 - Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
@@ -51,12 +52,12 @@ This file contains durable repository context and operating rules for future age
 
 ## Known high-risk issues in the pre-refactor baseline
 
-- `src/panthera_ht_config/launch/move_group.launch.py` sets `trajectory_execution.allowed_start_tolerance` to `10.0`; this is not an acceptable safety guard.
+- MoveIt and the new motion server use a `0.05 rad` start tolerance. Do not loosen it without measured encoder/repeatability evidence.
 - The spectrometer state machine calls robot actions synchronously, so its configured action timeout cannot interrupt a blocked action.
 - Real E-stop, outlet signals and spectrometer-complete integration are not fully wired; some paths still use manual/simulation services.
 - `src/panthera_spectrometer_cell/config/spectrometer_cell.yaml` contains `clean_brush.rpy[0]: 30.0` although the file declares radians. Confirm whether 30 degrees was intended before any brush motion.
 - Spectrometer sensor correction axis is inconsistent across historical docs/config (X versus Y). Confirm physical direction before enabling sensor mode.
-- HMI currently edits YAML through textual replacement and only supports existing point names; it is not full CRUD.
+- HMI exposes full point/route CRUD for `motion_catalog.yaml`. Saves use schema checks, Motion Server compilation, atomic replacement and automatic rollback. The lower legacy state-machine parameter editor remains only during migration.
 - Historical `.bak_*`, `bakeup/`, zip and export artifacts exist. Do not confuse them with canonical configuration.
 
 ## Build and validation
@@ -73,6 +74,19 @@ colcon test-result --verbose
 ```
 
 For focused development, use `--packages-up-to <package>` and still run a full build before handoff.
+
+As of the initial fixed-motion refactor, a full workspace build succeeds, while the
+legacy full test suite still reports 34 pre-existing formatting/lint failures (mostly
+`ament_uncrustify`). Do not misclassify those as Motion Server functional failures;
+keep focused package tests green and reduce the legacy lint debt in dedicated commits.
+
+The commissioning-only fixed motion launch is:
+
+```bash
+ros2 launch panthera_motion fixed_motion_bringup.launch.py default_speed_scale:=0.20
+```
+
+It starts hardware/controllers plus the Motion Server without MoveGroup. Do not start legacy real-motion nodes beside it.
 
 Runtime outputs belong in `build/`, `install/`, `log/`, `validation_logs/` and `.runtime/`; do not commit them.
 

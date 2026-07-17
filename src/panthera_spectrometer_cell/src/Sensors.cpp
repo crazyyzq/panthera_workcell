@@ -25,12 +25,24 @@ ActionResult Sensors::initialize()
 {
   RCLCPP_INFO(
     logger_,
-    "initialize sensors, simulation=%s laser_range=[%.1f, %.1f]mm",
+    "initialize sensors, simulation=%s positioning=%s laser_range=[%.1f, %.1f]mm",
     config_.simulation.enabled ? "true" : "false",
+    config_.positioning.mode.c_str(),
     config_.spectrometerAxis.laserMinMm,
     config_.spectrometerAxis.laserMaxMm);
 
   setupSimulationServices();
+
+  setupLaserInterfaces();
+
+  return ActionResult::ok("sensors initialized");
+}
+
+void Sensors::setupLaserInterfaces()
+{
+  if (config_.positioning.mode != "sensor_offset" || laser_sub_) {
+    return;
+  }
 
   // Important:
   // The state-machine timer callback can block for several seconds while executing
@@ -56,8 +68,6 @@ ActionResult Sensors::initialize()
     "/laser_distance_node/read_once",
     rmw_qos_profile_services_default,
     laser_callback_group_);
-
-  return ActionResult::ok("sensors initialized");
 }
 
 void Sensors::updateConfig(const WorkcellConfig & config)
@@ -66,11 +76,13 @@ void Sensors::updateConfig(const WorkcellConfig & config)
   laser_dist_ = std::uniform_real_distribution<double>(
     config_.spectrometerAxis.laserMinMm,
     config_.spectrometerAxis.laserMaxMm);
+  setupLaserInterfaces();
   next_auto_discharge_time_ = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(static_cast<int>(config_.simulation.autoDischargeIntervalSec * 1000.0));
   RCLCPP_WARN(
     logger_,
-    "sensor config reloaded laser_range=[%.1f, %.1f]mm",
+    "sensor config reloaded positioning=%s laser_range=[%.1f, %.1f]mm",
+    config_.positioning.mode.c_str(),
     config_.spectrometerAxis.laserMinMm,
     config_.spectrometerAxis.laserMaxMm);
 }
@@ -102,6 +114,12 @@ DischargeResult Sensors::readDischargeDone()
 
 MeasurementResult Sensors::readSpectrometerPosition()
 {
+  if (config_.positioning.mode == "fixed") {
+    return MeasurementResult::ok(
+      config_.positioning.fixedAxisPositionMm,
+      "fixed nominal spectrometer position");
+  }
+
   if (config_.simulation.enabled) {
     if (shouldSimulateFailure()) {
       return MeasurementResult::fail("readSpectrometerPosition failed: simulated laser failure");

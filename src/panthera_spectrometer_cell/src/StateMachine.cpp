@@ -1256,12 +1256,12 @@ bool StateMachine::measureSpectrometerPosition(
   RCLCPP_INFO(logger_, "SENSOR_REQUEST name=%s", request_name.c_str());
   const auto result = sensors_->readSpectrometerPosition();
   if (!result.success) {
-    out_error = request_name + " laser measurement invalid: " + result.message;
+    out_error = request_name + " position measurement invalid: " + result.message;
     return false;
   }
   if (!validateSpectrometerMeasurement(result.value)) {
     std::ostringstream out;
-    out << request_name << " laser value out of range: " << result.value << "mm";
+    out << request_name << " position value out of range: " << result.value << "mm";
     out_error = out.str();
     return false;
   }

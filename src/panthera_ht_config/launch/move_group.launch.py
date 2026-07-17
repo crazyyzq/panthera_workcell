@@ -37,7 +37,7 @@ def launch_setup(context, *args, **kwargs):
         'publish_transforms_updates': True,
         'monitor_dynamics': False,
         'capabilities': 'move_group/ExecuteTaskSolutionCapability',
-        'trajectory_execution.allowed_start_tolerance': 10.0,
+        'trajectory_execution.allowed_start_tolerance': 0.05,
         'trajectory_execution.allowed_execution_duration_scaling': 2.0,
         'trajectory_execution.allowed_goal_duration_margin': 1.0,
         'use_sim_time': False,

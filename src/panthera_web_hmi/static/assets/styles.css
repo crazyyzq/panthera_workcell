@@ -497,6 +497,22 @@ h2 {
   font-size: 13px;
 }
 
+.point-config-editor textarea,
+.point-config-list textarea {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 10px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .pose-edit-title {
   min-height: 30px;
   margin-bottom: 10px;

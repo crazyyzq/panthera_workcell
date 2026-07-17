@@ -84,6 +84,11 @@ let speedScalePendingUntilMs = 0;
 let pointConfig = null;
 let pointConfigDirty = false;
 let pointConfigSelectedPose = '';
+let motionCatalog = null;
+let motionCatalogReferences = {};
+let motionCatalogSelectedPoint = '';
+let motionCatalogSelectedRoute = '';
+let motionCatalogDirty = false;
 let activePage = localStorage.getItem('panthera_hmi_page') || 'dashboard';
 
 const pointMotionLabels = {
@@ -166,8 +171,13 @@ function setActivePage(page) {
     layout.classList.add(`page-${activePage}`);
   }
 
-  if (activePage === 'points' && !pointConfig) {
-    loadPointConfig();
+  if (activePage === 'points') {
+    if (!motionCatalog) {
+      loadMotionCatalog();
+    }
+    if (!pointConfig) {
+      loadPointConfig();
+    }
   }
 }
 
@@ -651,6 +661,239 @@ function renderPoseTuner(snapshot, state, context) {
       item.textContent = `${entry.timestamp || '--'} ${entry.dry_run ? 'DRY' : 'RUN'} ${entry.target_name || '--'} ${entry.success ? 'OK' : 'FAIL'} ${entry.message || ''}`;
       logBox.appendChild(item);
     });
+  }
+}
+
+function setMotionCatalogResult(text, ok = true) {
+  const box = $('motionCatalogResult');
+  if (!box) {
+    return;
+  }
+  box.textContent = text || '';
+  box.classList.toggle('failed', !ok);
+  box.classList.toggle('success', ok && !!text);
+}
+
+function syncMotionCatalogEditors() {
+  if (!motionCatalog) {
+    return;
+  }
+  const pointEditor = $('motionPointEditor');
+  if (motionCatalogSelectedPoint && pointEditor) {
+    motionCatalog.points[motionCatalogSelectedPoint] = JSON.parse(pointEditor.value);
+  }
+  const routeEditor = $('motionRouteEditor');
+  if (motionCatalogSelectedRoute && routeEditor) {
+    motionCatalog.routes[motionCatalogSelectedRoute] = JSON.parse(routeEditor.value);
+  }
+}
+
+function renderMotionCatalog() {
+  if (!motionCatalog) {
+    return;
+  }
+  const pointSelect = $('motionPointSelect');
+  const routeSelect = $('motionRouteSelect');
+  const pointNames = Object.keys(motionCatalog.points || {}).sort();
+  const routeNames = Object.keys(motionCatalog.routes || {}).sort();
+
+  if (pointSelect) {
+    pointSelect.innerHTML = '';
+    pointNames.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      pointSelect.appendChild(option);
+    });
+    if (!pointNames.includes(motionCatalogSelectedPoint)) {
+      motionCatalogSelectedPoint = pointNames[0] || '';
+    }
+    pointSelect.value = motionCatalogSelectedPoint;
+  }
+  if (routeSelect) {
+    routeSelect.innerHTML = '';
+    routeNames.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      routeSelect.appendChild(option);
+    });
+    if (!routeNames.includes(motionCatalogSelectedRoute)) {
+      motionCatalogSelectedRoute = routeNames[0] || '';
+    }
+    routeSelect.value = motionCatalogSelectedRoute;
+  }
+
+  const pointEditor = $('motionPointEditor');
+  if (pointEditor) {
+    pointEditor.value = motionCatalogSelectedPoint
+      ? JSON.stringify(motionCatalog.points[motionCatalogSelectedPoint], null, 2)
+      : '';
+    pointEditor.disabled = !motionCatalogSelectedPoint;
+  }
+  const routeEditor = $('motionRouteEditor');
+  if (routeEditor) {
+    routeEditor.value = motionCatalogSelectedRoute
+      ? JSON.stringify(motionCatalog.routes[motionCatalogSelectedRoute], null, 2)
+      : '';
+    routeEditor.disabled = !motionCatalogSelectedRoute;
+  }
+  const references = motionCatalogSelectedPoint
+    ? (motionCatalogReferences[motionCatalogSelectedPoint] || [])
+    : [];
+  setText('motionPointReferences', `引用: ${references.length ? references.join(', ') : '无'}`);
+}
+
+async function loadMotionCatalog() {
+  setMotionCatalogResult('读取固定轨迹目录...', true);
+  try {
+    const response = await fetch('/api/motion_catalog');
+    const result = await response.json();
+    if (!result.success) {
+      throw new Error(result.message || '读取失败');
+    }
+    motionCatalog = result.catalog || {};
+    motionCatalogReferences = result.references || {};
+    motionCatalogDirty = false;
+    setText('motionCatalogPath', result.path || '--');
+    renderMotionCatalog();
+    setMotionCatalogResult(
+      result.reload_available
+        ? '轨迹目录已读取，Motion Server 可执行编译校验。'
+        : '轨迹目录已读取，但 Motion Server 未启动，保存会被安全拒绝。',
+      !!result.reload_available);
+  } catch (error) {
+    setMotionCatalogResult(`读取轨迹目录失败: ${error}`, false);
+  }
+}
+
+function addMotionPoint() {
+  if (!motionCatalog) {
+    return;
+  }
+  const name = (window.prompt('新点位 ID（字母开头，只用字母、数字、下划线）') || '').trim();
+  if (!name) {
+    return;
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) {
+    setMotionCatalogResult('点位 ID 格式不合法。', false);
+    return;
+  }
+  if (motionCatalog.points[name]) {
+    setMotionCatalogResult(`点位已存在: ${name}`, false);
+    return;
+  }
+  const jointCount = ((motionCatalog.robot || {}).joint_names || []).length || 6;
+  motionCatalog.points[name] = {
+    description: 'New commissioning point; edit and compile before use.',
+    joints: Array(jointCount).fill(0),
+    tags: ['commissioning'],
+  };
+  motionCatalogReferences[name] = [];
+  motionCatalogSelectedPoint = name;
+  motionCatalogDirty = true;
+  renderMotionCatalog();
+  setMotionCatalogResult('已新增点位草稿；请填写已记录的关节值或 pose 后再保存。', true);
+}
+
+function deleteMotionPoint() {
+  if (!motionCatalogSelectedPoint || !motionCatalog) {
+    return;
+  }
+  const references = motionCatalogReferences[motionCatalogSelectedPoint] || [];
+  if (references.length) {
+    setMotionCatalogResult(`不能删除，被以下位置引用: ${references.join(', ')}`, false);
+    return;
+  }
+  if (!window.confirm(`确认删除未引用点位 ${motionCatalogSelectedPoint}？`)) {
+    return;
+  }
+  delete motionCatalog.points[motionCatalogSelectedPoint];
+  delete motionCatalogReferences[motionCatalogSelectedPoint];
+  motionCatalogSelectedPoint = '';
+  motionCatalogDirty = true;
+  renderMotionCatalog();
+}
+
+function addMotionRoute() {
+  if (!motionCatalog) {
+    return;
+  }
+  const name = (window.prompt('新路线 ID（字母开头，只用字母、数字、下划线）') || '').trim();
+  if (!name) {
+    return;
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || motionCatalog.routes[name]) {
+    setMotionCatalogResult('路线 ID 不合法或已经存在。', false);
+    return;
+  }
+  const firstPoint = Object.keys(motionCatalog.points || {})[0];
+  if (!firstPoint) {
+    setMotionCatalogResult('至少需要一个点位才能新增路线。', false);
+    return;
+  }
+  motionCatalog.routes[name] = {
+    start: firstPoint,
+    velocity_scale: 0.1,
+    acceleration_scale: 0.1,
+    enabled: false,
+    segments: [{name: 'edit_me', type: 'joint', to: firstPoint}],
+  };
+  motionCatalogSelectedRoute = name;
+  motionCatalogDirty = true;
+  renderMotionCatalog();
+  setMotionCatalogResult('已新增禁用路线草稿；编辑起点和轨迹段后再启用并保存。', true);
+}
+
+function deleteMotionRoute() {
+  if (!motionCatalogSelectedRoute || !motionCatalog) {
+    return;
+  }
+  if (!window.confirm(`确认删除路线 ${motionCatalogSelectedRoute}？`)) {
+    return;
+  }
+  delete motionCatalog.routes[motionCatalogSelectedRoute];
+  motionCatalogSelectedRoute = '';
+  motionCatalogDirty = true;
+  renderMotionCatalog();
+}
+
+async function saveMotionCatalog(button) {
+  try {
+    syncMotionCatalogEditors();
+  } catch (error) {
+    setMotionCatalogResult(`JSON 格式错误: ${error}`, false);
+    return;
+  }
+  const confirmed = await confirmAction(
+    '保存会进行引用、IK、限位、碰撞、垂直约束和整条路线编译。任何失败都会自动恢复旧目录。确认继续？',
+    '校验并保存固定轨迹');
+  if (!confirmed) {
+    return;
+  }
+  setButtonFeedback(button, 'loading');
+  setMotionCatalogResult('正在保存并编译全部启用路线...', true);
+  try {
+    const response = await fetch('/api/motion_catalog', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({catalog: motionCatalog}),
+    });
+    const result = await response.json();
+    if (!result.success) {
+      throw new Error(result.message || '保存或编译失败');
+    }
+    motionCatalogDirty = false;
+    setMotionCatalogResult(`${result.message}；备份: ${result.backup_path || '--'}`, true);
+    setButtonFeedback(button, 'success');
+    await loadMotionCatalog();
+  } catch (error) {
+    setMotionCatalogResult(`轨迹目录未生效: ${error}`, false);
+    setButtonFeedback(button, 'failed');
+  } finally {
+    if (button) {
+      button.classList.remove('loading');
+    }
   }
 }
 
@@ -1788,6 +2031,64 @@ function wireButtons() {
         stopPoseTuner(poseStop);
       }
     });
+  }
+
+  const motionPointSelect = $('motionPointSelect');
+  if (motionPointSelect) {
+    motionPointSelect.addEventListener('change', () => {
+      try {
+        syncMotionCatalogEditors();
+        motionCatalogSelectedPoint = motionPointSelect.value;
+        renderMotionCatalog();
+      } catch (error) {
+        setMotionCatalogResult(`点位 JSON 格式错误: ${error}`, false);
+      }
+    });
+  }
+  const motionRouteSelect = $('motionRouteSelect');
+  if (motionRouteSelect) {
+    motionRouteSelect.addEventListener('change', () => {
+      try {
+        syncMotionCatalogEditors();
+        motionCatalogSelectedRoute = motionRouteSelect.value;
+        renderMotionCatalog();
+      } catch (error) {
+        setMotionCatalogResult(`路线 JSON 格式错误: ${error}`, false);
+      }
+    });
+  }
+  ['motionPointEditor', 'motionRouteEditor'].forEach((id) => {
+    const editor = $(id);
+    if (editor) {
+      editor.addEventListener('input', () => {
+        motionCatalogDirty = true;
+        setMotionCatalogResult('目录有未保存修改。', true);
+      });
+    }
+  });
+  const motionCatalogReload = $('motionCatalogReload');
+  if (motionCatalogReload) {
+    motionCatalogReload.addEventListener('click', loadMotionCatalog);
+  }
+  const motionCatalogSave = $('motionCatalogSave');
+  if (motionCatalogSave) {
+    motionCatalogSave.addEventListener('click', () => saveMotionCatalog(motionCatalogSave));
+  }
+  const motionPointAdd = $('motionPointAdd');
+  if (motionPointAdd) {
+    motionPointAdd.addEventListener('click', addMotionPoint);
+  }
+  const motionPointDelete = $('motionPointDelete');
+  if (motionPointDelete) {
+    motionPointDelete.addEventListener('click', deleteMotionPoint);
+  }
+  const motionRouteAdd = $('motionRouteAdd');
+  if (motionRouteAdd) {
+    motionRouteAdd.addEventListener('click', addMotionRoute);
+  }
+  const motionRouteDelete = $('motionRouteDelete');
+  if (motionRouteDelete) {
+    motionRouteDelete.addEventListener('click', deleteMotionRoute);
   }
 
   const pointPoseSelect = $('pointPoseSelect');

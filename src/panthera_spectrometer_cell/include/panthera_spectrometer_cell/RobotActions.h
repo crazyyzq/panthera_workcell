@@ -84,7 +84,7 @@ private:
   WorkcellConfig config_;
   std::mutex motion_mutex_;
   std::unique_ptr<moveit::planning_interface::MoveGroupInterface> arm_;
-  moveit::planning_interface::PlanningSceneInterface planning_scene_;
+  std::unique_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr gripper_pub_;
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;

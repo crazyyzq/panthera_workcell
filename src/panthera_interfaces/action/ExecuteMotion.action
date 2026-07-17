@@ -1,0 +1,27 @@
+# Execute one precompiled arm route.
+string route_name
+float64 speed_scale
+bool dry_run
+---
+int32 ERROR_NONE=0
+int32 ERROR_INVALID_GOAL=1
+int32 ERROR_ROUTE_NOT_FOUND=2
+int32 ERROR_BUSY=3
+int32 ERROR_STATE_UNAVAILABLE=4
+int32 ERROR_START_MISMATCH=5
+int32 ERROR_CONTROLLER_UNAVAILABLE=6
+int32 ERROR_CONTROLLER_REJECTED=7
+int32 ERROR_CONTROLLER_FAILED=8
+int32 ERROR_CANCELLED=9
+int32 ERROR_TIMEOUT=10
+
+bool success
+int32 error_code
+string message
+float64 elapsed_sec
+---
+string route_name
+string segment_name
+uint32 segment_index
+uint32 segment_count
+float32 progress

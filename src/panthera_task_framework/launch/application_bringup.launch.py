@@ -111,7 +111,7 @@ def generate_launch_description():
         DeclareLaunchArgument('execute_motion', default_value='true'),
         DeclareLaunchArgument('start_hardware', default_value='true'),
         DeclareLaunchArgument('start_workflow', default_value='true'),
-        DeclareLaunchArgument('start_laser', default_value='true'),
+        DeclareLaunchArgument('start_laser', default_value='false'),
         DeclareLaunchArgument('start_state_signal', default_value='false'),
         DeclareLaunchArgument('start_io', default_value='false'),
         DeclareLaunchArgument('rs485_config_file', default_value=default_rs485_config_file),

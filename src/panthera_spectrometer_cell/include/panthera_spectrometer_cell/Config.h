@@ -72,6 +72,12 @@ struct GripperConfig
   double closeDurationSec{1.5};
 };
 
+struct PositioningConfig
+{
+  std::string mode{"fixed"};
+  double fixedAxisPositionMm{150.0};
+};
+
 struct SpectrometerAxisConfig
 {
   double laserMinMm{120.0};
@@ -144,6 +150,7 @@ struct WorkcellConfig
   LoopConfig loop;
   MotionConfig motion;
   GripperConfig gripper;
+  PositioningConfig positioning;
   SpectrometerAxisConfig spectrometerAxis;
   CleaningConfig cleaning;
   SimulationConfig simulation;

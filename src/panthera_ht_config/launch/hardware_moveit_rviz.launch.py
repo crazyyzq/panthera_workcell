@@ -91,11 +91,9 @@ def generate_launch_description():
         "use_sim_time": False,  
         "capabilities": "move_group/ExecuteTaskSolutionCapability",# CRITICAL: Use system time for real hardware
         
-        # The hardware /joint_states stream can occasionally make MoveIt's internal
-        # current-state monitor lag behind or mismatch one joint while our task node
-        # already seeds trajectories from the latest named /joint_states sample.
-        # Keep MoveGroup from rejecting otherwise valid trajectories at execution time.
-        "trajectory_execution.allowed_start_tolerance": 10.0,
+        # Reject execution when the measured start differs materially from the
+        # trajectory start. The motion server applies the same strict default.
+        "trajectory_execution.allowed_start_tolerance": 0.05,
         "trajectory_execution.allowed_execution_duration_scaling": 2.0,
         "trajectory_execution.allowed_goal_duration_margin": 1.0,
     }

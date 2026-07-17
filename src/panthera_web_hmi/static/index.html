@@ -241,7 +241,46 @@
 
     <section class="panel point-config-panel" data-page="points">
       <div class="panel-head">
-        <h2>点位配置调试</h2>
+        <h2>固定轨迹目录（主数据源）</h2>
+        <div class="point-config-actions">
+          <span id="motionCatalogPath" class="muted">--</span>
+          <button id="motionCatalogReload" class="cmd neutral compact" type="button">重新读取</button>
+          <button id="motionCatalogSave" class="cmd primary compact" type="button">校验并保存</button>
+        </div>
+      </div>
+      <div class="point-config-alert">
+        点位或路线保存时会先做引用校验，再由 Motion Server 完整编译；编译失败会自动恢复旧文件和旧缓存，不会移动机械臂。
+      </div>
+      <div class="point-config-grid">
+        <div class="point-config-list">
+          <div class="section-title">points</div>
+          <select id="motionPointSelect" size="10"></select>
+          <div class="point-config-actions">
+            <button id="motionPointAdd" class="cmd neutral compact" type="button">新增</button>
+            <button id="motionPointDelete" class="cmd warn compact" type="button">删除</button>
+          </div>
+        </div>
+        <div class="point-config-editor">
+          <div class="section-title">点位定义（JSON）</div>
+          <textarea id="motionPointEditor" rows="14" spellcheck="false"></textarea>
+          <div id="motionPointReferences" class="point-config-hint">引用: --</div>
+        </div>
+        <div class="point-config-list">
+          <div class="section-title">routes</div>
+          <select id="motionRouteSelect" size="10"></select>
+          <div class="point-config-actions">
+            <button id="motionRouteAdd" class="cmd neutral compact" type="button">新增</button>
+            <button id="motionRouteDelete" class="cmd warn compact" type="button">删除</button>
+          </div>
+          <textarea id="motionRouteEditor" rows="14" spellcheck="false"></textarea>
+        </div>
+      </div>
+      <div id="motionCatalogResult" class="command-result"></div>
+    </section>
+
+    <section class="panel point-config-panel" data-page="points">
+      <div class="panel-head">
+        <h2>旧状态机参数（迁移期）</h2>
         <div class="point-config-actions">
           <span id="pointConfigPath" class="muted">--</span>
           <button id="pointConfigReload" class="cmd neutral compact" type="button">重新读取</button>

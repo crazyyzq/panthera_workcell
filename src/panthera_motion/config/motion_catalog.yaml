@@ -1,0 +1,55 @@
+schema_version: 1
+
+robot:
+  group: arm
+  base_frame: base_link
+  tool_frame: gripper_center
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+  # Deterministic IK seed used only when a pose point has no explicit ik_seed.
+  default_ik_seed: [0.0, 0.18, 0.18, 0.0, 0.0, 0.0]
+
+defaults:
+  # Compile conservative base trajectories once. Runtime speed_scale may only slow
+  # these trajectories down (0.10 .. 1.0), never exceed the compiled limits.
+  velocity_scale: 0.10
+  acceleration_scale: 0.10
+  joint_step_rad: 0.05
+  cartesian_step_m: 0.005
+  max_joint_jump_rad: 0.35
+  max_lateral_error_m: 0.001
+  ik_timeout_sec: 0.10
+  ik_attempts: 10
+
+points:
+  # Initial catalog contains only the two previously documented commissioning
+  # joint poses. It is intentionally safe to compile without guessing TCP/IK
+  # branches. Production TCP points will be migrated after they are recorded or
+  # their existing values are confirmed through dry-run commissioning.
+  home_near:
+    description: Existing near-home joint pose from the legacy workflow.
+    joints: [0.0, 0.01, 0.01, 0.0, 0.0, 0.0]
+    tags: [system, recovery]
+
+  safe_joint_center:
+    description: Existing safe transition joint pose used by legacy commissioning.
+    joints: [0.0, 0.18, 0.18, 0.0, 0.0, 0.0]
+    tags: [system, recovery]
+
+routes:
+  home_to_safe_center:
+    start: home_near
+    velocity_scale: 0.08
+    acceleration_scale: 0.08
+    segments:
+      - name: move_to_safe_joint_center
+        type: joint
+        to: safe_joint_center
+
+  safe_center_to_home:
+    start: safe_joint_center
+    velocity_scale: 0.08
+    acceleration_scale: 0.08
+    segments:
+      - name: move_to_home_near
+        type: joint
+        to: home_near

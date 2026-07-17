@@ -11,6 +11,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 try:
     import cv2
@@ -215,6 +216,79 @@ def _as_bool(value, name):
     if isinstance(value, (int, float)):
         return bool(value)
     raise ValueError(f'{name} must be boolean')
+
+
+def _validate_motion_catalog_document(catalog):
+    if not isinstance(catalog, dict):
+        raise ValueError('motion catalog must be an object')
+    if int(catalog.get('schema_version', 0)) != 1:
+        raise ValueError('motion catalog schema_version must be 1')
+
+    robot = catalog.get('robot')
+    points = catalog.get('points')
+    routes = catalog.get('routes')
+    if not isinstance(robot, dict):
+        raise ValueError('motion catalog robot must be an object')
+    if not isinstance(points, dict) or not points:
+        raise ValueError('motion catalog points must be a non-empty object')
+    if not isinstance(routes, dict):
+        raise ValueError('motion catalog routes must be an object')
+
+    joint_names = robot.get('joint_names')
+    if not isinstance(joint_names, list) or not joint_names:
+        raise ValueError('robot.joint_names must be a non-empty array')
+    id_pattern = re.compile(r'^[A-Za-z][A-Za-z0-9_]*$')
+
+    for name, point in points.items():
+        if not id_pattern.fullmatch(str(name)):
+            raise ValueError(f'invalid point id: {name}')
+        if not isinstance(point, dict):
+            raise ValueError(f'points.{name} must be an object')
+        has_joints = 'joints' in point
+        has_pose = 'pose' in point
+        if not has_joints and not has_pose:
+            raise ValueError(f'points.{name} needs joints or pose')
+        if has_joints:
+            _as_float_list(point['joints'], len(joint_names), f'points.{name}.joints')
+        if has_pose:
+            pose = point['pose']
+            if not isinstance(pose, dict):
+                raise ValueError(f'points.{name}.pose must be an object')
+            _as_float_list(pose.get('xyz'), 3, f'points.{name}.pose.xyz')
+            _as_float_list(pose.get('rpy'), 3, f'points.{name}.pose.rpy')
+        seed = str(point.get('ik_seed', '')).strip()
+        if seed and seed not in points:
+            raise ValueError(f'points.{name}.ik_seed references missing point: {seed}')
+
+    references = {name: [] for name in points}
+    for name, route in routes.items():
+        if not id_pattern.fullmatch(str(name)):
+            raise ValueError(f'invalid route id: {name}')
+        if not isinstance(route, dict):
+            raise ValueError(f'routes.{name} must be an object')
+        start = str(route.get('start', '')).strip()
+        if start not in points:
+            raise ValueError(f'routes.{name}.start references missing point: {start}')
+        references[start].append(f'routes.{name}.start')
+        segments = route.get('segments')
+        if not isinstance(segments, list) or not segments:
+            raise ValueError(f'routes.{name}.segments must be a non-empty array')
+        for index, segment in enumerate(segments):
+            if not isinstance(segment, dict):
+                raise ValueError(f'routes.{name}.segments[{index}] must be an object')
+            segment_type = str(segment.get('type', 'joint'))
+            if segment_type not in ('joint', 'linear'):
+                raise ValueError(
+                    f'routes.{name}.segments[{index}].type must be joint or linear')
+            target = str(segment.get('to', '')).strip()
+            if target not in points:
+                raise ValueError(
+                    f'routes.{name}.segments[{index}].to references missing point: {target}')
+            if segment_type == 'linear' and 'pose' not in points[target]:
+                raise ValueError(
+                    f'linear target points.{target} must contain a pose')
+            references[target].append(f'routes.{name}.segments[{index}].to')
+    return references
 
 
 class HmiStateStore:
@@ -1112,6 +1186,9 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == '/api/point_config':
             self._send_json(self.server.bridge_node.get_point_config())
             return
+        if parsed.path == '/api/motion_catalog':
+            self._send_json(self.server.bridge_node.get_motion_catalog())
+            return
         if parsed.path == '/api/pose_tuner/list':
             self._send_json(self.server.bridge_node.call_pose_tuner_list())
             return
@@ -1140,6 +1217,8 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/camera/restart',
             '/api/point_config',
             '/api/point_config/reload',
+            '/api/motion_catalog',
+            '/api/motion_catalog/reload',
             '/api/pose_tuner/run',
             '/api/pose_tuner/stop',
         ):
@@ -1164,6 +1243,10 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.save_point_config(body)
         elif parsed.path == '/api/point_config/reload':
             result = self.server.bridge_node.reload_point_config()
+        elif parsed.path == '/api/motion_catalog':
+            result = self.server.bridge_node.save_motion_catalog(body)
+        elif parsed.path == '/api/motion_catalog/reload':
+            result = self.server.bridge_node.reload_motion_catalog()
         elif parsed.path == '/api/pose_tuner/run':
             result = self.server.bridge_node.call_pose_tuner_run(body)
         elif parsed.path == '/api/pose_tuner/stop':
@@ -1297,6 +1380,24 @@ class WebHmiNode(Node):
         self.point_config_path = self.declare_parameter(
             'point_config_path',
             default_point_config_path).value
+        default_motion_catalog_path = os.path.join(
+            os.path.expanduser('~'),
+            'panthera_workcell_ws',
+            'src',
+            'panthera_motion',
+            'config',
+            'motion_catalog.yaml')
+        if not os.path.isfile(default_motion_catalog_path):
+            try:
+                default_motion_catalog_path = os.path.join(
+                    get_package_share_directory('panthera_motion'),
+                    'config',
+                    'motion_catalog.yaml')
+            except Exception:
+                pass
+        self.motion_catalog_path = self.declare_parameter(
+            'motion_catalog_path',
+            default_motion_catalog_path).value
         self.rgb_topic = self.declare_parameter('rgb_topic', '/camera/color/image_raw').value
         self.depth_topic = self.declare_parameter('depth_topic', '/camera/depth/image_raw').value
         self.rgb_info_topic = self.declare_parameter(
@@ -1417,6 +1518,12 @@ class WebHmiNode(Node):
             'reload_config_service',
             '/spectrometer_cell/reload_config').value
         self.reload_config_client = self.create_client(Trigger, self.reload_config_service_name)
+        self.motion_reload_service_name = self.declare_parameter(
+            'motion_reload_service',
+            '/motion/reload').value
+        self.motion_reload_client = self.create_client(
+            Trigger,
+            self.motion_reload_service_name)
         default_camera_restart_script = os.path.join(
             os.path.expanduser('~'),
             'panthera_workcell_ws',
@@ -1595,6 +1702,16 @@ class WebHmiNode(Node):
             'ready': bool(os.path.isfile(self.point_config_path) and os.access(self.point_config_path, os.R_OK)),
             'writable': bool(os.path.isfile(self.point_config_path) and os.access(self.point_config_path, os.W_OK)),
         }
+        services['motion_catalog'] = {
+            'path': self.motion_catalog_path,
+            'ready': bool(
+                os.path.isfile(self.motion_catalog_path) and
+                os.access(self.motion_catalog_path, os.R_OK)),
+            'writable': bool(
+                os.path.isfile(self.motion_catalog_path) and
+                os.access(self.motion_catalog_path, os.W_OK)),
+            'reload_ready': bool(self.motion_reload_client.service_is_ready()),
+        }
         self.state_store.set_services(services)
 
     def snapshot(self):
@@ -1602,6 +1719,134 @@ class WebHmiNode(Node):
         data = self.state_store.snapshot()
         data['camera']['debug'] = self.camera_store.stats()
         return data
+
+    def _load_motion_catalog(self):
+        if not os.path.isfile(self.motion_catalog_path):
+            raise FileNotFoundError(self.motion_catalog_path)
+        with open(self.motion_catalog_path, 'r', encoding='utf-8') as file:
+            catalog = yaml.safe_load(file)
+        references = _validate_motion_catalog_document(catalog)
+        return catalog, references
+
+    @staticmethod
+    def _atomic_write_text(path, text):
+        directory = os.path.dirname(os.path.abspath(path))
+        temporary_path = os.path.join(
+            directory,
+            f'.{os.path.basename(path)}.tmp.{os.getpid()}.{threading.get_ident()}')
+        try:
+            with open(temporary_path, 'w', encoding='utf-8', newline='\n') as file:
+                file.write(text)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary_path, path)
+            try:
+                directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except (AttributeError, OSError):
+                pass
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
+    def get_motion_catalog(self):
+        try:
+            catalog, references = self._load_motion_catalog()
+            return {
+                'success': True,
+                'message': 'motion catalog loaded',
+                'path': self.motion_catalog_path,
+                'catalog': catalog,
+                'references': references,
+                'reload_available': bool(self.motion_reload_client.service_is_ready()),
+            }
+        except Exception as exc:
+            return {
+                'success': False,
+                'message': f'load motion catalog failed: {exc}',
+                'path': self.motion_catalog_path,
+                'catalog': {},
+                'references': {},
+            }
+
+    def save_motion_catalog(self, body):
+        catalog = body.get('catalog', body)
+        try:
+            references = _validate_motion_catalog_document(catalog)
+        except Exception as exc:
+            return {
+                'success': False,
+                'message': f'motion catalog validation failed: {exc}',
+            }
+
+        if not self.motion_reload_client.service_is_ready():
+            return {
+                'success': False,
+                'message': (
+                    'motion server reload service is not ready; '
+                    'catalog was not changed because compile validation is required'),
+            }
+
+        try:
+            with open(self.motion_catalog_path, 'r', encoding='utf-8') as file:
+                previous_text = file.read()
+            candidate_text = yaml.safe_dump(
+                catalog,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False)
+            backup_path = (
+                f'{self.motion_catalog_path}.bak_'
+                f'{time.strftime("%Y%m%d_%H%M%S")}')
+            shutil.copy2(self.motion_catalog_path, backup_path)
+            self._atomic_write_text(self.motion_catalog_path, candidate_text)
+
+            reload_result = self._call_trigger_client(
+                self.motion_reload_client,
+                self.motion_reload_service_name,
+                timeout_sec=30.0)
+            if not reload_result.get('success'):
+                self._atomic_write_text(self.motion_catalog_path, previous_text)
+                rollback_result = self._call_trigger_client(
+                    self.motion_reload_client,
+                    self.motion_reload_service_name,
+                    timeout_sec=30.0)
+                return {
+                    'success': False,
+                    'message': (
+                        'candidate compile/reload failed; previous catalog restored: '
+                        f"{reload_result.get('message', 'unknown error')}"),
+                    'path': self.motion_catalog_path,
+                    'backup_path': backup_path,
+                    'rollback_result': rollback_result,
+                }
+
+            self.get_logger().warn(
+                f'motion catalog saved and compiled path={self.motion_catalog_path} '
+                f'backup={backup_path}')
+            return {
+                'success': True,
+                'message': 'motion catalog saved, compiled, and atomically activated',
+                'path': self.motion_catalog_path,
+                'backup_path': backup_path,
+                'references': references,
+                'reload_result': reload_result,
+            }
+        except Exception as exc:
+            return {
+                'success': False,
+                'message': f'save motion catalog failed: {exc}',
+                'path': self.motion_catalog_path,
+            }
+
+    def reload_motion_catalog(self):
+        return self._call_trigger_client(
+            self.motion_reload_client,
+            self.motion_reload_service_name,
+            timeout_sec=30.0)
 
     def _load_point_config(self):
         if not os.path.isfile(self.point_config_path):

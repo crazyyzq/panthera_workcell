@@ -1071,6 +1071,8 @@ ActionResult RobotActions::moveToSafePose(const std::string & label)
 ActionResult RobotActions::initializeRealInterfaces()
 {
   try {
+    planning_scene_ =
+      std::make_unique<moveit::planning_interface::PlanningSceneInterface>();
     arm_ = std::make_unique<moveit::planning_interface::MoveGroupInterface>(node_, kArmGroup);
     arm_->setEndEffectorLink(kHandFrame);
     arm_->setPoseReferenceFrame(kBaseFrame);
@@ -1938,8 +1940,8 @@ ActionResult RobotActions::applyCollisionObjects()
     objects.push_back(collision);
   }
 
-  if (!config_.simulation.enabled && !objects.empty()) {
-    planning_scene_.applyCollisionObjects(objects);
+  if (!config_.simulation.enabled && planning_scene_ && !objects.empty()) {
+    planning_scene_->applyCollisionObjects(objects);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
   }
 
@@ -1948,25 +1950,31 @@ ActionResult RobotActions::applyCollisionObjects()
 
 ActionResult RobotActions::attachCup()
 {
+  if (config_.simulation.enabled || !planning_scene_) {
+    return ActionResult::ok("simulated cup attach");
+  }
   if (config_.simulation.enabled) {
     return simulateDelay("attach cup");
   }
   RCLCPP_INFO(
     logger_,
     "cup collision attach disabled: keeping real gripper action only for full-flow tuning");
-  planning_scene_.removeCollisionObjects({kCupObjectId});
+  planning_scene_->removeCollisionObjects({kCupObjectId});
   return ActionResult::ok("cup collision attach disabled");
 }
 
 ActionResult RobotActions::detachCup()
 {
+  if (config_.simulation.enabled || !planning_scene_) {
+    return ActionResult::ok("simulated cup detach");
+  }
   if (config_.simulation.enabled) {
     return simulateDelay("detach cup");
   }
   RCLCPP_INFO(
     logger_,
     "cup collision detach disabled: removing any stale carried cup object only");
-  planning_scene_.removeCollisionObjects({kCupObjectId});
+  planning_scene_->removeCollisionObjects({kCupObjectId});
   return ActionResult::ok("cup collision detach disabled");
 }
 

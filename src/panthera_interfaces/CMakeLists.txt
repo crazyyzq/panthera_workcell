@@ -11,6 +11,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/ExecuteMotion.action"
   "msg/ArmPose.msg"
   "msg/ArmStatus.msg"
   "msg/DigitalInput.msg"

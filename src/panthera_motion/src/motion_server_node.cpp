@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -83,6 +84,131 @@ double maxAbsVelocity(
   return maximum;
 }
 
+builtin_interfaces::msg::Duration durationFromNanoseconds(std::int64_t nanoseconds)
+{
+  builtin_interfaces::msg::Duration duration;
+  duration.sec = static_cast<std::int32_t>(nanoseconds / 1000000000LL);
+  duration.nanosec = static_cast<std::uint32_t>(nanoseconds % 1000000000LL);
+  return duration;
+}
+
+std::int64_t durationNanoseconds(const builtin_interfaces::msg::Duration & duration)
+{
+  return static_cast<std::int64_t>(duration.sec) * 1000000000LL + duration.nanosec;
+}
+
+bool addContinuousRoute(
+  std::map<std::string, CompiledRoute> & routes,
+  const std::string & name,
+  const std::vector<std::string> & part_names,
+  std::string & error)
+{
+  CompiledRoute combined;
+  combined.name = name;
+  std::int64_t offset_ns = 0;
+  for (const auto & part_name : part_names) {
+    const auto part_it = routes.find(part_name);
+    if (part_it == routes.end()) {
+      error = "continuous route '" + name + "' is missing part '" + part_name + "'";
+      return false;
+    }
+    const auto & part = part_it->second;
+    if (part.trajectory.points.size() < 2) {
+      error = "continuous route part '" + part_name + "' has fewer than 2 points";
+      return false;
+    }
+    if (combined.trajectory.points.empty()) {
+      combined.trajectory = part.trajectory;
+      combined.start_joints = part.start_joints;
+      offset_ns = durationNanoseconds(combined.trajectory.points.back().time_from_start);
+    } else {
+      if (combined.trajectory.joint_names != part.trajectory.joint_names ||
+        combined.end_joints.size() != part.start_joints.size())
+      {
+        error = "continuous route part '" + part_name + "' has incompatible joints";
+        return false;
+      }
+      double maximum_difference = 0.0;
+      std::size_t maximum_joint = 0;
+      for (std::size_t joint = 0; joint < combined.end_joints.size(); ++joint) {
+        const double difference =
+          std::abs(combined.end_joints[joint] - part.start_joints[joint]);
+        if (difference > maximum_difference) {
+          maximum_difference = difference;
+          maximum_joint = joint;
+        }
+      }
+      if (maximum_difference > 1e-3) {
+        std::ostringstream out;
+        out << "continuous route part '" << part_name
+            << "' start mismatch at " << combined.trajectory.joint_names[maximum_joint]
+            << "=" << maximum_difference << "rad";
+        error = out.str();
+        return false;
+      }
+      combined.trajectory.points.back().positions = part.start_joints;
+      combined.end_joints = part.start_joints;
+      // Skip the duplicate zero-time start point. The preceding route's final
+      // point is identical and becomes the next spline's start, eliminating
+      // controller-goal round-trip dwell without changing either phase profile.
+      for (std::size_t index = 1; index < part.trajectory.points.size(); ++index) {
+        auto point = part.trajectory.points[index];
+        point.time_from_start = durationFromNanoseconds(
+          offset_ns + durationNanoseconds(point.time_from_start));
+        combined.trajectory.points.push_back(std::move(point));
+      }
+      offset_ns = durationNanoseconds(combined.trajectory.points.back().time_from_start);
+    }
+    combined.end_joints = part.end_joints;
+    combined.segment_names.insert(
+      combined.segment_names.end(), part.segment_names.begin(), part.segment_names.end());
+    combined.content_hash += part.content_hash;
+  }
+  combined.duration_sec = static_cast<double>(offset_ns) * 1e-9;
+  routes.emplace(name, std::move(combined));
+  return true;
+}
+
+bool isPlausibleArmJointState(
+  const sensor_msgs::msg::JointState & state,
+  const sensor_msgs::msg::JointState * previous)
+{
+  const std::array<std::string, 6> joint_names{
+    "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
+  for (const auto & name : joint_names) {
+    const auto it = std::find(state.name.begin(), state.name.end(), name);
+    if (it == state.name.end()) {
+      return false;
+    }
+    const auto index = static_cast<std::size_t>(std::distance(state.name.begin(), it));
+    if (index >= state.position.size() || !std::isfinite(state.position[index]) ||
+      std::abs(state.position[index]) > 10.0)
+    {
+      return false;
+    }
+    if (index < state.velocity.size() &&
+      (!std::isfinite(state.velocity[index]) || std::abs(state.velocity[index]) > 10.0))
+    {
+      return false;
+    }
+    if (previous) {
+      const auto previous_it = std::find(previous->name.begin(), previous->name.end(), name);
+      if (previous_it == previous->name.end()) {
+        return false;
+      }
+      const auto previous_index = static_cast<std::size_t>(
+        std::distance(previous->name.begin(), previous_it));
+      if (previous_index >= previous->position.size() ||
+        !std::isfinite(previous->position[previous_index]) ||
+        std::abs(state.position[index] - previous->position[previous_index]) > 0.75)
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 std::string jointVectorString(const std::vector<double> & values)
 {
   std::ostringstream out;
@@ -129,6 +255,12 @@ public:
         node_, "trajectory_start_delay_sec", 0.10)),
     goal_position_tolerance_rad_(getOrDeclareParameter<double>(
         node_, "goal_position_tolerance_rad", 0.03)),
+    path_position_tolerance_rad_(getOrDeclareParameter<double>(
+        node_, "path_position_tolerance_rad", 0.10)),
+    pour_path_position_tolerance_rad_(getOrDeclareParameter<double>(
+        node_, "pour_path_position_tolerance_rad", 0.20)),
+    wrist_path_position_tolerance_rad_(getOrDeclareParameter<double>(
+        node_, "wrist_path_position_tolerance_rad", 0.35)),
     goal_velocity_tolerance_rad_sec_(getOrDeclareParameter<double>(
         node_, "goal_velocity_tolerance_rad_sec", 0.05)),
     default_speed_scale_(getOrDeclareParameter<double>(
@@ -150,6 +282,16 @@ public:
       rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::JointState::SharedPtr message) {
         std::lock_guard<std::mutex> lock(joint_state_mutex_);
+        const bool previous_is_fresh = has_joint_state_ &&
+        (node_->now() - latest_joint_state_received_).seconds() <= 1.0;
+        if (!isPlausibleArmJointState(
+          *message, previous_is_fresh ? &latest_joint_state_ : nullptr))
+        {
+          RCLCPP_WARN_THROTTLE(
+            logger_, *node_->get_clock(), 1000,
+            "rejected implausible arm joint-state sample; retaining last trusted state");
+          return;
+        }
         latest_joint_state_ = *message;
         latest_joint_state_received_ = node_->now();
         has_joint_state_ = true;
@@ -291,6 +433,8 @@ private:
       controller_wait_timeout_sec_ <= 0.0 || execution_margin_sec_ < 0.0 ||
       final_state_timeout_sec_ <= 0.0 || cancel_settle_timeout_sec_ <= 0.0 ||
       trajectory_start_delay_sec_ < 0.0 || goal_position_tolerance_rad_ <= 0.0 ||
+      path_position_tolerance_rad_ <= 0.0 || pour_path_position_tolerance_rad_ <= 0.0 ||
+      wrist_path_position_tolerance_rad_ <= 0.0 ||
       goal_velocity_tolerance_rad_sec_ <= 0.0)
     {
       throw std::runtime_error("motion server safety/timing parameters are invalid");
@@ -305,6 +449,26 @@ private:
       const auto result = compiler_->compileAll(candidate_catalog, candidate_routes);
       if (!result.success) {
         message = "motion catalog compile rejected; previous cache retained: " + result.message;
+        RCLCPP_ERROR(logger_, "%s", message.c_str());
+        return false;
+      }
+      std::string continuous_error;
+      if (!addContinuousRoute(
+          candidate_routes,
+          "outlet_1_grasp_to_spectrometer_place_continuous",
+          {"outlet_1_grasp_to_hover_fast", "outlet_1_hover_to_spectrometer_place"},
+          continuous_error) ||
+        !addContinuousRoute(
+          candidate_routes,
+          "spectrometer_pick_to_brush_entry_continuous",
+          {"spectrometer_pick_to_pick_hover_fast",
+            "spectrometer_pick_hover_to_clean_dump",
+            "clean_dump_to_pour",
+            "clean_dump_pour_shake_once",
+            "clean_dump_pour_to_brush_entry"},
+          continuous_error))
+      {
+        message = "continuous route composition rejected: " + continuous_error;
         RCLCPP_ERROR(logger_, "%s", message.c_str());
         return false;
       }
@@ -363,7 +527,12 @@ private:
       controller_goal = controller_goal_;
     }
     if (controller_goal) {
-      controller_client_->async_cancel_goal(controller_goal);
+      try {
+        controller_client_->async_cancel_goal(controller_goal);
+      } catch (const std::exception & error) {
+        RCLCPP_WARN(
+          logger_, "controller goal was already terminal while cancelling: %s", error.what());
+      }
     }
     return rclcpp_action::CancelResponse::ACCEPT;
   }
@@ -503,18 +672,10 @@ private:
     return false;
   }
 
-  bool cancelControllerGoalAndWait(
-    const std::shared_ptr<GoalHandleController> & controller_goal,
+  bool waitForArmSettled(
     const std::vector<std::string> & joint_names,
     std::string & error)
   {
-    const auto cancel_future = controller_client_->async_cancel_goal(controller_goal);
-    if (cancel_future.wait_for(std::chrono::duration<double>(controller_wait_timeout_sec_)) !=
-      std::future_status::ready)
-    {
-      error = "controller cancel acknowledgement timeout";
-    }
-
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(cancel_settle_timeout_sec_);
     do {
@@ -527,6 +688,26 @@ private:
       std::this_thread::sleep_for(20ms);
     } while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline);
     return false;
+  }
+
+  bool cancelControllerGoalAndWait(
+    const std::shared_ptr<GoalHandleController> & controller_goal,
+    const std::vector<std::string> & joint_names,
+    std::string & error)
+  {
+    try {
+      const auto cancel_future = controller_client_->async_cancel_goal(controller_goal);
+      if (cancel_future.wait_for(std::chrono::duration<double>(controller_wait_timeout_sec_)) !=
+        std::future_status::ready)
+      {
+        error = "controller cancel acknowledgement timeout";
+      }
+    } catch (const std::exception & exception) {
+      // A result can become terminal between the result/cancel checks.  That
+      // race is normal and must never terminate the long-running server.
+      error = std::string("controller goal already terminal: ") + exception.what();
+    }
+    return waitForArmSettled(joint_names, error);
   }
 
   void publishFeedback(
@@ -560,6 +741,14 @@ private:
     result->elapsed_sec = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - start).count();
 
+    // Clear the internal active state before publishing the terminal action result.
+    // A client is allowed to submit the next route as soon as it receives that result;
+    // publishing first created a small race where the next valid stage was rejected busy.
+    {
+      std::lock_guard<std::mutex> lock(controller_goal_mutex_);
+      controller_goal_.reset();
+    }
+    busy_.store(false);
     if (success) {
       goal_handle->succeed(result);
     } else if (error_code == ExecuteMotion::Result::ERROR_CANCELLED) {
@@ -567,11 +756,6 @@ private:
     } else {
       goal_handle->abort(result);
     }
-    {
-      std::lock_guard<std::mutex> lock(controller_goal_mutex_);
-      controller_goal_.reset();
-    }
-    busy_.store(false);
     RCLCPP_INFO(
       logger_,
       "motion result success=%s code=%d elapsed=%.3fs message=%s",
@@ -659,6 +843,21 @@ private:
     controller_request.goal_time_tolerance.nanosec = static_cast<uint32_t>(
       execution_margin_ns % 1000000000LL);
     for (const auto & joint_name : controller_request.trajectory.joint_names) {
+      control_msgs::msg::JointTolerance path_tolerance;
+      path_tolerance.name = joint_name;
+      const double route_path_tolerance =
+        route.name == "clean_dump_to_pour" ||
+        route.name == "clean_dump_pour_shake_once" ||
+        route.name == "clean_dump_pour_to_brush_entry" ||
+        route.name == "spectrometer_pick_to_brush_entry_continuous" ?
+        pour_path_position_tolerance_rad_ : path_position_tolerance_rad_;
+      // The process only requires the wrist to reach its final angle. Keep strict path
+      // protection on joints 1-5, while allowing joint6 to track through transient lag.
+      path_tolerance.position = joint_name == "joint6" ?
+        std::max(route_path_tolerance, wrist_path_position_tolerance_rad_) :
+        route_path_tolerance;
+      controller_request.path_tolerance.push_back(path_tolerance);
+
       control_msgs::msg::JointTolerance tolerance;
       tolerance.name = joint_name;
       tolerance.position = goal_position_tolerance_rad_;
@@ -731,19 +930,19 @@ private:
         }
         if (wrapped.code == rclcpp_action::ResultCode::CANCELED) {
           std::string settle_error;
-          cancelControllerGoalAndWait(
-            controller_goal, route.trajectory.joint_names, settle_error);
+          const bool settled = waitForArmSettled(route.trajectory.joint_names, settle_error);
           finish(
             goal_handle, false, ExecuteMotion::Result::ERROR_CANCELLED,
-            "arm trajectory controller cancelled the route", started);
+            settled ? "arm trajectory controller cancelled the route and arm settled" :
+            "arm trajectory controller cancelled the route; settle not confirmed: " +
+            settle_error,
+            started);
           return;
         }
         std::string controller_message = wrapped.result ?
           wrapped.result->error_string : "no controller result";
         std::string settle_error;
-        if (!cancelControllerGoalAndWait(
-            controller_goal, route.trajectory.joint_names, settle_error))
-        {
+        if (!waitForArmSettled(route.trajectory.joint_names, settle_error)) {
           controller_message += "; arm settle not confirmed: " + settle_error;
         }
         finish(
@@ -782,6 +981,9 @@ private:
   double cancel_settle_timeout_sec_;
   double trajectory_start_delay_sec_;
   double goal_position_tolerance_rad_;
+  double path_position_tolerance_rad_;
+  double pour_path_position_tolerance_rad_;
+  double wrist_path_position_tolerance_rad_;
   double goal_velocity_tolerance_rad_sec_;
   double default_speed_scale_;
 

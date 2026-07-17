@@ -32,6 +32,7 @@ public:
 
   ActionResult initialize();
   ActionResult stop();
+  ActionResult recoverHomeAfterError();
   ActionResult reset();
   void updateConfig(const WorkcellConfig & config);
 
@@ -78,6 +79,8 @@ private:
   bool waitForGripperTarget(
     double target_position,
     std::chrono::duration<double> timeout,
+    bool allow_grasp_contact,
+    bool & grasp_contact,
     std::string & error) const;
   ActionResult setCleaningMotor(bool enabled, const std::string & label);
   ActionResult openGripper();
@@ -103,6 +106,9 @@ private:
   std::unique_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_;
   rclcpp_action::Client<panthera_interfaces::action::ExecuteMotion>::SharedPtr motion_client_;
   rclcpp::CallbackGroup::SharedPtr motion_callback_group_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr
+  arm_recovery_client_;
+  rclcpp::CallbackGroup::SharedPtr arm_recovery_callback_group_;
   mutable std::mutex fixed_state_mutex_;
   std::string fixed_point_;
   OutletId active_outlet_{OutletId::NONE};

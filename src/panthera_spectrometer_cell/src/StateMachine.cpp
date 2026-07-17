@@ -1146,10 +1146,24 @@ void StateMachine::onEnter(State state)
 
 void StateMachine::fail(const std::string & message)
 {
-  context_.setError(message);
-  RCLCPP_ERROR(logger_, "ERROR state=%s reason=%s", toString(state_).c_str(), message.c_str());
+  std::string final_message = message;
+  const bool estop_active = estop_pressed_ || state_ == State::ESTOP ||
+    (sensors_ && sensors_->isEmergencyStopActive());
+  if (!estop_active && robot_) {
+    const auto recovery = robot_->recoverHomeAfterError();
+    if (recovery.success) {
+      RCLCPP_ERROR(logger_, "SAFETY_RECOVERY_OK %s", recovery.message.c_str());
+      final_message += "; safety recovery: Home encoder-confirmed";
+    } else {
+      RCLCPP_FATAL(logger_, "SAFETY_RECOVERY_FAILED %s", recovery.message.c_str());
+      final_message += "; SAFETY RECOVERY FAILED, KEEP ENABLED: " + recovery.message;
+    }
+  }
+  context_.setError(final_message);
+  RCLCPP_ERROR(
+    logger_, "ERROR state=%s reason=%s", toString(state_).c_str(), final_message.c_str());
   publishError();
-  transitionTo(State::ERROR, message);
+  transitionTo(State::ERROR, final_message);
 }
 
 void StateMachine::startAction(const std::string & action_name)

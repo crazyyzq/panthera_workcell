@@ -6,12 +6,14 @@
 #include <future>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include <builtin_interfaces/msg/duration.hpp>
+#include <control_msgs/msg/joint_tolerance.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <moveit/robot_state/robot_state.h>
 #include <moveit_msgs/msg/collision_object.hpp>
@@ -31,6 +33,7 @@ constexpr char kGripperAction[] = "/gripper_controller/follow_joint_trajectory";
 constexpr char kGripperJoint[] = "L_finger_joint";
 constexpr char kCupObjectId[] = "carried_cup";
 constexpr char kMotionAction[] = "/motion/execute";
+constexpr char kArmAction[] = "/arm_controller/follow_joint_trajectory";
 
 using ExecuteMotion = panthera_interfaces::action::ExecuteMotion;
 using FollowTrajectory = control_msgs::action::FollowJointTrajectory;
@@ -348,6 +351,159 @@ ActionResult RobotActions::stop()
     }
   }
   return ActionResult::ok("robot stopped");
+}
+
+ActionResult RobotActions::recoverHomeAfterError()
+{
+  constexpr double kSettledVelocityRadSec = 0.05;
+  const auto & home = config_.motion.homeJointPose;
+  const std::vector<std::string> joint_names{
+    "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
+
+  if (config_.simulation.enabled) {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_ = "home_near";
+    active_outlet_ = OutletId::NONE;
+    return ActionResult::ok("simulated error recovery at home_near");
+  }
+  if (!arm_recovery_client_) {
+    return ActionResult::fail("error recovery unavailable: arm controller client is not initialized");
+  }
+
+  const auto motor_stop = setCleaningMotor(false, "stop cleaning motor before error recovery");
+  if (!motor_stop.success) {
+    RCLCPP_ERROR(logger_, "%s", motor_stop.message.c_str());
+  }
+
+  if (motion_client_) {
+    const auto cancel_future = motion_client_->async_cancel_all_goals();
+    cancel_future.wait_for(std::chrono::duration<double>(config_.motion.cancelWaitSec));
+  }
+
+  std::vector<double> current;
+  if (!getLatestArmJointValues(current) || current.size() != home.size()) {
+    return ActionResult::fail("error recovery refused: fresh six-joint encoder state unavailable");
+  }
+
+  auto confirm_home = [this, &home, &joint_names, kSettledVelocityRadSec](
+      double & max_error, double & max_velocity) {
+      max_error = std::numeric_limits<double>::infinity();
+      max_velocity = std::numeric_limits<double>::infinity();
+      sensor_msgs::msg::JointState state;
+      rclcpp::Time received;
+      {
+        std::lock_guard<std::mutex> lock(joint_state_mutex_);
+        if (!has_joint_state_) {
+          return false;
+        }
+        state = latest_joint_state_;
+        received = latest_joint_state_received_;
+      }
+      if ((node_->now() - received).seconds() > 0.5) {
+        return false;
+      }
+      max_error = 0.0;
+      for (std::size_t index = 0; index < joint_names.size(); ++index) {
+        double position = 0.0;
+        if (!lookupJointValue(state, joint_names[index], state.position, position)) {
+          return false;
+        }
+        max_error = std::max(max_error, std::abs(position - home[index]));
+      }
+      return jointVelocityBelowThreshold(
+        state, joint_names, kSettledVelocityRadSec, max_velocity) &&
+             max_error <= config_.motion.errorRecoverySettleToleranceRad;
+    };
+
+  double max_error = 0.0;
+  double max_velocity = 0.0;
+  if (confirm_home(max_error, max_velocity)) {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    fixed_point_ = "home_near";
+    active_outlet_ = OutletId::NONE;
+    return ActionResult::ok("error recovery skipped: encoder already confirms home_near");
+  }
+
+  if (!arm_recovery_client_->wait_for_action_server(
+      std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
+  {
+    return ActionResult::fail("error recovery unavailable: arm controller action server missing");
+  }
+
+  FollowTrajectory::Goal goal;
+  goal.trajectory.header.stamp = node_->now() + rclcpp::Duration::from_seconds(0.10);
+  goal.trajectory.joint_names = joint_names;
+  trajectory_msgs::msg::JointTrajectoryPoint target;
+  target.positions = home;
+  target.velocities.assign(home.size(), 0.0);
+  target.accelerations.assign(home.size(), 0.0);
+  target.time_from_start = secondsToDuration(config_.motion.errorRecoveryDurationSec);
+  goal.trajectory.points.push_back(target);
+
+  for (const auto & joint_name : joint_names) {
+    control_msgs::msg::JointTolerance path_tolerance;
+    path_tolerance.name = joint_name;
+    path_tolerance.position = config_.motion.errorRecoveryPathToleranceRad;
+    goal.path_tolerance.push_back(path_tolerance);
+
+    control_msgs::msg::JointTolerance goal_tolerance;
+    goal_tolerance.name = joint_name;
+    goal_tolerance.position = config_.motion.errorRecoveryGoalToleranceRad;
+    goal_tolerance.velocity = kSettledVelocityRadSec;
+    goal.goal_tolerance.push_back(goal_tolerance);
+  }
+  goal.goal_time_tolerance = secondsToDuration(config_.motion.errorRecoveryTimeoutMarginSec);
+
+  RCLCPP_ERROR(
+    logger_,
+    "SAFETY_RECOVERY_START keep_enabled=true target=home_near duration=%.2fs",
+    config_.motion.errorRecoveryDurationSec);
+  const auto goal_future = arm_recovery_client_->async_send_goal(goal);
+  if (goal_future.wait_for(
+      std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=
+    std::future_status::ready)
+  {
+    return ActionResult::fail("error recovery failed: controller goal response timeout; keep enabled");
+  }
+  const auto goal_handle = goal_future.get();
+  if (!goal_handle) {
+    return ActionResult::fail("error recovery failed: controller rejected Home goal; keep enabled");
+  }
+
+  const auto result_future = arm_recovery_client_->async_get_result(goal_handle);
+  const double result_timeout = config_.motion.errorRecoveryDurationSec +
+    config_.motion.errorRecoveryTimeoutMarginSec;
+  if (result_future.wait_for(std::chrono::duration<double>(result_timeout)) !=
+    std::future_status::ready)
+  {
+    return ActionResult::fail("error recovery failed: controller result timeout; keep enabled");
+  }
+  const auto wrapped = result_future.get();
+  if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED || !wrapped.result ||
+    wrapped.result->error_code != FollowTrajectory::Result::SUCCESSFUL)
+  {
+    const std::string detail = wrapped.result ? wrapped.result->error_string : "missing result";
+    return ActionResult::fail("error recovery controller failure: " + detail + "; keep enabled");
+  }
+
+  const auto confirm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  do {
+    if (confirm_home(max_error, max_velocity)) {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      fixed_point_ = "home_near";
+      active_outlet_ = OutletId::NONE;
+      RCLCPP_ERROR(
+        logger_, "SAFETY_RECOVERY_CONFIRMED target=home_near max_error=%.6f max_velocity=%.6f",
+        max_error, max_velocity);
+      return ActionResult::ok("error recovery encoder-confirmed at home_near");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  } while (std::chrono::steady_clock::now() < confirm_deadline);
+
+  std::ostringstream error;
+  error << "error recovery final encoder confirmation failed: max_error=" << max_error
+        << " max_velocity=" << max_velocity << "; keep enabled";
+  return ActionResult::fail(error.str());
 }
 
 ActionResult RobotActions::reset()
@@ -1161,6 +1317,10 @@ ActionResult RobotActions::initializeGripperAndJointStateInterfaces()
   }
 
   try {
+    arm_recovery_callback_group_ =
+      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    arm_recovery_client_ = rclcpp_action::create_client<FollowTrajectory>(
+      node_, kArmAction, arm_recovery_callback_group_);
     gripper_callback_group_ =
       node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     gripper_client_ = rclcpp_action::create_client<FollowTrajectory>(
@@ -1193,6 +1353,12 @@ ActionResult RobotActions::initializeGripperAndJointStateInterfaces()
   {
     return ActionResult::fail(
       "gripper action server unavailable at " + std::string(kGripperAction));
+  }
+  if (!arm_recovery_client_->wait_for_action_server(
+      std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
+  {
+    return ActionResult::fail(
+      "arm recovery action server unavailable at " + std::string(kArmAction));
   }
   return ActionResult::ok("gripper action and joint-state feedback ready");
 }
@@ -1329,19 +1495,15 @@ ActionResult RobotActions::executeFixedCleaning()
     }
   }
 
-  result = executeFixedRoute(
-    "clean_dump_pour_to_upright", "clean_dump", "fixed wrist return upright");
-  if (!result.success) {
-    return result;
-  }
-
   if (!config_.cleaning.brushEnabled) {
     return executeFixedRoute(
-      "clean_dump_to_clean_hover", "clean_hover", "fixed route leave clean dump");
+      "clean_dump_pour_to_clean_hover", "clean_hover",
+      "fixed route leave pour pose without upright stop");
   }
 
   result = executeFixedRoute(
-    "clean_dump_to_brush_entry", "brush_entry", "fixed route align brush entry");
+    "clean_dump_pour_to_brush_entry", "brush_entry",
+    "fixed direct route from pour pose to brush above");
   if (!result.success) {
     return result;
   }
@@ -1372,7 +1534,7 @@ ActionResult RobotActions::executeFixedCleaning()
   }
 
   result = executeFixedRoute(
-    "brush_center_to_outer", "brush_outer", "fixed Cartesian brush exit");
+    "brush_center_to_entry", "brush_entry", "fixed vertical 50mm brush exit");
   if (!result.success) {
     stop_motor();
     return result;
@@ -1388,7 +1550,7 @@ ActionResult RobotActions::executeFixedCleaning()
   }
 
   return executeFixedRoute(
-    "brush_outer_to_clean_hover", "clean_hover", "fixed route leave brush area");
+    "brush_entry_to_clean_hover", "clean_hover", "fixed direct route leave brush area");
 }
 
 ActionResult RobotActions::initializeRealInterfaces()
@@ -1969,11 +2131,8 @@ bool RobotActions::isJointWithinLimit(std::size_t joint_index, double position) 
 
 bool RobotActions::getLatestArmJointValues(std::vector<double> & positions) const
 {
-  if (!arm_) {
-    return false;
-  }
-
-  const auto joint_names = armJointNames(*arm_);
+  const auto joint_names = arm_ ? armJointNames(*arm_) :
+    std::vector<std::string>{"joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
   if (joint_names.empty()) {
     return false;
   }
@@ -2020,6 +2179,8 @@ ActionResult RobotActions::sendGripperTo(
   const double command_position =
     clampPosition(position, config_.gripper.closePosition, config_.gripper.openPosition);
   const double scaled_duration = effectiveDuration(duration_sec);
+  const bool allow_grasp_contact =
+    command_position <= config_.gripper.closePosition + config_.gripper.positionToleranceM;
   std::string last_error;
 
   for (int attempt = 0; attempt <= config_.gripper.retryCount; ++attempt) {
@@ -2041,11 +2202,23 @@ ActionResult RobotActions::sendGripperTo(
     point.time_from_start = secondsToDuration(scaled_duration);
     goal.trajectory.points.push_back(point);
 
+    if (allow_grasp_contact) {
+      auto hold_point = point;
+      hold_point.time_from_start = secondsToDuration(scaled_duration + 3600.0);
+      goal.trajectory.points.push_back(hold_point);
+    }
+
     control_msgs::msg::JointTolerance tolerance;
     tolerance.name = kGripperJoint;
-    tolerance.position = config_.gripper.positionToleranceM;
+    tolerance.position = allow_grasp_contact ?
+      config_.gripper.graspHoldGoalToleranceM : config_.gripper.positionToleranceM;
     tolerance.velocity = config_.gripper.settledVelocityToleranceMps;
     goal.goal_tolerance.push_back(tolerance);
+    if (allow_grasp_contact) {
+      auto path_tolerance = tolerance;
+      path_tolerance.position = 0.10;
+      goal.path_tolerance.push_back(path_tolerance);
+    }
     goal.goal_time_tolerance = secondsToDuration(config_.gripper.commandTimeoutMarginSec);
 
     const auto goal_future = gripper_client_->async_send_goal(goal);
@@ -2063,40 +2236,40 @@ ActionResult RobotActions::sendGripperTo(
     }
 
     const auto result_future = gripper_client_->async_get_result(goal_handle);
-    const double result_timeout = scaled_duration + config_.gripper.commandTimeoutMarginSec;
-    if (result_future.wait_for(std::chrono::duration<double>(result_timeout)) ==
-      std::future_status::ready)
-    {
-      const auto wrapped = result_future.get();
-      if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED ||
-        !wrapped.result || wrapped.result->error_code != FollowTrajectory::Result::SUCCESSFUL)
-      {
-        last_error = wrapped.result ? wrapped.result->error_string : "missing gripper result";
-      }
-    } else {
-      // A controller result can be delayed even after the gripper physically arrives.
-      // Confirm the encoder target before deciding whether cancellation/retry is needed.
-      std::string target_error;
-      if (waitForGripperTarget(
-          command_position,
-          std::chrono::duration<double>(config_.gripper.settleTimeoutSec),
-          target_error))
-      {
-        return ActionResult::ok(label + " ok (encoder-confirmed after result timeout)");
-      }
-      const auto cancel_future = gripper_client_->async_cancel_goal(goal_handle);
-      cancel_future.wait_for(
-        std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec));
-      last_error = "gripper result timeout; " + target_error;
-    }
-
+    bool grasp_contact = false;
     std::string target_error;
     if (waitForGripperTarget(
         command_position,
-        std::chrono::duration<double>(config_.gripper.settleTimeoutSec),
+        std::chrono::duration<double>(scaled_duration + config_.gripper.settleTimeoutSec),
+        allow_grasp_contact,
+        grasp_contact,
         target_error))
     {
-      return ActionResult::ok(label + " ok (action and encoder confirmed)");
+      if (grasp_contact) {
+        // The cup intentionally prevents the commanded zero position. Keep the accepted
+        // trajectory alive: its final target remains zero, so ros2_control continues applying
+        // closing effort after contact until an explicit open command replaces it.
+        RCLCPP_INFO(
+          logger_, "%s stable grasp contact detected; continuous close target retained",
+          label.c_str());
+        return ActionResult::ok(label + " ok (stable grasp contact)");
+      }
+      return ActionResult::ok(label + " ok (encoder target reached)");
+    }
+
+    if (result_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      const auto wrapped = result_future.get();
+      last_error = wrapped.result ? wrapped.result->error_string : "missing gripper result";
+      if (wrapped.code == rclcpp_action::ResultCode::SUCCEEDED && wrapped.result &&
+        wrapped.result->error_code == FollowTrajectory::Result::SUCCESSFUL)
+      {
+        last_error = "controller succeeded but encoder verification failed";
+      }
+    } else {
+      const auto cancel_future = gripper_client_->async_cancel_goal(goal_handle);
+      cancel_future.wait_for(
+        std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec));
+      last_error = "gripper result timeout";
     }
     last_error += "; " + target_error;
     if (attempt < config_.gripper.retryCount) {
@@ -2112,9 +2285,13 @@ ActionResult RobotActions::sendGripperTo(
 bool RobotActions::waitForGripperTarget(
   double target_position,
   std::chrono::duration<double> timeout,
+  bool allow_grasp_contact,
+  bool & grasp_contact,
   std::string & error) const
 {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::optional<std::chrono::steady_clock::time_point> contact_since;
+  grasp_contact = false;
   do {
     sensor_msgs::msg::JointState state;
     rclcpp::Time received;
@@ -2144,6 +2321,25 @@ bool RobotActions::waitForGripperTarget(
           std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps)
         {
           return true;
+        }
+        const bool contact_candidate =
+          allow_grasp_contact &&
+          current_position <= config_.gripper.openPosition -
+          config_.gripper.graspContactMinClosureM &&
+          current_position > target_position + config_.gripper.positionToleranceM &&
+          std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps;
+        if (contact_candidate) {
+          const auto now = std::chrono::steady_clock::now();
+          if (!contact_since) {
+            contact_since = now;
+          } else if (std::chrono::duration<double>(now - *contact_since).count() >=
+            config_.gripper.graspContactConfirmSec)
+          {
+            grasp_contact = true;
+            return true;
+          }
+        } else {
+          contact_since.reset();
         }
         std::ostringstream out;
         out << "gripper target not reached: position_error=" << position_error

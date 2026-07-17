@@ -48,8 +48,10 @@ trajectory_msgs::msg::JointTrajectory scaleTrajectory(
 
 double trajectoryDurationSec(const trajectory_msgs::msg::JointTrajectory & trajectory);
 
-ValidationResult enforceTrajectoryJerkLimit(
+ValidationResult enforceTrajectoryDynamicsLimits(
   trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & max_velocities_rad_sec,
+  const std::vector<double> & max_accelerations_rad_sec2,
   double max_jerk_rad_sec3);
 
 }  // namespace panthera_motion

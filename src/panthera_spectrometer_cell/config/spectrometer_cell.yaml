@@ -78,15 +78,24 @@ motion:
   transient_retry_delay_sec: 0.25
   cancel_wait_sec: 2.0
 
+  # 普通流程错误（不含急停）后，保持伺服使能并从编码器当前位置回原始工程 Home。
+  # 只有终点编码器确认成功后，上层才进入可安全停机状态。
+  home_joint_pose: [-0.006, 0.000, 0.012, -0.072, -0.006, 0.034]
+  error_recovery_duration_sec: 10.0
+  error_recovery_path_tolerance_rad: 0.50
+  error_recovery_goal_tolerance_rad: 0.05
+  error_recovery_settle_tolerance_rad: 0.03
+  error_recovery_timeout_margin_sec: 5.0
+
   # ========== MoveIt 全局规划参数 ==========
   # 这些参数影响所有机械臂动作。现场调点时通常不用改，除非规划经常失败或速度明显不合适。
 
   # MoveIt 规划出来的机械臂基础速度比例，范围通常 0.01 到 1.0。
   # 最终速度 = velocity_scale * HMI速度倍率，并会被代码限制在 0.01 到 1.0。
-  velocity_scale: 0.10
+  velocity_scale: 1.0
 
   # MoveIt 规划出来的基础加速度比例，范围通常 0.01 到 1.0。
-  acceleration_scale: 0.10
+  acceleration_scale: 1.0
 
   # 单次 MoveIt 规划允许的时间，单位 s。复杂绕障规划可以适当加大。
   planning_time_sec: 8.0
@@ -211,17 +220,24 @@ gripper:
   close_position: 0.000
 
   # 打开夹爪轨迹时长，单位 s。
-  open_duration_sec: 1.5
+  open_duration_sec: 0.8
 
   # 闭合夹爪轨迹时长，单位 s。
-  close_duration_sec: 1.5
+  close_duration_sec: 0.8
 
   # Closed-loop FollowJointTrajectory command and recovery settings.
   action_server_wait_sec: 5.0
   command_timeout_margin_sec: 2.0
   position_tolerance_m: 0.003
+  # 抓到杯子后允许控制器正常结束轨迹，但最终命令仍保持 0mm，持续施加闭合力。
+  # 严禁在接触时 cancel；只有明确的开爪命令才能释放杯子。
+  grasp_hold_goal_tolerance_m: 0.040
   settled_velocity_tolerance_mps: 0.003
   settle_timeout_sec: 1.0
+  # 闭合时只要夹爪至少收拢该距离，并持续低速不动，就认为已稳定夹到杯子。
+  # 这样物体阻挡在约32mm时不会再等待“闭合到0mm”的超时和重试。
+  grasp_contact_min_closure_m: 0.008
+  grasp_contact_confirm_sec: 0.08
   retry_count: 1
 
 simulation:
@@ -348,7 +364,7 @@ cleaning:
   pour_acceleration_scale: 0.1
 
   # 翻到倒料角度后的停留时间，单位 s。
-  pour_hold_sec: 0.15
+  pour_hold_sec: 0.0
 
   # 倒料后的摆动次数。
   shake_count: 1
@@ -357,7 +373,7 @@ cleaning:
   shake_angle_rad: 0.4
 
   # 每次摆动后的短暂停留，单位 s。
-  shake_hold_sec: 0.05
+  shake_hold_sec: 0.0
 
   # 是否在倒料抖动后进入毛刷点位做二次清洁。
   brush_enabled: true
@@ -367,10 +383,10 @@ cleaning:
   brush_pose: clean_brush
 
   # 毛刷靠近/进入/退出动作的速度比例，只影响毛刷段，不影响倒料和搬运路径。
-  brush_velocity_scale: 0.04
+  brush_velocity_scale: 1.0
 
   # 毛刷靠近/进入/退出动作的加速度比例。
-  brush_acceleration_scale: 0.04
+  brush_acceleration_scale: 1.0
 
   # 毛刷外侧对准点偏移，单位 m，坐标系是 clean_brush 姿态下的 gripper_center 局部坐标，
   # 不是 base_link 世界坐标。
@@ -379,13 +395,13 @@ cleaning:
   # 当前 [0, 0, -0.04] 表示沿夹爪平面法向，也就是 gripper_center 局部 -Z，
   # 退 40mm 到毛刷近外侧；再沿局部 +Z 笛卡尔平移套入毛刷。
   # 如果现场方向正反相反，只改第三个数的正负号，不要再改到局部 X/Y。
-  brush_approach_offset_xyz: [0.0, 0.0, -0.04]
+  brush_approach_offset_xyz: [0.0, 0.0, 0.05]
 
   # 毛刷远外侧安全点，单位 m，坐标系同样是 clean_brush 姿态下的 gripper_center 局部坐标。
   # 进入时先到此点，再沿直线靠近 brush_approach_offset_xyz；退出时严格反向，
   # 先退出到 brush_approach_offset_xyz，再缩回此点，之后才允许夹爪/第六轴回正。
   # 应和 brush_approach_offset_xyz 同方向，且距离更大；当前 80mm 是该姿态经 IK 验证的可达远外侧点。
-  brush_upright_retreat_offset_xyz: [0.0, 0.0, -0.08]
+  brush_upright_retreat_offset_xyz: [0.0, 0.0, 0.05]
 
   # 毛刷内部往复次数。每次会在已经进入毛刷后，从中心点分别 Cartesian 移动到 -offset 和 +offset。
   # offset 同样按 gripper_center 局部坐标解释。
@@ -396,11 +412,11 @@ cleaning:
   brush_stroke_offset_xyz: [0.0, 0.0, 0.0]
 
   # 每个毛刷往复端点的短暂停留，单位 s。
-  brush_hold_sec: 1.0
+  brush_hold_sec: 0.0
 
   # 杯子完全退出到 brush_upright_retreat_offset_xyz 后，电机继续转动的时间，单位 s。
   # 这段结束后才发送停止字符，并且之后才允许第六轴/夹爪回正。
-  brush_motor_stop_delay_sec: 0.5
+  brush_motor_stop_delay_sec: 0.0
 
   # ========== 清洁电机串口控制 ==========
   # 杯子准备从毛刷外侧进入 clean_brush 前发送单个 ASCII 字符 '1'，不带换行；

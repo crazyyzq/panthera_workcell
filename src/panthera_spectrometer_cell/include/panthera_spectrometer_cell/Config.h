@@ -68,6 +68,12 @@ struct MotionConfig
   double cleanPreZ{0.160};
   double cleanReadyZ{0.160};
   std::vector<double> safeJointPose{0.0, 0.180, 0.180, 0.0, 0.0, 0.0};
+  std::vector<double> homeJointPose{-0.006, 0.0, 0.012, -0.072, -0.006, 0.034};
+  double errorRecoveryDurationSec{10.0};
+  double errorRecoveryPathToleranceRad{0.50};
+  double errorRecoveryGoalToleranceRad{0.05};
+  double errorRecoverySettleToleranceRad{0.03};
+  double errorRecoveryTimeoutMarginSec{5.0};
 };
 
 struct GripperConfig
@@ -79,8 +85,11 @@ struct GripperConfig
   double actionServerWaitSec{5.0};
   double commandTimeoutMarginSec{2.0};
   double positionToleranceM{0.003};
+  double graspHoldGoalToleranceM{0.040};
   double settledVelocityToleranceMps{0.003};
   double settleTimeoutSec{1.0};
+  double graspContactMinClosureM{0.008};
+  double graspContactConfirmSec{0.08};
   int retryCount{1};
 };
 

@@ -1,6 +1,7 @@
 #include "panthera_hardware/panthera_hardware_interface.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -44,6 +45,13 @@ int readIntParameter(
 {
   const auto it = info.hardware_parameters.find(name);
   return it == info.hardware_parameters.end() ? default_value : std::stoi(it->second);
+}
+
+bool isPlausibleArmPosition(double position)
+{
+  // The vendor SDK uses 999 as a communication/status sentinel. No Panthera
+  // arm joint can physically approach this range.
+  return std::isfinite(position) && std::abs(position) <= 10.0;
 }
 
 }  // namespace
@@ -263,7 +271,7 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
     {
       RCLCPP_ERROR_THROTTLE(
         rclcpp::get_logger("PantheraHardwareInterface"),
-        *rclcpp::Clock::make_shared(),
+        throttle_clock_,
         1000,
         "Incomplete arm state from SDK: positions=%zu velocities=%zu torques=%zu",
         positions.size(),
@@ -274,11 +282,18 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
 
     for (size_t i = 0; i < 6; i++)
     {
+      if (!isPlausibleArmPosition(positions[i])) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("PantheraHardwareInterface"),
+          "Reject invalid initial arm state on joint %zu: %.6f", i + 1, positions[i]);
+        return hardware_interface::CallbackReturn::ERROR;
+      }
       hw_positions_[i] = positions[i];
       hw_velocities_[i] = velocities[i];
       hw_efforts_[i] = torques[i];
       hw_commands_positions_[i] = positions[i];  // Initialize commands to current position
     }
+    arm_state_available_ = true;
 
     // Read gripper state (7th joint, index 6 = L_finger_joint) if present
     // Convert from radians to meters for prismatic joint
@@ -418,10 +433,11 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_deactivate(
   {
     if (robot_)
     {
-      // Repeat the vendor stop frame to tolerate a single dropped serial frame.
-      robot_->set_stop();
-      robot_->set_stop();
-      robot_->set_stop();
+      // Keep the current pose when controllers are deactivated. A plain stop
+      // releases the joint before the SDK destructor applies the brake.
+      robot_->set_brake();
+      robot_->set_brake();
+      robot_->set_brake();
     }
   }
   catch (const std::exception & e)
@@ -485,7 +501,7 @@ double PantheraHardwareInterface::filterPositionSample(
 
   RCLCPP_WARN_THROTTLE(
     rclcpp::get_logger("PantheraHardwareInterface"),
-    *rclcpp::Clock::make_shared(),
+    throttle_clock_,
     1000,
     "Reject transient state jump on %s: %.4f -> %.4f rad/m, holding previous value",
     info_.joints[joint_index].name.c_str(),
@@ -537,7 +553,7 @@ hardware_interface::return_type PantheraHardwareInterface::read(
     {
       RCLCPP_ERROR_THROTTLE(
         rclcpp::get_logger("PantheraHardwareInterface"),
-        *rclcpp::Clock::make_shared(),
+        throttle_clock_,
         1000,
         "Incomplete arm state from SDK: positions=%zu velocities=%zu torques=%zu",
         positions.size(),
@@ -546,12 +562,44 @@ hardware_interface::return_type PantheraHardwareInterface::read(
       return hardware_interface::return_type::ERROR;
     }
 
+    const bool arm_state_valid = std::all_of(
+      positions.begin(), positions.begin() + 6,
+      [](double position) {return isPlausibleArmPosition(position);});
+    if (!arm_state_valid) {
+      arm_state_available_ = false;
+      for (size_t i = 0; i < 6; ++i) {
+        // Publish the SDK's explicit unavailable sentinel. Consumers reject
+        // this sample and their last trusted state naturally becomes stale.
+        hw_positions_[i] = positions[i];
+        hw_velocities_[i] = 0.0;
+        raw_position_candidate_counts_[i] = 0;
+      }
+      RCLCPP_WARN_THROTTLE(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        throttle_clock_, 1000,
+        "Arm motors are not ready (SDK position sentinel); suppressing hardware commands");
+      return hardware_interface::return_type::OK;
+    }
+
+    const bool arm_state_recovered = !arm_state_available_;
+    arm_state_available_ = true;
     for (size_t i = 0; i < 6; i++)
     {
-      hw_positions_[i] = filterPositionSample(i, positions[i], state_filter_max_arm_jump_rad_);
+      if (arm_state_recovered) {
+        hw_positions_[i] = positions[i];
+        raw_position_candidate_counts_[i] = 0;
+        raw_velocity_windows_[i].clear();
+      } else {
+        hw_positions_[i] = filterPositionSample(i, positions[i], state_filter_max_arm_jump_rad_);
+      }
       hw_velocities_[i] = filterVelocitySample(
         i, velocities[i], state_velocity_arm_deadband_rad_sec_);
       hw_efforts_[i] = torques[i];
+    }
+    if (arm_state_recovered) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        "Arm motor feedback recovered; hardware commands are enabled again");
     }
 
     // Read gripper state (7th joint, index 6 = L_finger_joint)
@@ -580,7 +628,7 @@ hardware_interface::return_type PantheraHardwareInterface::read(
   catch (const std::exception & e)
   {
     RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("PantheraHardwareInterface"),
-                          *rclcpp::Clock::make_shared(), 1000,
+                          throttle_clock_, 1000,
                           "Failed to read joint states: %s", e.what());
     return hardware_interface::return_type::ERROR;
   }
@@ -594,6 +642,13 @@ hardware_interface::return_type PantheraHardwareInterface::write(
   // Write commands to hardware
   try
   {
+    if (!arm_state_available_) {
+      RCLCPP_WARN_THROTTLE(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        throttle_clock_, 1000,
+        "Suppress arm write while motors are not ready");
+      return hardware_interface::return_type::OK;
+    }
     // Extract first 6 joints for arm control
     std::vector<double> arm_positions(hw_commands_positions_.begin(),
                                        hw_commands_positions_.begin() + 6);
@@ -605,6 +660,10 @@ hardware_interface::return_type PantheraHardwareInterface::write(
     std::vector<double> arm_max_velocities(max_velocities_.begin(), max_velocities_.begin() + 6);
     std::vector<double> arm_kp(kp_gains_.begin(), kp_gains_.begin() + 6);
     std::vector<double> arm_kd(kd_gains_.begin(), kd_gains_.begin() + 6);
+    constexpr std::array<double, 6> kMinimumPosition{
+      -2.4, -0.01, -0.01, -1.6, -1.7, -2.5};
+    constexpr std::array<double, 6> kMaximumPosition{
+      2.4, 3.2, 4.0, 1.6, 1.7, 2.5};
     for (std::size_t index = 0; index < arm_positions.size(); ++index)
     {
       if (!std::isfinite(arm_positions[index]) || !std::isfinite(arm_velocities[index]) ||
@@ -612,16 +671,18 @@ hardware_interface::return_type PantheraHardwareInterface::write(
       {
         RCLCPP_ERROR_THROTTLE(
           rclcpp::get_logger("PantheraHardwareInterface"),
-          *rclcpp::Clock::make_shared(), 1000,
-          "Rejected non-finite command for arm joint %zu", index + 1);
+          throttle_clock_, 1000,
+          "Rejected invalid command for arm joint %zu: position=%.6f; holding trusted state",
+          index + 1, arm_positions[index]);
         return hardware_interface::return_type::ERROR;
       }
+      arm_positions[index] = std::clamp(
+        arm_positions[index], kMinimumPosition[index], kMaximumPosition[index]);
       arm_velocities[index] = std::clamp(
         arm_velocities[index], -arm_max_velocities[index], arm_max_velocities[index]);
       arm_efforts[index] = std::clamp(
         arm_efforts[index], -arm_max_torques[index], arm_max_torques[index]);
     }
-
     // Control 6 arm joints. Never report a successful hardware cycle when the
     // vendor SDK rejected the command.
     bool arm_command_ok = false;
@@ -652,7 +713,7 @@ hardware_interface::return_type PantheraHardwareInterface::write(
     else
     {
       RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("PantheraHardwareInterface"),
-                            *rclcpp::Clock::make_shared(), 1000,
+                            throttle_clock_, 1000,
                             "Unknown control mode: %s", control_mode_.c_str());
       return hardware_interface::return_type::ERROR;
     }
@@ -661,7 +722,7 @@ hardware_interface::return_type PantheraHardwareInterface::write(
     {
       RCLCPP_ERROR_THROTTLE(
         rclcpp::get_logger("PantheraHardwareInterface"),
-        *rclcpp::Clock::make_shared(), 1000,
+        throttle_clock_, 1000,
         "Vendor SDK rejected an arm command in control mode '%s'", control_mode_.c_str());
       return hardware_interface::return_type::ERROR;
     }
@@ -706,7 +767,7 @@ hardware_interface::return_type PantheraHardwareInterface::write(
   catch (const std::exception & e)
   {
     RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("PantheraHardwareInterface"),
-                          *rclcpp::Clock::make_shared(), 1000,
+                          throttle_clock_, 1000,
                           "Failed to write commands: %s", e.what());
     return hardware_interface::return_type::ERROR;
   }

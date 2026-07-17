@@ -5,7 +5,9 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- The Windows network share `\\10.89.8.169\b1s_share\panthera_workcell_ws` maps to that same directory.
+- The controller address is network-dependent. The Windows share was observed at
+  `\\172.20.10.2\b1s_share\panthera_workcell_ws` on 2026-07-18 (previously
+  `\\10.89.8.169\b1s_share\panthera_workcell_ws`); both map to the canonical workspace.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -30,6 +32,15 @@ This file contains durable repository context and operating rules for future age
 
 ## Current motion facts
 
+- Current physically validated smooth profile (2026-07-18): arm trajectory velocity
+  limit `2.2 rad/s`, acceleration limit `3.0 rad/s^2`, and catalog jerk limit
+  `300 rad/s^3`. Nearby process transitions use lower per-route scaling; the final
+  10 mm pick/place segment remains at 40%. Do not restore the previous 4 rad/s^2
+  acceleration profile, which produced visible overshoot.
+- The commissioned spectrometer pickup column is `x=0.600 m`, `y=-0.132 m`;
+  `spectrometer_pick`, `spectrometer_prepick`, and `spectrometer_pick_hover` must
+  keep the same x/y so pickup and lift remain vertical. Pickup z is `0.312 m`,
+  10 mm below the commissioned placement point.
 - The arm controller is `joint_trajectory_controller/JointTrajectoryController` at 100 Hz.
 - Arm joints are `joint1` through `joint6`; gripper command joint is `L_finger_joint`; `R_finger_joint` is mimic/passive.
 - The controller exposes standard `FollowJointTrajectory` and can execute deterministic precompiled trajectories without MoveIt planning at production runtime.
@@ -40,6 +51,17 @@ This file contains durable repository context and operating rules for future age
 
 ## Safety invariants
 
+- The commissioned original Home joint vector is
+  `[-0.006, 0.0, 0.012, -0.072, -0.006, 0.034]`. Do not overwrite it from a
+  post-power-loss/random pose. On a recoverable runtime error, return to this Home
+  while enabled before disabling or restarting hardware.
+- Production gripper close is a retained position target of `0.0 m`; it must remain
+  commanded until an explicit release/open operation. Do not auto-release because
+  contact prevents the encoder from reaching zero.
+- After brush cleaning, first retract from `brush_center` to `brush_entry` along the
+  calibrated cup axis, then lift vertically to `brush_clear_high` (`z=0.45 m`) before
+  crossing to outlet 1. A direct low transfer from `brush_entry` toward the outlet can
+  collide with the spectrometer.
 - Never execute real robot motion merely to test a code change. Use build, unit, simulation and dry-run validation first.
 - Before real motion, confirm the workspace is clear, hardware E-stop is available, the controller is healthy, the robot is stationary, and the current joints are within the trajectory start tolerance.
 - Never silently bridge an arbitrary current state to a cached trajectory. Reject start mismatch or use a separately commissioned recovery route.

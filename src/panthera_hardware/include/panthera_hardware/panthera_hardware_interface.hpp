@@ -10,6 +10,7 @@
 #include "hardware_interface/hardware_info.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
+#include "rclcpp/clock.hpp"
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
@@ -62,6 +63,7 @@ private:
   std::vector<double> raw_position_candidates_;
   std::vector<int> raw_position_candidate_counts_;
   std::vector<std::deque<double>> raw_velocity_windows_;
+  bool arm_state_available_{false};
 
   // Joint commands
   std::vector<double> hw_commands_positions_;
@@ -73,6 +75,10 @@ private:
   std::vector<double> max_velocities_;
   std::vector<double> kp_gains_;
   std::vector<double> kd_gains_;
+
+  // Throttled logging requires a clock whose lifetime outlives the logging call.
+  // A temporary shared clock here previously caused a use-after-free on error paths.
+  rclcpp::Clock throttle_clock_{RCL_STEADY_TIME};
 
   // Control mode
   std::string control_mode_;

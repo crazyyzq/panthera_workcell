@@ -1,6 +1,7 @@
 #include "panthera_motion/Compiler.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -46,7 +47,113 @@ double durationToSeconds(const builtin_interfaces::msg::Duration & duration)
   return static_cast<double>(duration.sec) + static_cast<double>(duration.nanosec) * 1e-9;
 }
 
-double quinticPeakJerk(
+struct QuinticDynamicBounds
+{
+  double velocity{0.0};
+  double acceleration{0.0};
+  double jerk{0.0};
+};
+
+void appendUnitRoot(std::vector<double> & roots, double root)
+{
+  constexpr double tolerance = 1e-10;
+  if (!std::isfinite(root) || root < -tolerance || root > 1.0 + tolerance) {
+    return;
+  }
+  root = std::clamp(root, 0.0, 1.0);
+  if (std::none_of(
+      roots.begin(), roots.end(),
+      [root](double existing) {return std::abs(existing - root) <= 1e-8;}))
+  {
+    roots.push_back(root);
+  }
+}
+
+std::vector<double> quadraticUnitRoots(
+  double coefficient2, double coefficient1,
+  double coefficient0)
+{
+  std::vector<double> roots;
+  const double scale = std::max(
+    1.0, std::abs(coefficient2) + std::abs(coefficient1) + std::abs(coefficient0));
+  const double tolerance = 1e-12 * scale;
+  if (std::abs(coefficient2) <= tolerance) {
+    if (std::abs(coefficient1) > tolerance) {
+      appendUnitRoot(roots, -coefficient0 / coefficient1);
+    }
+    return roots;
+  }
+
+  double discriminant = coefficient1 * coefficient1 -
+    4.0 * coefficient2 * coefficient0;
+  if (discriminant < -tolerance * scale) {
+    return roots;
+  }
+  discriminant = std::max(0.0, discriminant);
+  const double square_root = std::sqrt(discriminant);
+  const double q = -0.5 * (coefficient1 + std::copysign(square_root, coefficient1));
+  if (std::abs(q) <= tolerance) {
+    appendUnitRoot(roots, -coefficient1 / (2.0 * coefficient2));
+  } else {
+    appendUnitRoot(roots, q / coefficient2);
+    appendUnitRoot(roots, coefficient0 / q);
+  }
+  return roots;
+}
+
+std::vector<double> cubicUnitRoots(
+  double coefficient3, double coefficient2, double coefficient1, double coefficient0)
+{
+  const double scale = std::max(
+    1.0, std::abs(coefficient3) + std::abs(coefficient2) +
+    std::abs(coefficient1) + std::abs(coefficient0));
+  const double tolerance = 1e-11 * scale;
+  if (std::abs(coefficient3) <= tolerance) {
+    return quadraticUnitRoots(coefficient2, coefficient1, coefficient0);
+  }
+
+  const auto evaluate = [ = ](double value) {
+      return ((coefficient3 * value + coefficient2) * value + coefficient1) * value +
+             coefficient0;
+    };
+  std::vector<double> knots{0.0, 1.0};
+  for (const double root : quadraticUnitRoots(
+      3.0 * coefficient3, 2.0 * coefficient2, coefficient1))
+  {
+    appendUnitRoot(knots, root);
+  }
+  std::sort(knots.begin(), knots.end());
+
+  std::vector<double> roots;
+  for (const double knot : knots) {
+    if (std::abs(evaluate(knot)) <= tolerance) {
+      appendUnitRoot(roots, knot);
+    }
+  }
+  for (std::size_t index = 1; index < knots.size(); ++index) {
+    double lower = knots[index - 1];
+    double upper = knots[index];
+    double lower_value = evaluate(lower);
+    const double upper_value = evaluate(upper);
+    if (lower_value * upper_value >= 0.0) {
+      continue;
+    }
+    for (int iteration = 0; iteration < 80; ++iteration) {
+      const double middle = 0.5 * (lower + upper);
+      const double middle_value = evaluate(middle);
+      if (lower_value * middle_value <= 0.0) {
+        upper = middle;
+      } else {
+        lower = middle;
+        lower_value = middle_value;
+      }
+    }
+    appendUnitRoot(roots, 0.5 * (lower + upper));
+  }
+  return roots;
+}
+
+QuinticDynamicBounds quinticDynamicBounds(
   double position0,
   double velocity0,
   double acceleration0,
@@ -56,85 +163,173 @@ double quinticPeakJerk(
   double duration)
 {
   if (!std::isfinite(duration) || duration <= 1e-9) {
-    return std::numeric_limits<double>::infinity();
+    const double infinity = std::numeric_limits<double>::infinity();
+    return {infinity, infinity, infinity};
   }
-  const double displacement = position1 - position0;
   const double duration2 = duration * duration;
-  const double duration3 = duration2 * duration;
-  const double duration4 = duration3 * duration;
-  const double duration5 = duration4 * duration;
-  const double c3 =
-    (20.0 * displacement - (8.0 * velocity1 + 12.0 * velocity0) * duration -
-    (3.0 * acceleration0 - acceleration1) * duration2) / (2.0 * duration3);
-  const double c4 =
-    (-30.0 * displacement + (14.0 * velocity1 + 16.0 * velocity0) * duration +
-    (3.0 * acceleration0 - 2.0 * acceleration1) * duration2) / (2.0 * duration4);
-  const double c5 =
-    (12.0 * displacement - (6.0 * velocity1 + 6.0 * velocity0) * duration -
-    (acceleration0 - acceleration1) * duration2) / (2.0 * duration5);
-  const auto jerk = [c3, c4, c5](double time) {
-      return 6.0 * c3 + 24.0 * c4 * time + 60.0 * c5 * time * time;
+  const double delta = position1 - position0;
+  // q(s) = sum(coefficients[i] * s^i), s in [0, 1].  Evaluating the
+  // derivative polynomial at every real stationary point gives the true
+  // interval extrema without the excessive slowdown of a convex-hull bound.
+  const std::array<double, 6> coefficients{
+    position0,
+    velocity0 * duration,
+    0.5 * acceleration0 * duration2,
+    10.0 * delta - (6.0 * velocity0 + 4.0 * velocity1) * duration -
+    (1.5 * acceleration0 - 0.5 * acceleration1) * duration2,
+    -15.0 * delta + (8.0 * velocity0 + 7.0 * velocity1) * duration +
+    (1.5 * acceleration0 - acceleration1) * duration2,
+    6.0 * delta - 3.0 * (velocity0 + velocity1) * duration -
+    0.5 * (acceleration0 - acceleration1) * duration2};
+
+  const auto velocity = [&](double s) {
+      return (coefficients[1] + s * (2.0 * coefficients[2] + s *
+             (3.0 * coefficients[3] + s *
+             (4.0 * coefficients[4] + s * 5.0 * coefficients[5])))) / duration;
     };
-  double peak = std::max(std::abs(jerk(0.0)), std::abs(jerk(duration)));
-  if (std::abs(c5) > 1e-12) {
-    const double critical_time = -c4 / (5.0 * c5);
-    if (critical_time > 0.0 && critical_time < duration) {
-      peak = std::max(peak, std::abs(jerk(critical_time)));
-    }
+  const auto acceleration = [&](double s) {
+      return (2.0 * coefficients[2] + s * (6.0 * coefficients[3] + s *
+             (12.0 * coefficients[4] + s * 20.0 * coefficients[5]))) / duration2;
+    };
+  const auto jerk = [&](double s) {
+      return (6.0 * coefficients[3] + s *
+             (24.0 * coefficients[4] + s * 60.0 * coefficients[5])) /
+             (duration2 * duration);
+    };
+
+  QuinticDynamicBounds bounds;
+  std::vector<double> velocity_candidates{0.0, 1.0};
+  for (const double root : cubicUnitRoots(
+      20.0 * coefficients[5], 12.0 * coefficients[4],
+      6.0 * coefficients[3], 2.0 * coefficients[2]))
+  {
+    appendUnitRoot(velocity_candidates, root);
   }
-  return peak;
+  for (const double candidate : velocity_candidates) {
+    bounds.velocity = std::max(bounds.velocity, std::abs(velocity(candidate)));
+  }
+
+  std::vector<double> acceleration_candidates{0.0, 1.0};
+  for (const double root : quadraticUnitRoots(
+      60.0 * coefficients[5], 24.0 * coefficients[4], 6.0 * coefficients[3]))
+  {
+    appendUnitRoot(acceleration_candidates, root);
+  }
+  for (const double candidate : acceleration_candidates) {
+    bounds.acceleration = std::max(
+      bounds.acceleration, std::abs(acceleration(candidate)));
+  }
+
+  std::vector<double> jerk_candidates{0.0, 1.0};
+  if (std::abs(coefficients[5]) > 1e-14) {
+    appendUnitRoot(jerk_candidates, -coefficients[4] / (5.0 * coefficients[5]));
+  }
+  for (const double candidate : jerk_candidates) {
+    bounds.jerk = std::max(bounds.jerk, std::abs(jerk(candidate)));
+  }
+  return bounds;
 }
 
-ValidationResult enforceQuinticJerkLimit(
+ValidationResult enforceQuinticDynamicsLimits(
   trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & max_velocities_rad_sec,
+  const std::vector<double> & max_accelerations_rad_sec2,
   double max_jerk_rad_sec3)
 {
-  if (trajectory.points.size() < 2 || max_jerk_rad_sec3 <= 0.0) {
-    return ValidationResult::fail("trajectory jerk limit input is invalid");
+  const std::size_t joint_count = trajectory.joint_names.size();
+  if (trajectory.points.size() < 2 || max_jerk_rad_sec3 <= 0.0 ||
+    max_velocities_rad_sec.size() != joint_count ||
+    max_accelerations_rad_sec2.size() != joint_count)
+  {
+    return ValidationResult::fail("trajectory dynamics limit input is invalid");
   }
-  double peak_jerk = 0.0;
+  for (std::size_t joint = 0; joint < joint_count; ++joint) {
+    if (!std::isfinite(max_velocities_rad_sec[joint]) ||
+      max_velocities_rad_sec[joint] <= 0.0 ||
+      !std::isfinite(max_accelerations_rad_sec2[joint]) ||
+      max_accelerations_rad_sec2[joint] <= 0.0)
+    {
+      return ValidationResult::fail("trajectory velocity/acceleration limit is invalid");
+    }
+  }
+
+  // Use one uniform scale for the whole compiled route. This keeps every
+  // waypoint derivative proportional and avoids the reference-speed ripple
+  // produced by independently stretching adjacent Cartesian intervals.
+  double global_stretch = 1.0;
+  std::size_t limiting_index = 0;
+  std::size_t limiting_joint = 0;
+  double limiting_peak = 0.0;
+  double limiting_limit = 0.0;
+  const char * limiting_kind = "none";
   for (std::size_t index = 1; index < trajectory.points.size(); ++index) {
     const auto & previous = trajectory.points[index - 1];
     const auto & current = trajectory.points[index];
     const double interval =
       durationToSeconds(current.time_from_start) -
       durationToSeconds(previous.time_from_start);
-    const std::size_t joint_count = trajectory.joint_names.size();
-    if (previous.positions.size() != joint_count || current.positions.size() != joint_count ||
-      previous.velocities.size() != joint_count || current.velocities.size() != joint_count ||
-      previous.accelerations.size() != joint_count || current.accelerations.size() != joint_count)
+    if (interval <= 1e-9 || previous.positions.size() != joint_count ||
+      current.positions.size() != joint_count || previous.velocities.size() != joint_count ||
+      current.velocities.size() != joint_count ||
+      previous.accelerations.size() != joint_count ||
+      current.accelerations.size() != joint_count)
     {
       return ValidationResult::fail(
-        "trajectory points must contain position, velocity, and acceleration for every joint");
+        "trajectory points must contain increasing time and complete "
+        "position/velocity/acceleration dynamics");
     }
     for (std::size_t joint = 0; joint < joint_count; ++joint) {
-      peak_jerk = std::max(
-        peak_jerk,
-        quinticPeakJerk(
-          previous.positions[joint], previous.velocities[joint],
-          previous.accelerations[joint], current.positions[joint],
-          current.velocities[joint], current.accelerations[joint], interval));
+      const auto bounds = quinticDynamicBounds(
+        previous.positions[joint], previous.velocities[joint],
+        previous.accelerations[joint], current.positions[joint],
+        current.velocities[joint], current.accelerations[joint], interval);
+      if (!std::isfinite(bounds.velocity) || !std::isfinite(bounds.acceleration) ||
+        !std::isfinite(bounds.jerk))
+      {
+        return ValidationResult::fail("trajectory contains non-finite quintic dynamics");
+      }
+      const auto retain_limiter =
+        [&](double candidate, const char * kind, double peak, double limit) {
+          if (candidate > global_stretch) {
+            global_stretch = candidate;
+            limiting_index = index;
+            limiting_joint = joint;
+            limiting_peak = peak;
+            limiting_limit = limit;
+            limiting_kind = kind;
+          }
+        };
+      retain_limiter(
+        bounds.velocity / max_velocities_rad_sec[joint], "velocity",
+        bounds.velocity, max_velocities_rad_sec[joint]);
+      retain_limiter(
+        std::sqrt(bounds.acceleration / max_accelerations_rad_sec2[joint]),
+        "acceleration", bounds.acceleration, max_accelerations_rad_sec2[joint]);
+      retain_limiter(
+        std::cbrt(bounds.jerk / max_jerk_rad_sec3), "jerk",
+        bounds.jerk, max_jerk_rad_sec3);
     }
   }
-  if (!std::isfinite(peak_jerk)) {
-    return ValidationResult::fail("trajectory contains a non-finite quintic jerk");
-  }
-  if (peak_jerk <= max_jerk_rad_sec3) {
-    return ValidationResult::ok();
-  }
-
-  const double stretch = std::cbrt(peak_jerk / max_jerk_rad_sec3) * 1.001;
+  global_stretch *= 1.001;
   for (auto & point : trajectory.points) {
     point.time_from_start = secondsToDuration(
-      durationToSeconds(point.time_from_start) * stretch);
+      durationToSeconds(point.time_from_start) * global_stretch);
     for (auto & velocity : point.velocities) {
-      velocity /= stretch;
+      velocity /= global_stretch;
     }
     for (auto & acceleration : point.accelerations) {
-      acceleration /= stretch * stretch;
+      acceleration /= global_stretch * global_stretch;
     }
   }
-  return ValidationResult::ok();
+  std::ostringstream summary;
+  summary << std::fixed << std::setprecision(3)
+          << "uniform_stretch=" << global_stretch
+          << " limiter=" << limiting_kind
+          << " interval=" << limiting_index
+          << " joint=" << trajectory.joint_names[limiting_joint]
+          << " peak=" << limiting_peak
+          << " limit=" << limiting_limit;
+  return ValidationResult::ok(summary.str());
 }
 
 Eigen::Isometry3d poseToEigen(const PoseDefinition & pose)
@@ -205,11 +400,15 @@ std::size_t interpolationSteps(double magnitude, double step)
 
 }  // namespace
 
-ValidationResult enforceTrajectoryJerkLimit(
+ValidationResult enforceTrajectoryDynamicsLimits(
   trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & max_velocities_rad_sec,
+  const std::vector<double> & max_accelerations_rad_sec2,
   double max_jerk_rad_sec3)
 {
-  return enforceQuinticJerkLimit(trajectory, max_jerk_rad_sec3);
+  return enforceQuinticDynamicsLimits(
+    trajectory, max_velocities_rad_sec, max_accelerations_rad_sec2,
+    max_jerk_rad_sec3);
 }
 
 struct TrajectoryCompiler::Impl
@@ -247,6 +446,22 @@ struct TrajectoryCompiler::Impl
       }
       out << "]";
       return ValidationResult::fail(out.str());
+    }
+
+    joint_velocity_limits.clear();
+    joint_acceleration_limits.clear();
+    for (const auto & joint_name : model_joint_names) {
+      const auto & bounds = model->getVariableBounds(joint_name);
+      if (!bounds.velocity_bounded_ || !bounds.acceleration_bounded_ ||
+        !std::isfinite(bounds.max_velocity_) || bounds.max_velocity_ <= 0.0 ||
+        !std::isfinite(bounds.max_acceleration_) || bounds.max_acceleration_ <= 0.0)
+      {
+        return ValidationResult::fail(
+          "robot model is missing positive velocity/acceleration limits for '" +
+          joint_name + "'");
+      }
+      joint_velocity_limits.push_back(bounds.max_velocity_);
+      joint_acceleration_limits.push_back(bounds.max_acceleration_);
     }
 
     if (catalog.base_frame != model->getModelFrame()) {
@@ -410,9 +625,13 @@ struct TrajectoryCompiler::Impl
       if (!result.success) {
         return result;
       }
-      trajectory.addSuffixWayPoint(state, 0.0);
       current = sample;
     }
+    // Joint interpolation samples are for collision/bounds validation only.
+    // A straight joint-space segment needs one controller waypoint at its
+    // target; publishing every validation sample creates needless quintic
+    // knots and prevents short fixed moves from reaching their speed limit.
+    trajectory.addSuffixWayPoint(state, 0.0);
     return ValidationResult::ok();
   }
 
@@ -488,6 +707,14 @@ struct TrajectoryCompiler::Impl
     const std::size_t translation_steps = interpolationSteps(distance, segment.cartesian_step_m);
     const std::size_t rotation_steps = interpolationSteps(orientation_distance, 0.05);
     const std::size_t steps = std::max(translation_steps, rotation_steps);
+    // Validate Cartesian geometry at the configured fine resolution, but do
+    // not burden the 100 Hz hardware servo with a spline knot every 10 mm.
+    // Twenty-millimetre controller knots retain the straight TCP path while
+    // avoiding repeated accelerate/decelerate corrections at dense IK samples.
+    constexpr double controller_cartesian_step_m = 0.020;
+    const std::size_t controller_stride = std::max<std::size_t>(
+      1, static_cast<std::size_t>(
+        std::ceil(controller_cartesian_step_m / segment.cartesian_step_m)));
     const Eigen::Quaterniond start_rotation(start_pose.rotation());
     const Eigen::Quaterniond target_rotation(target_pose.rotation());
 
@@ -546,7 +773,9 @@ struct TrajectoryCompiler::Impl
         return ValidationResult::fail(out.str());
       }
 
-      trajectory.addSuffixWayPoint(state, 0.0);
+      if (index == steps || index % controller_stride == 0) {
+        trajectory.addSuffixWayPoint(state, 0.0);
+      }
       previous = sample_joints;
     }
     current = previous;
@@ -685,12 +914,14 @@ struct TrajectoryCompiler::Impl
       }
     }
 
-    result = enforceTrajectoryJerkLimit(
-      output.trajectory, catalog.defaults.max_jerk_rad_sec3);
+    result = enforceTrajectoryDynamicsLimits(
+      output.trajectory, joint_velocity_limits, joint_acceleration_limits,
+      catalog.defaults.max_jerk_rad_sec3);
     if (!result.success) {
       return ValidationResult::fail(
-        "route '" + route.name + "' jerk limiting failed: " + result.message);
+        "route '" + route.name + "' dynamics limiting failed: " + result.message);
     }
+    RCLCPP_INFO(logger, "route=%s dynamics %s", route.name.c_str(), result.message.c_str());
 
     output.end_joints = current;
     output.duration_sec = trajectoryDurationSec(output.trajectory);
@@ -703,6 +934,8 @@ struct TrajectoryCompiler::Impl
   std::unique_ptr<robot_model_loader::RobotModelLoader> model_loader;
   moveit::core::RobotModelPtr model;
   const moveit::core::JointModelGroup * joint_group{nullptr};
+  std::vector<double> joint_velocity_limits;
+  std::vector<double> joint_acceleration_limits;
   planning_scene::PlanningScenePtr scene;
   std::map<std::string, std::vector<double>> point_joints;
   std::set<std::string> resolving_points;

@@ -1,5 +1,6 @@
 #include "panthera_spectrometer_cell/Config.h"
 
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
@@ -196,6 +197,18 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readDouble(motion, "clean_ready_z", config.motion.cleanReadyZ);
   config.motion.safeJointPose =
     readDoubleVector(motion, "safe_joint_pose", config.motion.safeJointPose);
+  config.motion.homeJointPose =
+    readDoubleVector(motion, "home_joint_pose", config.motion.homeJointPose);
+  config.motion.errorRecoveryDurationSec = readDouble(
+    motion, "error_recovery_duration_sec", config.motion.errorRecoveryDurationSec);
+  config.motion.errorRecoveryPathToleranceRad = readDouble(
+    motion, "error_recovery_path_tolerance_rad", config.motion.errorRecoveryPathToleranceRad);
+  config.motion.errorRecoveryGoalToleranceRad = readDouble(
+    motion, "error_recovery_goal_tolerance_rad", config.motion.errorRecoveryGoalToleranceRad);
+  config.motion.errorRecoverySettleToleranceRad = readDouble(
+    motion, "error_recovery_settle_tolerance_rad", config.motion.errorRecoverySettleToleranceRad);
+  config.motion.errorRecoveryTimeoutMarginSec = readDouble(
+    motion, "error_recovery_timeout_margin_sec", config.motion.errorRecoveryTimeoutMarginSec);
 
   const auto gripper = root["gripper"];
   config.gripper.openPosition = readDouble(gripper, "open_position", config.gripper.openPosition);
@@ -210,12 +223,18 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     gripper, "command_timeout_margin_sec", config.gripper.commandTimeoutMarginSec);
   config.gripper.positionToleranceM =
     readDouble(gripper, "position_tolerance_m", config.gripper.positionToleranceM);
+  config.gripper.graspHoldGoalToleranceM = readDouble(
+    gripper, "grasp_hold_goal_tolerance_m", config.gripper.graspHoldGoalToleranceM);
   config.gripper.settledVelocityToleranceMps = readDouble(
     gripper,
     "settled_velocity_tolerance_mps",
     config.gripper.settledVelocityToleranceMps);
   config.gripper.settleTimeoutSec =
     readDouble(gripper, "settle_timeout_sec", config.gripper.settleTimeoutSec);
+  config.gripper.graspContactMinClosureM = readDouble(
+    gripper, "grasp_contact_min_closure_m", config.gripper.graspContactMinClosureM);
+  config.gripper.graspContactConfirmSec = readDouble(
+    gripper, "grasp_contact_confirm_sec", config.gripper.graspContactConfirmSec);
   config.gripper.retryCount =
     readInt(gripper, "retry_count", config.gripper.retryCount);
 
@@ -424,6 +443,21 @@ ActionResult WorkcellConfig::validate() const
   if (motion.safeJointPose.empty()) {
     return ActionResult::fail("motion.safe_joint_pose must not be empty");
   }
+  if (motion.homeJointPose.size() != 6u ||
+    !std::all_of(
+      motion.homeJointPose.begin(), motion.homeJointPose.end(),
+      [](double value) {return std::isfinite(value);}))
+  {
+    return ActionResult::fail("motion.home_joint_pose must contain six finite joint values");
+  }
+  if (motion.errorRecoveryDurationSec <= 0.0 ||
+    motion.errorRecoveryPathToleranceRad <= 0.0 ||
+    motion.errorRecoveryGoalToleranceRad <= 0.0 ||
+    motion.errorRecoverySettleToleranceRad <= 0.0 ||
+    motion.errorRecoveryTimeoutMarginSec <= 0.0)
+  {
+    return ActionResult::fail("motion error-recovery settings must be > 0");
+  }
   if (motion.backend != "fixed_cache" && motion.backend != "legacy_moveit") {
     return ActionResult::fail("motion.backend must be fixed_cache or legacy_moveit");
   }
@@ -449,8 +483,14 @@ ActionResult WorkcellConfig::validate() const
   if (gripper.closePosition > gripper.openPosition ||
     gripper.openDurationSec <= 0.0 || gripper.closeDurationSec <= 0.0 ||
     gripper.actionServerWaitSec <= 0.0 || gripper.commandTimeoutMarginSec <= 0.0 ||
-    gripper.positionToleranceM <= 0.0 || gripper.settledVelocityToleranceMps <= 0.0 ||
-    gripper.settleTimeoutSec <= 0.0 || gripper.retryCount < 0 || gripper.retryCount > 3)
+    gripper.positionToleranceM <= 0.0 ||
+    gripper.graspHoldGoalToleranceM <= gripper.positionToleranceM ||
+    gripper.graspHoldGoalToleranceM >= (gripper.openPosition - gripper.closePosition) ||
+    gripper.settledVelocityToleranceMps <= 0.0 ||
+    gripper.settleTimeoutSec <= 0.0 || gripper.graspContactMinClosureM <= 0.0 ||
+    gripper.graspContactMinClosureM >= (gripper.openPosition - gripper.closePosition) ||
+    gripper.graspContactConfirmSec <= 0.0 || gripper.retryCount < 0 ||
+    gripper.retryCount > 3)
   {
     return ActionResult::fail("gripper limits, timing, tolerance, or retry count are invalid");
   }

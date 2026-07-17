@@ -117,7 +117,7 @@ TEST(TrajectoryScaling, SlowsTimeVelocityAndAccelerationConsistently)
   EXPECT_DOUBLE_EQ(panthera_motion::trajectoryDurationSec(scaled), 4.0);
 }
 
-TEST(TrajectoryJerkLimit, StretchesQuinticDynamicsConsistently)
+TEST(TrajectoryDynamicsLimit, StretchesQuinticDynamicsConsistently)
 {
   trajectory_msgs::msg::JointTrajectory trajectory;
   trajectory.joint_names = {"joint1"};
@@ -131,7 +131,8 @@ TEST(TrajectoryJerkLimit, StretchesQuinticDynamicsConsistently)
   end.time_from_start.sec = 1;
   trajectory.points.push_back(end);
 
-  const auto result = panthera_motion::enforceTrajectoryJerkLimit(trajectory, 10.0);
+  const auto result = panthera_motion::enforceTrajectoryDynamicsLimits(
+    trajectory, {100.0}, {100.0}, 10.0);
   ASSERT_TRUE(result.success) << result.message;
   const double stretched_duration = panthera_motion::trajectoryDurationSec(trajectory);
   EXPECT_GT(stretched_duration, 1.0);
@@ -139,7 +140,27 @@ TEST(TrajectoryJerkLimit, StretchesQuinticDynamicsConsistently)
   EXPECT_DOUBLE_EQ(trajectory.points.back().accelerations.front(), 0.0);
 }
 
-TEST(TrajectoryJerkLimit, RejectsIncompleteDynamics)
+TEST(TrajectoryDynamicsLimit, BoundsVelocityBetweenWaypoints)
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  trajectory.joint_names = {"joint1"};
+  trajectory_msgs::msg::JointTrajectoryPoint start;
+  start.positions = {0.0};
+  start.velocities = {0.0};
+  start.accelerations = {0.0};
+  trajectory.points.push_back(start);
+  auto end = start;
+  end.positions = {1.0};
+  end.time_from_start.sec = 1;
+  trajectory.points.push_back(end);
+
+  const auto result = panthera_motion::enforceTrajectoryDynamicsLimits(
+    trajectory, {1.0}, {100.0}, 1000.0);
+  ASSERT_TRUE(result.success) << result.message;
+  EXPECT_GT(panthera_motion::trajectoryDurationSec(trajectory), 1.8);
+}
+
+TEST(TrajectoryDynamicsLimit, RejectsIncompleteDynamics)
 {
   trajectory_msgs::msg::JointTrajectory trajectory;
   trajectory.joint_names = {"joint1"};
@@ -152,7 +173,8 @@ TEST(TrajectoryJerkLimit, RejectsIncompleteDynamics)
   end.time_from_start.sec = 1;
   trajectory.points.push_back(end);
 
-  const auto result = panthera_motion::enforceTrajectoryJerkLimit(trajectory, 10.0);
+  const auto result = panthera_motion::enforceTrajectoryDynamicsLimits(
+    trajectory, {1.0}, {1.0}, 10.0);
   EXPECT_FALSE(result.success);
   EXPECT_NE(result.message.find("velocity"), std::string::npos);
 }
@@ -191,13 +213,15 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
     "outlet_1_grasp_to_spectrometer_place",
     "outlet_2_grasp_to_spectrometer_place",
     "spectrometer_pick_to_clean_dump",
+    "spectrometer_pick_to_brush_entry_smooth",
     "clean_dump_to_pour",
     "clean_dump_pour_shake_once",
-    "clean_dump_pour_to_upright",
-    "clean_dump_to_brush_entry",
+    "clean_dump_pour_to_clean_hover",
+    "clean_dump_pour_to_brush_entry",
     "brush_entry_to_center",
-    "brush_center_to_outer",
-    "brush_outer_to_clean_hover",
+    "brush_center_to_entry",
+    "brush_entry_to_clean_hover",
+    "brush_center_to_clean_hover_smooth",
   };
   for (const auto & name : required_routes) {
     EXPECT_NE(catalog.findRoute(name), nullptr) << name;
@@ -211,12 +235,12 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_EQ(final_segment.constraints.vertical_axis, "z");
   EXPECT_TRUE(final_segment.constraints.keep_orientation);
   ASSERT_TRUE(final_segment.velocity_scale.has_value());
-  EXPECT_DOUBLE_EQ(*final_segment.velocity_scale, 1.0);
-  EXPECT_DOUBLE_EQ(catalog.defaults.max_jerk_rad_sec3, 100.0);
+  EXPECT_DOUBLE_EQ(*final_segment.velocity_scale, 0.25);
+  EXPECT_DOUBLE_EQ(catalog.defaults.max_jerk_rad_sec3, 300.0);
 
   const auto & transfer_segment = outlet_route->segments.front();
   ASSERT_TRUE(transfer_segment.velocity_scale.has_value());
-  EXPECT_DOUBLE_EQ(*transfer_segment.velocity_scale, 1.0);
+  EXPECT_DOUBLE_EQ(*transfer_segment.velocity_scale, 0.85);
 }
 
 }  // namespace

@@ -32,7 +32,8 @@ def generate_launch_description():
         'control_mode',
         default_value='position_velocity',
         description=(
-            'Control mode: position_velocity, pd_control, or full_control'
+            'Control mode: position_velocity, pd_control, full_control, '
+            'or mit_gravity_compensation'
         )
     )
 

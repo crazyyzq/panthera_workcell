@@ -22,6 +22,8 @@ class Panthera;
 
 namespace panthera_hardware
 {
+class GravityModel;
+
 class PantheraHardwareInterface : public hardware_interface::SystemInterface
 {
 public:
@@ -52,6 +54,7 @@ public:
 private:
   // Panthera robot instance
   std::unique_ptr<panthera::Panthera> robot_;
+  std::shared_ptr<GravityModel> gravity_model_;
 
   // Configuration
   std::string config_file_;

@@ -12,6 +12,8 @@ def generate_launch_description():
     config_file = LaunchConfiguration('config_file')
     catalog_file = LaunchConfiguration('catalog_file')
     control_mode = LaunchConfiguration('control_mode')
+    mit_kp = LaunchConfiguration('mit_kp')
+    mit_kd = LaunchConfiguration('mit_kd')
     default_speed_scale = LaunchConfiguration('default_speed_scale')
     start_hardware = LaunchConfiguration('start_hardware')
     simulation = LaunchConfiguration('simulation')
@@ -40,6 +42,8 @@ def generate_launch_description():
         launch_arguments={
             'start_hardware': start_hardware,
             'control_mode': control_mode,
+            'mit_kp': mit_kp,
+            'mit_kd': mit_kd,
             'catalog_file': catalog_file,
             'default_speed_scale': default_speed_scale,
         }.items(),
@@ -76,7 +80,15 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('config_file', default_value=default_config),
         DeclareLaunchArgument('catalog_file', default_value=default_catalog),
-        DeclareLaunchArgument('control_mode', default_value='position_velocity'),
+        DeclareLaunchArgument(
+            'control_mode',
+            default_value='mit_gravity_compensation'),
+        DeclareLaunchArgument(
+            'mit_kp',
+            default_value='60.0,60.0,60.0,60.0,60.0,60.0'),
+        DeclareLaunchArgument(
+            'mit_kd',
+            default_value='5.0,5.0,5.0,5.0,5.0,5.0'),
         DeclareLaunchArgument('default_speed_scale', default_value='0.20'),
         DeclareLaunchArgument('start_hardware', default_value='true'),
         DeclareLaunchArgument('simulation', default_value='false'),

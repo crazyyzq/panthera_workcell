@@ -5,9 +5,8 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- The controller address is network-dependent. The Windows share was observed at
-  `\\172.20.10.2\b1s_share\panthera_workcell_ws` on 2026-07-18 (previously
-  `\\10.89.8.169\b1s_share\panthera_workcell_ws`); both map to the canonical workspace.
+- Current controller address: `172.20.10.2`. The Windows share is
+  `\\172.20.10.2\b1s_share\panthera_workcell_ws` and maps to the canonical workspace.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -44,6 +43,17 @@ This file contains durable repository context and operating rules for future age
 - The arm controller is `joint_trajectory_controller/JointTrajectoryController` at 100 Hz.
 - Arm joints are `joint1` through `joint6`; gripper command joint is `L_finger_joint`; `R_finger_joint` is mimic/passive.
 - The controller exposes standard `FollowJointTrajectory` and can execute deterministic precompiled trajectories without MoveIt planning at production runtime.
+- Vendor MIT MoveIt support was integrated from upstream `humble` commit `3815fce`
+  on 2026-07-24. The hardware mode is `mit_gravity_compensation`: trajectory
+  position/velocity targets plus Pinocchio gravity feed-forward are sent through
+  the SDK position/velocity/torque/Kp/Kd command.
+- Commissioned MIT arm gains are `Kp=[60,60,60,60,60,60]` and
+  `Kd=[5,5,5,5,5,5]`. They are launch-configurable but malformed, non-finite, or
+  negative vectors must fail closed. The gripper stays on retained position control.
+- `fixed_motion_bringup.launch.py` and `fixed_spectrometer_cell.launch.py` default
+  to MIT mode. Explicit `control_mode:=position_velocity` remains the immediate
+  rollback path. `hardware_moveit_rviz_mit.launch.py` is the MoveIt commissioning
+  entry point; production fixed-cache motion still does not start MoveGroup.
 - Legacy `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` still replan with MoveIt and are migration-only. Their default HMI launch flags are disabled so they do not run beside another legacy owner.
 - Target architecture: one motion server is the only arm trajectory owner. MoveIt is retained for commissioning, IK, collision checks and trajectory compilation, not per-step production planning.
 - Fixed positioning is the current default requirement. Laser-based position correction must remain available behind an explicit `fixed | sensor_offset` mode.
@@ -124,6 +134,8 @@ ros2 launch panthera_motion fixed_motion_bringup.launch.py default_speed_scale:=
 ```
 
 It starts hardware/controllers plus the Motion Server without MoveGroup. Do not start legacy real-motion nodes beside it.
+It defaults to `mit_gravity_compensation` with the commissioned `60/5` gains.
+Use `control_mode:=position_velocity` only for controlled rollback.
 
 The full fixed-backend production entry point is:
 

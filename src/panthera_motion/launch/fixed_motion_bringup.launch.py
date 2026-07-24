@@ -1,5 +1,9 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    SetEnvironmentVariable,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -9,6 +13,8 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     start_hardware = LaunchConfiguration('start_hardware')
     control_mode = LaunchConfiguration('control_mode')
+    mit_kp = LaunchConfiguration('mit_kp')
+    mit_kd = LaunchConfiguration('mit_kd')
     catalog_file = LaunchConfiguration('catalog_file')
     default_speed_scale = LaunchConfiguration('default_speed_scale')
 
@@ -58,9 +64,17 @@ def generate_launch_description():
         DeclareLaunchArgument('start_hardware', default_value='true'),
         DeclareLaunchArgument(
             'control_mode',
-            default_value='position_velocity'),
+            default_value='mit_gravity_compensation'),
+        DeclareLaunchArgument(
+            'mit_kp',
+            default_value='60.0,60.0,60.0,60.0,60.0,60.0'),
+        DeclareLaunchArgument(
+            'mit_kd',
+            default_value='5.0,5.0,5.0,5.0,5.0,5.0'),
         DeclareLaunchArgument('catalog_file', default_value=default_catalog),
         DeclareLaunchArgument('default_speed_scale', default_value='0.20'),
+        SetEnvironmentVariable(name='PANTHERA_MIT_KP', value=mit_kp),
+        SetEnvironmentVariable(name='PANTHERA_MIT_KD', value=mit_kd),
         hardware_launch,
         static_tf_launch,
         motion_launch,

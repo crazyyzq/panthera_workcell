@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.conditions import IfCondition
@@ -60,8 +59,6 @@ def generate_launch_description():
             "name:=Panthera-HT",
         ]
     )
-    robot_description = {"robot_description": robot_description_content}
-
     # Get ros2_control URDF
     robot_controllers = PathJoinSubstitution([
         FindPackageShare("panthera_hardware"),

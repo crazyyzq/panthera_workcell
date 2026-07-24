@@ -4,13 +4,20 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <memory>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
-#include "rclcpp/rclcpp.hpp"
 #include "panthera/Panthera.hpp"
+#include "pinocchio/algorithm/rnea.hpp"
+#include "pinocchio/parsers/urdf.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "yaml-cpp/yaml.h"
 
 namespace panthera_hardware
 {
@@ -54,7 +61,120 @@ bool isPlausibleArmPosition(double position)
   return std::isfinite(position) && std::abs(position) <= 10.0;
 }
 
+bool parseGainVector(const char * value, std::vector<double> & gains)
+{
+  if (value == nullptr) {
+    return false;
+  }
+  const std::string raw_value(value);
+  if (raw_value.empty() || raw_value.back() == ',') {
+    return false;
+  }
+
+  try {
+    std::stringstream stream(raw_value);
+    std::string item;
+    gains.clear();
+    while (std::getline(stream, item, ',')) {
+      std::size_t parsed = 0;
+      const double gain = std::stod(item, &parsed);
+      if (item.find_first_not_of(" \t", parsed) != std::string::npos) {
+        throw std::invalid_argument("gain contains trailing characters");
+      }
+      if (!std::isfinite(gain) || gain < 0.0) {
+        gains.clear();
+        return false;
+      }
+      gains.push_back(gain);
+    }
+  } catch (const std::exception &) {
+    gains.clear();
+    return false;
+  }
+
+  return gains.size() == 6;
+}
+
 }  // namespace
+
+class GravityModel
+{
+public:
+  bool load(const std::string & config_file)
+  {
+    try {
+      const YAML::Node config = YAML::LoadFile(config_file);
+      if (!config["urdf"] || !config["urdf"]["file_path"]) {
+        return false;
+      }
+
+      const std::size_t separator = config_file.find_last_of("/\\");
+      const std::string config_dir =
+        separator == std::string::npos ? "." : config_file.substr(0, separator);
+      std::string urdf_path =
+        config_dir + "/" + config["urdf"]["file_path"].as<std::string>();
+
+      if (urdf_path.size() >= 6 &&
+        urdf_path.substr(urdf_path.size() - 6) == ".xacro")
+      {
+        const std::string urdf_candidate =
+          urdf_path.substr(0, urdf_path.size() - 6) + ".urdf";
+        std::ifstream urdf_file(urdf_candidate);
+        if (!urdf_file.good()) {
+          return false;
+        }
+        urdf_path = urdf_candidate;
+      }
+
+      pinocchio::urdf::buildModel(urdf_path, model_);
+      data_ = pinocchio::Data(model_);
+
+      if (!config["kinematics"] || !config["kinematics"]["joint_names"]) {
+        return false;
+      }
+
+      joint_ids_.clear();
+      const auto joint_names =
+        config["kinematics"]["joint_names"].as<std::vector<std::string>>();
+      for (const auto & name : joint_names) {
+        if (!model_.existJointName(name)) {
+          return false;
+        }
+        joint_ids_.push_back(model_.getJointId(name));
+      }
+      return joint_ids_.size() == 6;
+    } catch (const std::exception &) {
+      return false;
+    }
+  }
+
+  std::vector<double> gravity(const std::vector<double> & positions) const
+  {
+    if (joint_ids_.size() != 6 || positions.size() != 6) {
+      return {};
+    }
+
+    Eigen::VectorXd q = Eigen::VectorXd::Zero(model_.nq);
+    for (std::size_t i = 0; i < joint_ids_.size(); ++i) {
+      const auto joint_id = joint_ids_[i];
+      q[model_.joints[joint_id].idx_q()] = positions[i];
+    }
+
+    const Eigen::VectorXd generalized_gravity =
+      pinocchio::computeGeneralizedGravity(model_, data_, q);
+
+    std::vector<double> result(6, 0.0);
+    for (std::size_t i = 0; i < joint_ids_.size(); ++i) {
+      result[i] = generalized_gravity[model_.joints[joint_ids_[i]].idx_v()];
+    }
+    return result;
+  }
+
+private:
+  pinocchio::Model model_;
+  mutable pinocchio::Data data_;
+  std::vector<pinocchio::JointIndex> joint_ids_;
+};
 
 hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
   const hardware_interface::HardwareInfo & info)
@@ -92,7 +212,8 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
   RCLCPP_INFO(rclcpp::get_logger("PantheraHardwareInterface"),
               "Control mode: %s", control_mode_.c_str());
   if (control_mode_ != "position_velocity" &&
-    control_mode_ != "pd_control" && control_mode_ != "full_control")
+    control_mode_ != "pd_control" && control_mode_ != "full_control" &&
+    control_mode_ != "mit_gravity_compensation")
   {
     RCLCPP_ERROR(
       rclcpp::get_logger("PantheraHardwareInterface"),
@@ -150,7 +271,9 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
 
   // Check if velocity and effort commands are enabled
   use_velocity_commands_ =
-    control_mode_ == "full_control" || control_mode_ == "position_velocity";
+    control_mode_ == "full_control" ||
+    control_mode_ == "position_velocity" ||
+    control_mode_ == "mit_gravity_compensation";
   use_effort_commands_ = (control_mode_ == "full_control");
 
   // Initialize state and command storage
@@ -218,6 +341,31 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
                 kp_gains_[i], kd_gains_[i]);
   }
 
+  if (control_mode_ == "mit_gravity_compensation") {
+    std::vector<double> mit_kp(6, 60.0);
+    std::vector<double> mit_kd(6, 5.0);
+    const char * kp_value = std::getenv("PANTHERA_MIT_KP");
+    const char * kd_value = std::getenv("PANTHERA_MIT_KD");
+    if ((kp_value != nullptr && !parseGainVector(kp_value, mit_kp)) ||
+      (kd_value != nullptr && !parseGainVector(kd_value, mit_kd)))
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        "MIT gains must each contain six finite, non-negative comma-separated values");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    std::copy(mit_kp.begin(), mit_kp.end(), kp_gains_.begin());
+    std::copy(mit_kd.begin(), mit_kd.end(), kd_gains_.begin());
+    RCLCPP_INFO(
+      rclcpp::get_logger("PantheraHardwareInterface"),
+      "MIT gains: Kp=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f], "
+      "Kd=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+      kp_gains_[0], kp_gains_[1], kp_gains_[2],
+      kp_gains_[3], kp_gains_[4], kp_gains_[5],
+      kd_gains_[0], kd_gains_[1], kd_gains_[2],
+      kd_gains_[3], kd_gains_[4], kd_gains_[5]);
+  }
+
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -236,6 +384,18 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
 
     RCLCPP_INFO(rclcpp::get_logger("PantheraHardwareInterface"),
                 "Panthera robot initialized successfully");
+    if (control_mode_ == "mit_gravity_compensation") {
+      gravity_model_ = std::make_shared<GravityModel>();
+      if (!gravity_model_->load(config_file_)) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("PantheraHardwareInterface"),
+          "Failed to load the URDF/dynamics model for MIT gravity compensation");
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+      RCLCPP_INFO(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        "MIT gravity compensation model loaded successfully");
+    }
   }
   catch (const std::bad_alloc & e)
   {
@@ -691,6 +851,29 @@ hardware_interface::return_type PantheraHardwareInterface::write(
       // Full control mode: use position, velocity, and effort commands
       arm_command_ok = robot_->posVelTorqueKpKd(
         arm_positions, arm_velocities, arm_efforts, arm_kp, arm_kd);
+    }
+    else if (control_mode_ == "mit_gravity_compensation")
+    {
+      std::vector<double> current_positions(hw_positions_.begin(), hw_positions_.begin() + 6);
+      std::vector<double> gravity_torque =
+        gravity_model_ ? gravity_model_->gravity(current_positions) : std::vector<double>();
+      if (gravity_torque.size() != 6 ||
+        !std::all_of(
+          gravity_torque.begin(), gravity_torque.end(),
+          [](double torque) {return std::isfinite(torque);}))
+      {
+        RCLCPP_ERROR_THROTTLE(
+          rclcpp::get_logger("PantheraHardwareInterface"),
+          throttle_clock_, 1000,
+          "Gravity compensation torque calculation failed");
+        return hardware_interface::return_type::ERROR;
+      }
+      for (size_t i = 0; i < gravity_torque.size(); ++i) {
+        gravity_torque[i] = std::clamp(
+          gravity_torque[i], -arm_max_torques[i], arm_max_torques[i]);
+      }
+      arm_command_ok = robot_->posVelTorqueKpKd(
+        arm_positions, arm_velocities, gravity_torque, arm_kp, arm_kd);
     }
     else if (control_mode_ == "position_velocity")
     {

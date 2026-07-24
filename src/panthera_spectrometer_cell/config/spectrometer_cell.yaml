@@ -71,7 +71,7 @@ motion:
   backend: fixed_cache
 
   # 启动真实流程前机械臂必须实际位于此点，Motion Server 仍会用编码器做0.05rad校验。
-  fixed_start_point: safe_joint_center
+  fixed_start_point: home_near
   motion_server_wait_sec: 15.0
   # Only retry failures that are known to occur before physical motion starts.
   transient_retry_count: 2
@@ -415,19 +415,21 @@ cleaning:
   brush_hold_sec: 0.0
 
   # 杯子完全退出到 brush_upright_retreat_offset_xyz 后，电机继续转动的时间，单位 s。
-  # 这段结束后才发送停止字符，并且之后才允许第六轴/夹爪回正。
+  # 这段结束后才发送 Modbus 停止指令，并且之后才允许第六轴/夹爪回正。
   brush_motor_stop_delay_sec: 0.0
 
-  # ========== 清洁电机串口控制 ==========
-  # 杯子准备从毛刷外侧进入 clean_brush 前发送单个 ASCII 字符 '1'，不带换行；
-  # 杯子从 clean_brush 平移退出到外侧后发送单个 ASCII 字符 '0'，不带换行。
-  # 串口格式固定为 115200 8N1，即 8 数据位、1 停止位、无校验；
-  # device 建议使用 /dev/serial/by-id/... 稳定路径。
-  motor_serial_enabled: true
-  motor_serial_device: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
-  motor_serial_baudrate: 115200
-  motor_start_byte: 49  # ASCII '1'
-  motor_stop_byte: 48   # ASCII '0'
+  # ========== AQMD6030NS-A3 毛刷电机 RS485 控制 ==========
+  # Modbus RTU 默认 9600/8E1；现场扫描确认 SW1 ON 对应实际站号 0x02。
+  motor_rs485_enabled: true
+  motor_rs485_device: /dev/ttyS8
+  motor_rs485_baudrate: 9600
+  motor_rs485_slave_id: 2
+
+  # 寄存器 0x0040：-1000~1000 对应 -100.0%~100.0%，符号决定方向。
+  motor_rs485_duty_permille: 500
+
+  # 寄存器 0x008e，单位 0.1s；通信中断后驱动器自动制动。100 = 10.0s。
+  motor_rs485_communication_timeout_ds: 100
 
   # 清理完成后离开姿态名称，必须存在于 named_poses。
   leave_pose: clean_leave

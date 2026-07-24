@@ -136,11 +136,12 @@ const pointCleaningLabels = {
   brush_stroke_offset_xyz: '毛刷往复偏移 xyz',
   brush_hold_sec: '毛刷停留 s',
   brush_motor_stop_delay_sec: '毛刷退出后电机延时 s',
-  motor_serial_enabled: '清洁电机串口启用',
-  motor_serial_device: '清洁电机串口设备',
-  motor_serial_baudrate: '清洁电机波特率',
-  motor_start_byte: "清洁电机启动字符码",
-  motor_stop_byte: "清洁电机停止字符码",
+  motor_rs485_enabled: '毛刷电机 RS485 启用',
+  motor_rs485_device: '毛刷电机 RS485 设备',
+  motor_rs485_baudrate: '毛刷电机波特率',
+  motor_rs485_slave_id: '毛刷电机站号',
+  motor_rs485_duty_permille: '毛刷电机占空比(千分比)',
+  motor_rs485_communication_timeout_ds: '毛刷通信中断保护(0.1s)',
 };
 
 function $(id) {

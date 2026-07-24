@@ -84,3 +84,13 @@ the workspace clear and hardware E-stop available. Confirm startup hold,
 direction, gravity compensation, following error, temperature/current, and
 stop behavior before allowing a complete production cycle. Hardware acceptance
 is not implied by a successful build.
+
+### 2026-07-24 partial acceptance result
+
+- Kp/Kd `60/5` and gravity scale `[0,1,1.5,0,0,0]` held at startup and completed
+  a direct-controller Home/safe-center/Home test.
+- The upstream scale `[1,1,1,1,1,1]` is rejected for this physical arm because it
+  produced joint drift.
+- Multi-sample encoder latching and terminal action-state handling were hardened.
+- Full-cycle acceptance remains blocked on eliminating a false stationary
+  velocity spike that makes the motion server report the arm as unsettled.

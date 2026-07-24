@@ -41,8 +41,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'mit_kd',
-            default_value='5.0,5.0,5.0,5.0,5.0,5.0',
+            default_value='5.5,5.5,5.5,5.5,5.5,5.5',
             description='MIT Kd for joint1..joint6',
+        ),
+        DeclareLaunchArgument(
+            'mit_gravity_scale',
+            default_value='0.0,1.0,1.5,0.0,0.0,0.0',
+            description='Gravity feed-forward scale for joint1..joint6',
         ),
         SetEnvironmentVariable(
             name='PANTHERA_MIT_KP',
@@ -51,6 +56,10 @@ def generate_launch_description():
         SetEnvironmentVariable(
             name='PANTHERA_MIT_KD',
             value=LaunchConfiguration('mit_kd'),
+        ),
+        SetEnvironmentVariable(
+            name='PANTHERA_MIT_GRAVITY_SCALE',
+            value=LaunchConfiguration('mit_gravity_scale'),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(moveit_launch),

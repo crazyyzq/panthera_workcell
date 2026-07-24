@@ -310,6 +310,11 @@ ActionResult RobotActions::initialize()
     config_.motion.velocityScale,
     config_.motion.accelerationScale);
 
+  const auto motor_stop = setCleaningMotor(false, "initialize brush motor stopped");
+  if (!motor_stop.success) {
+    return motor_stop;
+  }
+
   if (usesFixedMotion() || !config_.simulation.enabled) {
     const auto init_result = usesFixedMotion() ?
       initializeFixedMotionInterface() : initializeRealInterfaces();
@@ -534,10 +539,11 @@ ActionResult RobotActions::reset()
 void RobotActions::updateConfig(const WorkcellConfig & config)
 {
   std::lock_guard<std::mutex> lock(motion_mutex_);
-  const bool cleaning_motor_serial_changed =
-    config_.cleaning.motorSerialEnabled != config.cleaning.motorSerialEnabled ||
-    config_.cleaning.motorSerialDevice != config.cleaning.motorSerialDevice ||
-    config_.cleaning.motorSerialBaudrate != config.cleaning.motorSerialBaudrate;
+  const bool cleaning_motor_rs485_changed =
+    config_.cleaning.motorRs485Enabled != config.cleaning.motorRs485Enabled ||
+    config_.cleaning.motorRs485Device != config.cleaning.motorRs485Device ||
+    config_.cleaning.motorRs485Baudrate != config.cleaning.motorRs485Baudrate ||
+    config_.cleaning.motorRs485SlaveId != config.cleaning.motorRs485SlaveId;
   const std::string active_backend = config_.motion.backend;
   const std::string active_start_point = config_.motion.fixedStartPoint;
   config_ = config;
@@ -552,11 +558,9 @@ void RobotActions::updateConfig(const WorkcellConfig & config)
     config_.motion.backend = active_backend;
     config_.motion.fixedStartPoint = active_start_point;
   }
-  if (cleaning_motor_serial_changed) {
+  if (cleaning_motor_rs485_changed) {
     std::lock_guard<std::mutex> motor_lock(cleaning_motor_mutex_);
-    if (cleaning_motor_serial_) {
-      cleaning_motor_serial_->close();
-    }
+    cleaning_motor_modbus_.reset();
   }
   if (!config_.simulation.enabled && arm_) {
     arm_->setMaxVelocityScalingFactor(effectiveVelocityScale(config_.motion.velocityScale));
@@ -610,8 +614,17 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
       return result;
     }
     const bool outlet_one = outlet == OutletId::OUTLET_1;
+    std::string current_point;
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      current_point = fixed_point_;
+    }
+    const std::string route_name =
+      current_point == "home_near" && outlet_one ?
+      "home_to_outlet_1_grasp_smooth" :
+      (outlet_one ? "outlet_wait_to_outlet_1_grasp" : "outlet_wait_to_outlet_2_grasp");
     result = executeFixedRoute(
-      outlet_one ? "outlet_wait_to_outlet_1_grasp" : "outlet_wait_to_outlet_2_grasp",
+      route_name,
       outlet_one ? "outlet_1_grasp" : "outlet_2_grasp",
       "fixed route pick from outlet");
     if (!result.success) {
@@ -710,12 +723,34 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
         "fixed return rejected: active outlet does not match " + toString(outlet));
     }
     const bool outlet_one = outlet == OutletId::OUTLET_1;
-    auto result = executeFixedRoute(
-      outlet_one ? "clean_hover_to_outlet_1_return" : "clean_hover_to_outlet_2_return",
-      outlet_one ? "outlet_1_grasp" : "outlet_2_grasp",
-      "fixed route return cup to outlet");
-    if (!result.success) {
-      return result;
+    std::string current_point;
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      current_point = fixed_point_;
+    }
+    ActionResult result = ActionResult::ok("already at outlet return point");
+    if (current_point != (outlet_one ? "outlet_1_grasp" : "outlet_2_grasp")) {
+      if (current_point == "brush_entry" && outlet_one) {
+        result = executeFixedRoute(
+          "brush_entry_to_outlet_1_return_continuous",
+          "outlet_1_grasp",
+          "fixed continuous brush exit and return to outlet");
+      } else {
+        if (current_point == "brush_entry") {
+          result = executeFixedRoute(
+            "brush_entry_to_clean_hover", "clean_hover", "fixed leave brush area");
+          if (!result.success) {
+            return result;
+          }
+        }
+        result = executeFixedRoute(
+          outlet_one ? "clean_hover_to_outlet_1_return" : "clean_hover_to_outlet_2_return",
+          outlet_one ? "outlet_1_grasp" : "outlet_2_grasp",
+          "fixed route return cup to outlet");
+      }
+      if (!result.success) {
+        return result;
+      }
     }
     result = openGripper();
     if (!result.success) {
@@ -726,8 +761,8 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
       return result;
     }
     result = executeFixedRoute(
-      outlet_one ? "outlet_1_return_to_wait" : "outlet_2_return_to_wait",
-      "outlet_wait",
+      outlet_one ? "outlet_1_return_to_home_fast" : "outlet_2_return_to_wait",
+      outlet_one ? "home_near" : "outlet_wait",
       "fixed route leave returned cup");
     if (result.success) {
       std::lock_guard<std::mutex> lock(fixed_state_mutex_);
@@ -799,7 +834,7 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     }
     const bool outlet_one = active_outlet == OutletId::OUTLET_1;
     auto result = executeFixedRoute(
-      outlet_one ? "outlet_1_grasp_to_spectrometer_place" :
+      outlet_one ? "outlet_1_grasp_to_spectrometer_place_continuous" :
       "outlet_2_grasp_to_spectrometer_place",
       "spectrometer_place",
       "fixed route place to spectrometer");
@@ -1038,7 +1073,7 @@ ActionResult RobotActions::brushCleanCup()
       ActionResult final_result = result;
       if (cleaning_motor_running) {
         const auto stop_result =
-          setCleaningMotor(false, "send cleaning motor stop ascii '0' after brush clean");
+          setCleaningMotor(false, "stop cleaning motor after brush clean");
         cleaning_motor_running = false;
         if (!stop_result.success) {
           if (!final_result.success) {
@@ -1073,7 +1108,7 @@ ActionResult RobotActions::brushCleanCup()
     }
   }
 
-  result = setCleaningMotor(true, "send cleaning motor start ascii '1' before brush entry");
+  result = setCleaningMotor(true, "start cleaning motor before brush entry");
   if (!result.success) {
     return finish_with_cleanup(result);
   }
@@ -1174,12 +1209,7 @@ ActionResult RobotActions::moveToOutletWait()
       return ActionResult::ok("already at fixed outlet wait point");
     }
     if (current_point == "home_near") {
-      auto result = executeFixedRoute(
-        "home_to_safe_center", "safe_joint_center", "fixed startup home to safe center");
-      if (!result.success) {
-        return result;
-      }
-      current_point = "safe_joint_center";
+      return ActionResult::ok("remain at Home until an outlet task is selected");
     }
     if (current_point != "safe_joint_center") {
       return ActionResult::fail(
@@ -1463,47 +1493,28 @@ ActionResult RobotActions::executeFixedRoute(
 
 ActionResult RobotActions::executeFixedCleaning()
 {
-  auto result = executeFixedRoute(
-    "spectrometer_pick_to_clean_dump",
-    "clean_dump",
-    "fixed route spectrometer to clean dump");
-  if (!result.success) {
-    return result;
-  }
-
-  result = executeFixedRoute(
-    "clean_dump_to_pour", "clean_dump_pour", "fixed wrist pour");
-  if (!result.success) {
-    return result;
-  }
-  if (config_.cleaning.pourHoldSec > 0.0) {
-    std::this_thread::sleep_for(
-      std::chrono::duration<double>(effectiveDuration(config_.cleaning.pourHoldSec)));
-  }
-
-  for (int shake = 0; shake < config_.cleaning.shakeCount; ++shake) {
-    result = executeFixedRoute(
-      "clean_dump_pour_shake_once",
-      "clean_dump_pour",
-      "fixed wrist shake " + std::to_string(shake + 1));
+  if (!config_.cleaning.brushEnabled) {
+    auto result = executeFixedRoute(
+      "spectrometer_pick_to_clean_dump",
+      "clean_dump",
+      "fixed route spectrometer to clean dump");
     if (!result.success) {
       return result;
     }
-    if (config_.cleaning.shakeHoldSec > 0.0) {
-      std::this_thread::sleep_for(
-        std::chrono::duration<double>(effectiveDuration(config_.cleaning.shakeHoldSec)));
+    result = executeFixedRoute(
+      "clean_dump_to_pour", "clean_dump_pour", "fixed wrist pour");
+    if (!result.success) {
+      return result;
     }
-  }
-
-  if (!config_.cleaning.brushEnabled) {
     return executeFixedRoute(
       "clean_dump_pour_to_clean_hover", "clean_hover",
-      "fixed route leave pour pose without upright stop");
+      "fixed route leave pour pose");
   }
 
-  result = executeFixedRoute(
-    "clean_dump_pour_to_brush_entry", "brush_entry",
-    "fixed direct route from pour pose to brush above");
+  auto result = executeFixedRoute(
+    "spectrometer_pick_to_brush_entry_continuous",
+    "brush_entry",
+    "fixed continuous spectrometer lift, pour, shake and brush approach");
   if (!result.success) {
     return result;
   }
@@ -1549,8 +1560,7 @@ ActionResult RobotActions::executeFixedCleaning()
     return motor_stop;
   }
 
-  return executeFixedRoute(
-    "brush_entry_to_clean_hover", "clean_hover", "fixed direct route leave brush area");
+  return ActionResult::ok("fixed cleaning complete at brush_entry");
 }
 
 ActionResult RobotActions::initializeRealInterfaces()
@@ -2354,54 +2364,70 @@ bool RobotActions::waitForGripperTarget(
 
 ActionResult RobotActions::setCleaningMotor(bool enabled, const std::string & label)
 {
+  constexpr uint16_t kSpeedRegister = 0x0040;
+  constexpr uint16_t kControlModeRegister = 0x0080;
+  constexpr uint16_t kCommunicationTimeoutRegister = 0x008e;
+
   if (config_.simulation.enabled) {
     return ActionResult::ok(label + " skipped in simulation");
   }
-  if (!config_.cleaning.motorSerialEnabled) {
-    return ActionResult::ok(label + " skipped: cleaning motor serial disabled");
+  if (!config_.cleaning.motorRs485Enabled) {
+    return ActionResult::ok(label + " skipped: cleaning motor RS485 disabled");
   }
-  if (config_.cleaning.motorSerialDevice.empty()) {
-    return ActionResult::fail(label + " failed: cleaning.motor_serial_device is empty");
+  if (config_.cleaning.motorRs485Device.empty()) {
+    return ActionResult::fail(label + " failed: cleaning.motor_rs485_device is empty");
   }
-
-  const uint8_t command_byte = static_cast<uint8_t>(
-    enabled ? config_.cleaning.motorStartByte : config_.cleaning.motorStopByte);
 
   std::lock_guard<std::mutex> lock(cleaning_motor_mutex_);
-  try {
-    if (!cleaning_motor_serial_) {
-      cleaning_motor_serial_ = std::make_unique<panthera_rs485::SerialPort>();
-    }
-    if (!cleaning_motor_serial_->isOpen()) {
-      cleaning_motor_serial_->open(
-        config_.cleaning.motorSerialDevice,
-        config_.cleaning.motorSerialBaudrate,
-        std::chrono::milliseconds(100));
-      RCLCPP_WARN(
+  std::string last_error;
+  for (int attempt = 1; attempt <= 2; ++attempt) {
+    try {
+      if (!cleaning_motor_modbus_) {
+        cleaning_motor_modbus_ = std::make_unique<panthera_rs485::ModbusRtuMaster>(
+          config_.cleaning.motorRs485Device,
+          config_.cleaning.motorRs485Baudrate,
+          std::chrono::milliseconds(250),
+          panthera_rs485::SerialParity::EVEN,
+          1);
+        RCLCPP_INFO(
+          logger_,
+          "cleaning motor Modbus opened device=%s baud=%d mode=8E1 slave=0x%02X",
+          config_.cleaning.motorRs485Device.c_str(),
+          config_.cleaning.motorRs485Baudrate,
+          config_.cleaning.motorRs485SlaveId);
+      }
+
+      if (enabled) {
+        cleaning_motor_modbus_->writeSingleRegister(
+          config_.cleaning.motorRs485SlaveId, kControlModeRegister, 0);
+        cleaning_motor_modbus_->writeSingleRegister(
+          config_.cleaning.motorRs485SlaveId,
+          kCommunicationTimeoutRegister,
+          static_cast<uint16_t>(config_.cleaning.motorRs485CommunicationTimeoutDs));
+      }
+      const int command = enabled ? config_.cleaning.motorRs485DutyPermille : 0;
+      cleaning_motor_modbus_->writeSingleRegister(
+        config_.cleaning.motorRs485SlaveId,
+        kSpeedRegister,
+        static_cast<uint16_t>(static_cast<int16_t>(command)));
+      RCLCPP_INFO(
         logger_,
-        "cleaning motor serial opened device=%s baud=%d mode=8N1 raw/no-newline",
-        config_.cleaning.motorSerialDevice.c_str(),
-        config_.cleaning.motorSerialBaudrate);
+        "%s Modbus speed=%d (%.1f%%) device=%s slave=0x%02X",
+        label.c_str(),
+        command,
+        static_cast<double>(command) * 0.1,
+        config_.cleaning.motorRs485Device.c_str(),
+        config_.cleaning.motorRs485SlaveId);
+      return ActionResult::ok(label + " ok");
+    } catch (const std::exception & exc) {
+      last_error = exc.what();
+      cleaning_motor_modbus_.reset();
+      if (attempt == 1) {
+        RCLCPP_WARN(logger_, "%s failed once, reconnecting: %s", label.c_str(), exc.what());
+      }
     }
-
-    cleaning_motor_serial_->writeAll({command_byte});
-    const char command_char =
-      command_byte >= 32 && command_byte <= 126 ? static_cast<char>(command_byte) : '?';
-    RCLCPP_WARN(
-      logger_,
-      "%s sent byte=0x%02X ascii='%c' no_newline device=%s",
-      label.c_str(),
-      static_cast<unsigned int>(command_byte),
-      command_char,
-      config_.cleaning.motorSerialDevice.c_str());
-  } catch (const std::exception & exc) {
-    if (cleaning_motor_serial_) {
-      cleaning_motor_serial_->close();
-    }
-    return ActionResult::fail(label + " failed: " + exc.what());
   }
-
-  return ActionResult::ok(label + " ok");
+  return ActionResult::fail(label + " failed after reconnect: " + last_error);
 }
 
 double RobotActions::effectiveVelocityScale(double base_scale) const

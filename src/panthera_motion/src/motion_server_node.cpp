@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <future>
 #include <functional>
 #include <limits>
@@ -294,6 +295,12 @@ public:
         }
         latest_joint_state_ = *message;
         latest_joint_state_received_ = node_->now();
+        joint_state_history_.push_back(*message);
+        joint_state_history_times_.push_back(latest_joint_state_received_);
+        if (joint_state_history_.size() > 11) {
+          joint_state_history_.pop_front();
+          joint_state_history_times_.pop_front();
+        }
         has_joint_state_ = true;
       },
       state_options);
@@ -466,6 +473,14 @@ private:
             "clean_dump_to_pour",
             "clean_dump_pour_shake_once",
             "clean_dump_pour_to_brush_entry"},
+          continuous_error) ||
+        !addContinuousRoute(
+          candidate_routes,
+          "brush_entry_to_outlet_1_return_continuous",
+          {"brush_entry_to_clean_dump_pour",
+            "clean_dump_pour_to_clean_dump",
+            "clean_dump_to_clean_hover",
+            "clean_hover_to_outlet_1_return"},
           continuous_error))
       {
         message = "continuous route composition rejected: " + continuous_error;
@@ -552,6 +567,8 @@ private:
     std::string & error)
   {
     sensor_msgs::msg::JointState state;
+    std::deque<sensor_msgs::msg::JointState> history;
+    std::deque<rclcpp::Time> history_times;
     rclcpp::Time received;
     {
       std::lock_guard<std::mutex> lock(joint_state_mutex_);
@@ -560,6 +577,8 @@ private:
         return false;
       }
       state = latest_joint_state_;
+      history = joint_state_history_;
+      history_times = joint_state_history_times_;
       received = latest_joint_state_received_;
     }
 
@@ -572,7 +591,40 @@ private:
       return false;
     }
 
-    const double maximum_velocity = maxAbsVelocity(state, joint_names);
+    double maximum_velocity = maxAbsVelocity(state, joint_names);
+    if (history.size() >= 5 && history.size() == history_times.size()) {
+      std::vector<double> sample_times;
+      std::vector<std::vector<double>> ordered_positions;
+      sample_times.reserve(history.size());
+      ordered_positions.reserve(history.size());
+      const double first_time = history_times.front().seconds();
+      for (std::size_t sample_index = 0; sample_index < history.size(); ++sample_index) {
+        std::vector<double> ordered;
+        ordered.reserve(joint_names.size());
+        for (const auto & joint_name : joint_names) {
+          const auto it = std::find(
+            history[sample_index].name.begin(), history[sample_index].name.end(), joint_name);
+          if (it == history[sample_index].name.end()) {
+            ordered.clear();
+            break;
+          }
+          const auto index = static_cast<std::size_t>(
+            std::distance(history[sample_index].name.begin(), it));
+          if (index >= history[sample_index].position.size()) {
+            ordered.clear();
+            break;
+          }
+          ordered.push_back(history[sample_index].position[index]);
+        }
+        if (ordered.size() == joint_names.size()) {
+          sample_times.push_back(history_times[sample_index].seconds() - first_time);
+          ordered_positions.push_back(std::move(ordered));
+        }
+      }
+      if (ordered_positions.size() >= 5) {
+        maximum_velocity = maxAbsPositionSlope(sample_times, ordered_positions);
+      }
+    }
     if (!std::isfinite(maximum_velocity)) {
       error = "joint state does not contain finite velocities for every arm joint";
       return false;
@@ -749,12 +801,23 @@ private:
       controller_goal_.reset();
     }
     busy_.store(false);
-    if (success) {
-      goal_handle->succeed(result);
-    } else if (error_code == ExecuteMotion::Result::ERROR_CANCELLED) {
-      goal_handle->canceled(result);
-    } else {
-      goal_handle->abort(result);
+    try {
+      if (success) {
+        goal_handle->succeed(result);
+      } else if (
+        error_code == ExecuteMotion::Result::ERROR_CANCELLED &&
+        goal_handle->is_canceling())
+      {
+        goal_handle->canceled(result);
+      } else {
+        // A controller goal can be cancelled independently (for example when
+        // superseded). The parent route is still EXECUTING in that case, so
+        // CANCELED would be an invalid action-state transition.
+        goal_handle->abort(result);
+      }
+    } catch (const rclcpp::exceptions::RCLError & error) {
+      RCLCPP_ERROR(
+        logger_, "failed to publish terminal motion result without crashing: %s", error.what());
     }
     RCLCPP_INFO(
       logger_,
@@ -828,6 +891,13 @@ private:
     FollowTrajectory::Goal controller_request;
     try {
       controller_request.trajectory = scaleTrajectory(route.trajectory, requested_scale);
+      const double start_correction = alignTrajectoryStart(
+        controller_request.trajectory, current);
+      if (start_correction > 1e-3) {
+        RCLCPP_INFO(
+          logger_, "route '%s' starts from measured state; max correction=%.4frad",
+          route.name.c_str(), start_correction);
+      }
     } catch (const std::exception & error) {
       finish(
         goal_handle, false, ExecuteMotion::Result::ERROR_INVALID_GOAL,
@@ -1003,6 +1073,8 @@ private:
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   sensor_msgs::msg::JointState latest_joint_state_;
+  std::deque<sensor_msgs::msg::JointState> joint_state_history_;
+  std::deque<rclcpp::Time> joint_state_history_times_;
   rclcpp::Time latest_joint_state_received_;
   bool has_joint_state_{false};
   std::mutex joint_state_mutex_;

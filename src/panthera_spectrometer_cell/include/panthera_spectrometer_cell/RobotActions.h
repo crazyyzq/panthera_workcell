@@ -17,7 +17,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 
-#include "panthera_rs485/serial_port.hpp"
+#include "panthera_rs485/modbus_rtu.hpp"
 #include "panthera_interfaces/action/execute_motion.hpp"
 #include "panthera_spectrometer_cell/Config.h"
 #include "panthera_spectrometer_cell/Types.h"
@@ -121,7 +121,7 @@ private:
   rclcpp::Time latest_joint_state_received_;
   bool has_joint_state_{false};
   std::mutex cleaning_motor_mutex_;
-  std::unique_ptr<panthera_rs485::SerialPort> cleaning_motor_serial_;
+  std::unique_ptr<panthera_rs485::ModbusRtuMaster> cleaning_motor_modbus_;
   std::atomic<double> speed_scale_{1.0};
   std::mt19937 rng_;
   std::uniform_real_distribution<double> unit_dist_{0.0, 1.0};

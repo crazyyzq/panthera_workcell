@@ -321,16 +321,20 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readDouble(cleaning, "brush_hold_sec", config.cleaning.brushHoldSec);
   config.cleaning.brushMotorStopDelaySec =
     readDouble(cleaning, "brush_motor_stop_delay_sec", config.cleaning.brushMotorStopDelaySec);
-  config.cleaning.motorSerialEnabled =
-    readBool(cleaning, "motor_serial_enabled", config.cleaning.motorSerialEnabled);
-  config.cleaning.motorSerialDevice =
-    readString(cleaning, "motor_serial_device", config.cleaning.motorSerialDevice);
-  config.cleaning.motorSerialBaudrate =
-    readInt(cleaning, "motor_serial_baudrate", config.cleaning.motorSerialBaudrate);
-  config.cleaning.motorStartByte =
-    readInt(cleaning, "motor_start_byte", config.cleaning.motorStartByte);
-  config.cleaning.motorStopByte =
-    readInt(cleaning, "motor_stop_byte", config.cleaning.motorStopByte);
+  config.cleaning.motorRs485Enabled =
+    readBool(cleaning, "motor_rs485_enabled", config.cleaning.motorRs485Enabled);
+  config.cleaning.motorRs485Device =
+    readString(cleaning, "motor_rs485_device", config.cleaning.motorRs485Device);
+  config.cleaning.motorRs485Baudrate =
+    readInt(cleaning, "motor_rs485_baudrate", config.cleaning.motorRs485Baudrate);
+  config.cleaning.motorRs485SlaveId =
+    readInt(cleaning, "motor_rs485_slave_id", config.cleaning.motorRs485SlaveId);
+  config.cleaning.motorRs485DutyPermille =
+    readInt(cleaning, "motor_rs485_duty_permille", config.cleaning.motorRs485DutyPermille);
+  config.cleaning.motorRs485CommunicationTimeoutDs = readInt(
+    cleaning,
+    "motor_rs485_communication_timeout_ds",
+    config.cleaning.motorRs485CommunicationTimeoutDs);
   config.cleaning.leavePose = readString(cleaning, "leave_pose", config.cleaning.leavePose);
 
   const auto outlets = root["outlets"];
@@ -536,16 +540,28 @@ ActionResult WorkcellConfig::validate() const
   if (cleaning.brushMotorStopDelaySec < 0.0) {
     return ActionResult::fail("cleaning.brush_motor_stop_delay_sec must be >= 0");
   }
-  if (cleaning.motorSerialEnabled && cleaning.motorSerialDevice.empty()) {
-    return ActionResult::fail("cleaning.motor_serial_device must not be empty when motor serial is enabled");
+  if (cleaning.motorRs485Enabled && cleaning.motorRs485Device.empty()) {
+    return ActionResult::fail(
+      "cleaning.motor_rs485_device must not be empty when motor RS485 is enabled");
   }
-  if (cleaning.motorSerialBaudrate <= 0) {
-    return ActionResult::fail("cleaning.motor_serial_baudrate must be > 0");
+  if (cleaning.motorRs485Baudrate <= 0) {
+    return ActionResult::fail("cleaning.motor_rs485_baudrate must be > 0");
   }
-  if (cleaning.motorStartByte < 0 || cleaning.motorStartByte > 255 ||
-    cleaning.motorStopByte < 0 || cleaning.motorStopByte > 255)
+  if (cleaning.motorRs485SlaveId < 1 || cleaning.motorRs485SlaveId > 127) {
+    return ActionResult::fail("cleaning.motor_rs485_slave_id must be in [1, 127]");
+  }
+  if (cleaning.motorRs485DutyPermille < -1000 ||
+    cleaning.motorRs485DutyPermille > 1000 ||
+    cleaning.motorRs485DutyPermille == 0)
   {
-    return ActionResult::fail("cleaning motor start/stop bytes must be in [0, 255]");
+    return ActionResult::fail(
+      "cleaning.motor_rs485_duty_permille must be in [-1000, 1000] and non-zero");
+  }
+  if (cleaning.motorRs485CommunicationTimeoutDs < 1 ||
+    cleaning.motorRs485CommunicationTimeoutDs > 255)
+  {
+    return ActionResult::fail(
+      "cleaning.motor_rs485_communication_timeout_ds must be in [1, 255]");
   }
 
   for (const auto & item : outlets) {

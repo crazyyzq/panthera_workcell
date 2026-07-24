@@ -79,6 +79,28 @@ config/spectrometer_cell.yaml
 | 激光测距超时 | `loop.sensor_timeout_sec` |
 | 光谱仪启动超时 | `loop.spectrometer_start_timeout_sec` |
 
+## 毛刷电机 RS485
+
+毛刷使用 AQMD6030NS-A3 驱动器，通过 `/dev/ttyS8` 的 Modbus RTU 控制。SW8 必须为 ON；
+现场 SW1 为 ON，手册译码和实机扫描均对应站号 `0x02`。默认串口参数为 `9600/8E1`。
+
+程序启动时先写 `0x0040=0` 确认停转；清洁开始前写 `0x0080=0` 选择占空比模式，
+写 `0x008e` 启用断线制动，再向 `0x0040` 写有符号速度。每次写操作必须收到站号、
+功能码、寄存器、数据和 CRC 均正确的回显，否则动作失败并重连一次，不会继续进杯。
+
+常用配置都在 `cleaning` 下：
+
+| 配置 | 含义 |
+| --- | --- |
+| `motor_rs485_enabled` | 启用毛刷电机；启用后初始化通信失败会阻止流程启动。 |
+| `motor_rs485_device` | 串口设备，当前为 `/dev/ttyS8`。 |
+| `motor_rs485_slave_id` | Modbus 站号，当前实测为 `2`。 |
+| `motor_rs485_duty_permille` | `-1000..1000`，对应 `-100.0%..100.0%`，符号决定方向。 |
+| `motor_rs485_communication_timeout_ds` | 断线制动时间，单位 0.1 秒，必须为 `1..255`。 |
+
+接线按 A-A、B-B；通信不稳定时连接驱动器 COM 与主站信号地。首次确认方向时从低占空比、
+短时点动开始；方向错误只需改变 `motor_rs485_duty_permille` 的正负号。
+
 ## 代码分层
 
 | 文件 | 作用 |

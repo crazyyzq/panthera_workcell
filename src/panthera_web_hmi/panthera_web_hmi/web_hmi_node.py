@@ -82,11 +82,12 @@ POINT_CONFIG_CLEANING_KEYS = {
     'brush_stroke_offset_xyz',
     'brush_hold_sec',
     'brush_motor_stop_delay_sec',
-    'motor_serial_enabled',
-    'motor_serial_device',
-    'motor_serial_baudrate',
-    'motor_start_byte',
-    'motor_stop_byte',
+    'motor_rs485_enabled',
+    'motor_rs485_device',
+    'motor_rs485_baudrate',
+    'motor_rs485_slave_id',
+    'motor_rs485_duty_permille',
+    'motor_rs485_communication_timeout_ds',
 }
 
 
@@ -1959,20 +1960,47 @@ class WebHmiNode(Node):
                     'pour_direction',
                     'shake_count',
                     'brush_stroke_count',
-                    'motor_serial_baudrate',
+                    'motor_rs485_baudrate',
+                    'motor_rs485_slave_id',
+                    'motor_rs485_duty_permille',
+                    'motor_rs485_communication_timeout_ds',
                 ):
                     value = int(value)
                     if key == 'pour_direction' and value not in (-1, 0, 1):
                         return {'success': False, 'message': 'cleaning.pour_direction must be -1, 0, or 1'}
-                    if key == 'motor_serial_baudrate' and value <= 0:
-                        return {'success': False, 'message': 'cleaning.motor_serial_baudrate must be > 0'}
-                elif key in ('motor_start_byte', 'motor_stop_byte'):
-                    value = int(str(value), 0) if isinstance(value, str) else int(value)
-                    if value < 0 or value > 255:
-                        return {'success': False, 'message': f'cleaning.{key} must be in [0, 255]'}
-                elif key in ('brush_enabled', 'motor_serial_enabled'):
+                    if key == 'motor_rs485_baudrate' and value <= 0:
+                        return {
+                            'success': False,
+                            'message': 'cleaning.motor_rs485_baudrate must be > 0',
+                        }
+                    if key == 'motor_rs485_slave_id' and value not in range(1, 128):
+                        return {
+                            'success': False,
+                            'message': 'cleaning.motor_rs485_slave_id must be in [1, 127]',
+                        }
+                    if key == 'motor_rs485_duty_permille' and (
+                        value == 0 or not -1000 <= value <= 1000
+                    ):
+                        return {
+                            'success': False,
+                            'message': (
+                                'cleaning.motor_rs485_duty_permille must be non-zero '
+                                'in [-1000, 1000]'
+                            ),
+                        }
+                    if key == 'motor_rs485_communication_timeout_ds' and (
+                        value not in range(1, 256)
+                    ):
+                        return {
+                            'success': False,
+                            'message': (
+                                'cleaning.motor_rs485_communication_timeout_ds must '
+                                'be in [1, 255]'
+                            ),
+                        }
+                elif key in ('brush_enabled', 'motor_rs485_enabled'):
                     value = _as_bool(value, f'cleaning.{key}')
-                elif key in ('brush_pose', 'motor_serial_device'):
+                elif key in ('brush_pose', 'motor_rs485_device'):
                     value = str(value).strip()
                     if not value:
                         return {'success': False, 'message': f'cleaning.{key} must not be empty'}

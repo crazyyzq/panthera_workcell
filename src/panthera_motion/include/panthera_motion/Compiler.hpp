@@ -46,6 +46,14 @@ trajectory_msgs::msg::JointTrajectory scaleTrajectory(
   const trajectory_msgs::msg::JointTrajectory & source,
   double speed_scale);
 
+double alignTrajectoryStart(
+  trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & current_positions);
+
+double maxAbsPositionSlope(
+  const std::vector<double> & sample_times_sec,
+  const std::vector<std::vector<double>> & position_samples);
+
 double trajectoryDurationSec(const trajectory_msgs::msg::JointTrajectory & trajectory);
 
 ValidationResult enforceTrajectoryDynamicsLimits(

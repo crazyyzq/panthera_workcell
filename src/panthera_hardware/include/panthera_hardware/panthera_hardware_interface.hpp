@@ -78,6 +78,7 @@ private:
   std::vector<double> max_velocities_;
   std::vector<double> kp_gains_;
   std::vector<double> kd_gains_;
+  std::vector<double> gravity_scales_;
 
   // Throttled logging requires a clock whose lifetime outlives the logging call.
   // A temporary shared clock here previously caused a use-after-free on error paths.

@@ -117,6 +117,66 @@ TEST(TrajectoryScaling, SlowsTimeVelocityAndAccelerationConsistently)
   EXPECT_DOUBLE_EQ(panthera_motion::trajectoryDurationSec(scaled), 4.0);
 }
 
+TEST(TrajectoryStart, UsesMeasuredStationaryStateWithoutChangingLaterPoints)
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  trajectory.joint_names = {"joint1", "joint2"};
+  trajectory_msgs::msg::JointTrajectoryPoint start;
+  start.positions = {1.0, 2.0};
+  start.velocities = {0.1, 0.2};
+  start.accelerations = {0.3, 0.4};
+  trajectory.points.push_back(start);
+  trajectory_msgs::msg::JointTrajectoryPoint end;
+  end.positions = {3.0, 4.0};
+  trajectory.points.push_back(end);
+
+  const double correction = panthera_motion::alignTrajectoryStart(
+    trajectory, {1.04, 1.98});
+
+  EXPECT_NEAR(correction, 0.04, 1e-12);
+  EXPECT_EQ(trajectory.points.front().positions, (std::vector<double>{1.04, 1.98}));
+  EXPECT_EQ(trajectory.points.front().velocities, (std::vector<double>{0.0, 0.0}));
+  EXPECT_EQ(trajectory.points.front().accelerations, (std::vector<double>{0.0, 0.0}));
+  EXPECT_EQ(trajectory.points.back().positions, (std::vector<double>{3.0, 4.0}));
+}
+
+TEST(TrajectoryStart, RejectsDimensionMismatch)
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  trajectory.joint_names = {"joint1"};
+  trajectory.points.emplace_back();
+  trajectory.points.front().positions = {1.0};
+  EXPECT_THROW(
+    panthera_motion::alignTrajectoryStart(trajectory, {1.0, 2.0}),
+    std::invalid_argument);
+}
+
+TEST(MotionState, PositionSlopeIgnoresStationaryEncoderJitter)
+{
+  const std::vector<double> times{0.00, 0.01, 0.02, 0.03, 0.04};
+  const std::vector<std::vector<double>> positions{
+    {1.0000, 2.0},
+    {1.0006, 2.0},
+    {0.9994, 2.0},
+    {1.0006, 2.0},
+    {1.0000, 2.0},
+  };
+  EXPECT_NEAR(panthera_motion::maxAbsPositionSlope(times, positions), 0.0, 1e-12);
+}
+
+TEST(MotionState, PositionSlopeKeepsSustainedMotion)
+{
+  const std::vector<double> times{0.00, 0.01, 0.02, 0.03, 0.04};
+  const std::vector<std::vector<double>> positions{
+    {1.0000, 2.0},
+    {1.0008, 2.0},
+    {1.0016, 2.0},
+    {1.0024, 2.0},
+    {1.0032, 2.0},
+  };
+  EXPECT_NEAR(panthera_motion::maxAbsPositionSlope(times, positions), 0.08, 1e-12);
+}
+
 TEST(TrajectoryDynamicsLimit, StretchesQuinticDynamicsConsistently)
 {
   trajectory_msgs::msg::JointTrajectory trajectory;

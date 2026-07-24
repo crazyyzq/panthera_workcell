@@ -102,8 +102,12 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(FILES
+  config/spectrometer_cell.yaml
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
 install(DIRECTORY
-  config
   launch
   DESTINATION share/${PROJECT_NAME}
 )

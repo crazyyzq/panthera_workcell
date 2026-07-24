@@ -48,8 +48,21 @@ This file contains durable repository context and operating rules for future age
   position/velocity targets plus Pinocchio gravity feed-forward are sent through
   the SDK position/velocity/torque/Kp/Kd command.
 - Commissioned MIT arm gains are `Kp=[60,60,60,60,60,60]` and
-  `Kd=[5,5,5,5,5,5]`. They are launch-configurable but malformed, non-finite, or
+  `Kd=[5.5,5.5,5.5,5.5,5.5,5.5]`. They are launch-configurable but malformed, non-finite, or
   negative vectors must fail closed. The gripper stays on retained position control.
+- The 2026-07-24 physical acceptance found that the upstream all-axis gravity
+  scale `[1,1,1,1,1,1]` causes unsafe joint drift on this arm. The current
+  machine calibration is `[0,1,1.5,0,0,0]`: it held at startup and tracked the
+  `home_to_safe_center` joint target within 0.024 rad in a direct-controller test.
+  Keep the scale launch-configurable and do not restore the upstream default
+  without a new staged physical acceptance.
+- Hardware activation must latch a median of multiple valid encoder frames, never
+  one SDK frame. A single-frame latch produced a repeatable joint1 startup drift.
+- The SDK can continuously report quantized nonzero velocity while the encoder
+  position is stationary (joint5 repeatedly reported about `0.062 rad/s`). Motion
+  Server therefore estimates settled motion from an 11-frame least-squares encoder
+  position slope while retaining the `0.05 rad/s` limit; it does not trust one SDK
+  velocity sample or loosen the safety threshold.
 - `fixed_motion_bringup.launch.py` and `fixed_spectrometer_cell.launch.py` default
   to MIT mode. Explicit `control_mode:=position_velocity` remains the immediate
   rollback path. `hardware_moveit_rviz_mit.launch.py` is the MoveIt commissioning
@@ -57,7 +70,39 @@ This file contains durable repository context and operating rules for future age
 - Legacy `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` still replan with MoveIt and are migration-only. Their default HMI launch flags are disabled so they do not run beside another legacy owner.
 - Target architecture: one motion server is the only arm trajectory owner. MoveIt is retained for commissioning, IK, collision checks and trajectory compilation, not per-step production planning.
 - Fixed positioning is the current default requirement. Laser-based position correction must remain available behind an explicit `fixed | sensor_offset` mode.
+- The 2026-07-24 bench revision rotated the robot base clockwise 90 degrees. In the
+  current `base_link`, +X points toward the outlets and +Y toward the spectrometer.
+  Provisional measured process coordinates are outlet1
+  `(0.46853,-0.095,0.190)m`, outlet2 `(0.46853,0.085,0.190)m`, and dump
+  `(0.09126,-0.34374,0.250)m`. Dump z=0.250 m is an intentionally raised
+  commissioning value, not final calibration. The transformed spectrometer pickup
+  column is `(0.132,0.600)m`.
+- The revised cleaning branch keeps the gripper pointing toward base `-Y`
+  (yaw `-1.5708 rad`) and uses pour roll `-2.5 rad`. After pouring at
+  `(0.09126,-0.34374,0.250)m`, move in a straight line along base `+X` by 150 mm
+  to `(0.24126,-0.34374,0.250)m`, then insert 100 mm along the flipped cup axis
+  to `(0.301107,-0.34374,0.169886)m`. Physical validation on 2026-07-24 completed
+  a full production cycle with this 150 mm offset and 100 mm insertion, including
+  gripper and brush operation, and returned Home successfully.
+- Cleaning exit must exactly reverse those primitives: retract 100 mm along the
+  cup axis, translate 150 mm along base `-X` back to the dump point, rotate upright
+  in place, then lift vertically. Never combine translation, wrist return and lift
+  in one joint-space segment; that produced a visible wrist/TCP dip.
+- The 2026-07-24 full-cycle timing at speed scale 1.0 was 50.33 s. The optimized
+  `brush_entry_to_outlet_1_return_continuous` route takes 9.57 s versus 17.61 s
+  for the old monolithic route. Controller-state capture found joint6 acceleration
+  spikes around 90-92 rad/s^2 on the two routes containing the large pour wrist
+  transition (`spectrometer_pick_to_brush_entry_continuous` and
+  `brush_entry_to_outlet_1_return_continuous`); other main segments were about
+  4.7-6.5 rad/s^2. Treat joint6 continuous retiming/blending as the next motion
+  optimization; do not tune MIT Kp/Kd to mask this trajectory-level discontinuity.
 - Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
+- The cleaning brush motor driver is AQMD6030NS-A3 on `/dev/ttyS8`, Modbus RTU
+  slave `0x02`, default `9600/8E1`. Its SW8 must be ON. The manual uses an
+  offset decode: SW1-SW7 all OFF is `0x01`, while the installed SW1 ON setting
+  is `0x02`; a full live scan confirmed only `0x02` replies. Production control
+  uses duty-cycle mode (`0x0080=0`) and
+  signed speed register `0x0040` (`-1000..1000` = `-100.0%..100.0%`).
 
 ## Safety invariants
 
@@ -81,10 +126,19 @@ This file contains durable repository context and operating rules for future age
 - Deleting a point referenced by any route must be rejected.
 - Preserve the state-machine business invariants: the cup returns to its source outlet; before-pick position is distinct from before-place position; ERROR/ESTOP retain recovery context; ESTOP has highest priority.
 - Do not enable real GPIO/DIDO output until the installed interface board, pinmux, permissions and electrical wiring are verified.
+- Brush motor commands must use verified Modbus replies, enable nonzero communication-loss
+  braking through register `0x008e`, and fail closed during application initialization.
+  Do not restore the removed raw ASCII `1`/`0` USB-serial protocol.
 
 ## Known high-risk issues in the pre-refactor baseline
 
 - MoveIt and the new motion server use a `0.05 rad` start tolerance. Do not loosen it without measured encoder/repeatability evidence.
+- A route inside that start tolerance begins at the latest measured joint position,
+  with zero initial velocity/acceleration, before following the cached trajectory.
+  This removes the abrupt catch-up that occurred when each new controller goal
+  restarted at the theoretical cached point. Arbitrary start mismatches are still
+  rejected. MIT goal tolerance is `0.06 rad`, based on measured static endpoint
+  errors up to about `0.057 rad`; path tolerances remain unchanged.
 - The spectrometer state machine calls robot actions synchronously, so its configured action timeout cannot interrupt a blocked action.
 - Real E-stop, outlet signals and spectrometer-complete integration are not fully wired; some paths still use manual/simulation services.
 - The legacy `clean_brush` roll has been normalized from the invalid-looking `30.0 rad`
@@ -106,6 +160,9 @@ This file contains durable repository context and operating rules for future age
   insertion/exit, and brush-area retreat are named routes. Do not reintroduce dynamic
   wrist planning into the production path.
 - Historical `.bak_*`, `bakeup/`, zip and export artifacts exist. Do not confuse them with canonical configuration.
+- On 2026-07-24 `/dev/ttyS8` existed, was unused, and `b1` had `dialout` access.
+  AQMD communication and short 10%/50% duty-cycle operation were physically verified
+  at slave `0x02`; steady PWM read back as 100/500 and 0 after each stop command.
 
 ## Build and validation
 
@@ -134,7 +191,7 @@ ros2 launch panthera_motion fixed_motion_bringup.launch.py default_speed_scale:=
 ```
 
 It starts hardware/controllers plus the Motion Server without MoveGroup. Do not start legacy real-motion nodes beside it.
-It defaults to `mit_gravity_compensation` with the commissioned `60/5` gains.
+It defaults to `mit_gravity_compensation` with the commissioned `60/5.5` gains.
 Use `control_mode:=position_velocity` only for controlled rollback.
 
 The full fixed-backend production entry point is:

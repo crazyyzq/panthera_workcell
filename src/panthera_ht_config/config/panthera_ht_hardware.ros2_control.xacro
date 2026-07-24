@@ -100,7 +100,9 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">2.5</param>
-                <param name="max_velocity">1.5</param>
+                <!-- 1.0 m/s maps to 40 rad/s at 0.025 m/rad, below the SDK
+                     signed-16 velocity encoding limit (about 51.4 rad/s). -->
+                <param name="max_velocity">1.0</param>
                 <param name="kp">1.5</param>
                 <param name="kd">0.1</param>
             </joint>

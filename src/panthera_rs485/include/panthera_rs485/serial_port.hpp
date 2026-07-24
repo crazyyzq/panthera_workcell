@@ -9,6 +9,13 @@
 namespace panthera_rs485
 {
 
+enum class SerialParity
+{
+  NONE,
+  EVEN,
+  ODD,
+};
+
 class SerialPort
 {
 public:
@@ -21,7 +28,9 @@ public:
   void open(
     const std::string & device,
     int baudrate,
-    std::chrono::milliseconds read_timeout);
+    std::chrono::milliseconds read_timeout,
+    SerialParity parity = SerialParity::NONE,
+    int stop_bits = 1);
 
   void close();
   bool isOpen() const;

@@ -15,6 +15,7 @@ def generate_launch_description():
     control_mode = LaunchConfiguration('control_mode')
     mit_kp = LaunchConfiguration('mit_kp')
     mit_kd = LaunchConfiguration('mit_kd')
+    mit_gravity_scale = LaunchConfiguration('mit_gravity_scale')
     catalog_file = LaunchConfiguration('catalog_file')
     default_speed_scale = LaunchConfiguration('default_speed_scale')
 
@@ -70,11 +71,17 @@ def generate_launch_description():
             default_value='60.0,60.0,60.0,60.0,60.0,60.0'),
         DeclareLaunchArgument(
             'mit_kd',
-            default_value='5.0,5.0,5.0,5.0,5.0,5.0'),
+            default_value='5.5,5.5,5.5,5.5,5.5,5.5'),
+        DeclareLaunchArgument(
+            'mit_gravity_scale',
+            default_value='0.0,1.0,1.5,0.0,0.0,0.0'),
         DeclareLaunchArgument('catalog_file', default_value=default_catalog),
         DeclareLaunchArgument('default_speed_scale', default_value='0.20'),
         SetEnvironmentVariable(name='PANTHERA_MIT_KP', value=mit_kp),
         SetEnvironmentVariable(name='PANTHERA_MIT_KD', value=mit_kd),
+        SetEnvironmentVariable(
+            name='PANTHERA_MIT_GRAVITY_SCALE',
+            value=mit_gravity_scale),
         hardware_launch,
         static_tf_launch,
         motion_launch,

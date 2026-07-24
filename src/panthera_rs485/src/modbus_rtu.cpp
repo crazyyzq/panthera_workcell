@@ -15,10 +15,12 @@ ModbusException::ModbusException(const std::string & message)
 ModbusRtuMaster::ModbusRtuMaster(
   const std::string & port,
   int baudrate,
-  std::chrono::milliseconds timeout)
+  std::chrono::milliseconds timeout,
+  SerialParity parity,
+  int stop_bits)
 : timeout_(timeout)
 {
-  serial_.open(port, baudrate, timeout);
+  serial_.open(port, baudrate, timeout, parity, stop_bits);
 }
 
 uint16_t ModbusRtuMaster::crc16(const std::vector<uint8_t> & data)
@@ -200,6 +202,25 @@ std::vector<uint16_t> ModbusRtuMaster::readHoldingRegisters(
     values.push_back(readU16(response, 3 + static_cast<size_t>(i * 2)));
   }
   return values;
+}
+
+void ModbusRtuMaster::writeSingleRegister(
+  uint8_t slave_id,
+  uint16_t address,
+  uint16_t value)
+{
+  if (slave_id == 0) {
+    throw ModbusException("writeSingleRegister requires slave_id 1..247");
+  }
+
+  std::vector<uint8_t> request{slave_id, 0x06};
+  appendU16(request, address);
+  appendU16(request, value);
+
+  const auto response = transact(request, 8);
+  if (readU16(response, 2) != address || readU16(response, 4) != value) {
+    throw ModbusException("Unexpected write response: " + toHex(response));
+  }
 }
 
 void ModbusRtuMaster::writeMultipleRegisters(

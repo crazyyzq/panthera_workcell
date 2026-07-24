@@ -51,8 +51,14 @@ SerialPort::~SerialPort()
 void SerialPort::open(
   const std::string & device,
   int baudrate,
-  std::chrono::milliseconds read_timeout)
+  std::chrono::milliseconds read_timeout,
+  SerialParity parity,
+  int stop_bits)
 {
+  if (stop_bits != 1 && stop_bits != 2) {
+    throw std::runtime_error("Serial stop bits must be 1 or 2");
+  }
+
   close();
   read_timeout_ = read_timeout;
 
@@ -75,8 +81,18 @@ void SerialPort::open(
   cfsetospeed(&tty, speed);
 
   tty.c_cflag |= static_cast<tcflag_t>(CLOCAL | CREAD);
-  tty.c_cflag &= static_cast<tcflag_t>(~PARENB);
-  tty.c_cflag &= static_cast<tcflag_t>(~CSTOPB);
+  tty.c_iflag &= static_cast<tcflag_t>(~(INPCK | IGNPAR));
+  tty.c_cflag &= static_cast<tcflag_t>(~(PARENB | PARODD | CSTOPB));
+  if (parity != SerialParity::NONE) {
+    tty.c_iflag |= INPCK;
+    tty.c_cflag |= PARENB;
+    if (parity == SerialParity::ODD) {
+      tty.c_cflag |= PARODD;
+    }
+  }
+  if (stop_bits == 2) {
+    tty.c_cflag |= CSTOPB;
+  }
   tty.c_cflag &= static_cast<tcflag_t>(~CSIZE);
   tty.c_cflag |= CS8;
   tty.c_cflag &= static_cast<tcflag_t>(~CRTSCTS);

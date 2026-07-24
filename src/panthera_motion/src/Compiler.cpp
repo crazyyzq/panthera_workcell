@@ -1007,6 +1007,89 @@ trajectory_msgs::msg::JointTrajectory scaleTrajectory(
   return output;
 }
 
+double alignTrajectoryStart(
+  trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & current_positions)
+{
+  if (trajectory.points.empty() ||
+    trajectory.points.front().positions.size() != current_positions.size() ||
+    trajectory.joint_names.size() != current_positions.size())
+  {
+    throw std::invalid_argument("trajectory start/current joint dimensions differ");
+  }
+
+  auto & start = trajectory.points.front();
+  double maximum_correction = 0.0;
+  for (std::size_t index = 0; index < current_positions.size(); ++index) {
+    if (!std::isfinite(current_positions[index])) {
+      throw std::invalid_argument("current joint positions must be finite");
+    }
+    maximum_correction = std::max(
+      maximum_correction, std::abs(start.positions[index] - current_positions[index]));
+  }
+  start.positions = current_positions;
+  start.velocities.assign(current_positions.size(), 0.0);
+  start.accelerations.assign(current_positions.size(), 0.0);
+  return maximum_correction;
+}
+
+double maxAbsPositionSlope(
+  const std::vector<double> & sample_times_sec,
+  const std::vector<std::vector<double>> & position_samples)
+{
+  if (sample_times_sec.size() < 2 || position_samples.size() != sample_times_sec.size() ||
+    position_samples.front().empty())
+  {
+    throw std::invalid_argument("position history must contain matching samples and times");
+  }
+  const std::size_t joint_count = position_samples.front().size();
+  double mean_time = 0.0;
+  for (const double time : sample_times_sec) {
+    if (!std::isfinite(time)) {
+      throw std::invalid_argument("position sample times must be finite");
+    }
+    mean_time += time;
+  }
+  mean_time /= static_cast<double>(sample_times_sec.size());
+
+  double time_variance = 0.0;
+  for (const double time : sample_times_sec) {
+    const double centered = time - mean_time;
+    time_variance += centered * centered;
+  }
+  if (time_variance <= 0.0) {
+    throw std::invalid_argument("position sample times must increase");
+  }
+
+  std::vector<double> mean_positions(joint_count, 0.0);
+  for (const auto & sample : position_samples) {
+    if (sample.size() != joint_count) {
+      throw std::invalid_argument("position sample dimensions differ");
+    }
+    for (std::size_t joint = 0; joint < joint_count; ++joint) {
+      if (!std::isfinite(sample[joint])) {
+        throw std::invalid_argument("position samples must be finite");
+      }
+      mean_positions[joint] += sample[joint];
+    }
+  }
+  for (auto & mean : mean_positions) {
+    mean /= static_cast<double>(position_samples.size());
+  }
+
+  double maximum = 0.0;
+  for (std::size_t joint = 0; joint < joint_count; ++joint) {
+    double covariance = 0.0;
+    for (std::size_t sample = 0; sample < position_samples.size(); ++sample) {
+      covariance +=
+        (sample_times_sec[sample] - mean_time) *
+        (position_samples[sample][joint] - mean_positions[joint]);
+    }
+    maximum = std::max(maximum, std::abs(covariance / time_variance));
+  }
+  return maximum;
+}
+
 double trajectoryDurationSec(const trajectory_msgs::msg::JointTrajectory & trajectory)
 {
   if (trajectory.points.empty()) {

@@ -134,11 +134,12 @@ struct CleaningConfig
   Vec3 brushStrokeOffsetXyz{0.0, 0.04, 0.0};
   double brushHoldSec{0.10};
   double brushMotorStopDelaySec{0.0};
-  bool motorSerialEnabled{false};
-  std::string motorSerialDevice;
-  int motorSerialBaudrate{115200};
-  int motorStartByte{'1'};
-  int motorStopByte{'0'};
+  bool motorRs485Enabled{false};
+  std::string motorRs485Device{"/dev/ttyS8"};
+  int motorRs485Baudrate{9600};
+  int motorRs485SlaveId{2};
+  int motorRs485DutyPermille{500};
+  int motorRs485CommunicationTimeoutDs{100};
   std::string leavePose{"clean_leave"};
 };
 

@@ -58,16 +58,16 @@ points:
     - recovery
     - advanced
   outlet_wait:
-    description: 两个出料口之间的高位等待点；正常循环不回安全关节位。
+    description: 新台架两个出料口之间的共享高位点；仅手动调试使用。
     pose:
       xyz:
-      - 0.03
-      - -0.35
-      - 0.45
+      - 0.40000
+      - -0.00500
+      - 0.35000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: safe_joint_center
     tags:
     - outlet
@@ -77,13 +77,13 @@ points:
     description: 出料口1夹取点正上方的垂直进退点。
     pose:
       xyz:
-      - -0.024
-      - -0.44
-      - 0.45
+      - 0.46853
+      - -0.09500
+      - 0.35000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: outlet_wait
     tags:
     - outlet
@@ -93,13 +93,13 @@ points:
     description: 出料口1实际夹取/放回点；日常只调这个点。
     pose:
       xyz:
-      - -0.024
-      - -0.44
-      - 0.16
+      - 0.46853
+      - -0.09500
+      - 0.19000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: outlet_1_hover
     tags:
     - process
@@ -109,13 +109,13 @@ points:
     description: 出料口1夹取点正上方10mm；最终精确接近的起点。
     pose:
       xyz:
-      - -0.024
-      - -0.44
-      - 0.17
+      - 0.46853
+      - -0.09500
+      - 0.20000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: outlet_1_hover
     tags:
     - outlet
@@ -125,13 +125,13 @@ points:
     description: 出料口2夹取点正上方的垂直进退点。
     pose:
       xyz:
-      - 0.155
-      - -0.42853
-      - 0.45
+      - 0.46853
+      - 0.08500
+      - 0.35000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: outlet_wait
     tags:
     - outlet
@@ -141,13 +141,13 @@ points:
     description: 出料口2实际夹取/放回点；日常只调这个点。
     pose:
       xyz:
-      - 0.155
-      - -0.42853
-      - 0.16
+      - 0.46853
+      - 0.08500
+      - 0.19000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: outlet_2_hover
     tags:
     - process
@@ -157,13 +157,13 @@ points:
     description: 出料口2夹取点正上方10mm；最终精确接近的起点。
     pose:
       xyz:
-      - 0.155
-      - -0.42853
-      - 0.17
+      - 0.46853
+      - 0.08500
+      - 0.20000
       rpy:
       - 0.0
       - 0.0
-      - -1.5708
+      - 0.0
     ik_seed: outlet_2_hover
     tags:
     - outlet
@@ -173,13 +173,13 @@ points:
     description: 光谱仪工艺点正上方；放杯后直接在这里等待检测。
     pose:
       xyz:
+      - 0.132
       - 0.595
-      - -0.132
       - 0.45
       rpy:
       - 0.0
       - 0.0
-      - 0.0
+      - 1.5708
     ik_seed: outlet_2_hover
     tags:
     - spectrometer
@@ -189,13 +189,13 @@ points:
     description: 光谱仪取杯点正上方；独立于放杯上方点，保证取杯垂直进出。
     pose:
       xyz:
+      - 0.132
       - 0.600
-      - -0.132
       - 0.45
       rpy:
       - 0.0
       - 0.0
-      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
@@ -205,13 +205,13 @@ points:
     description: 固定工位光谱仪放杯点。
     pose:
       xyz:
+      - 0.132
       - 0.595
-      - -0.132
       - 0.33
       rpy:
       - 0.0
       - 0.0
-      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - process
@@ -221,13 +221,13 @@ points:
     description: 光谱仪放杯点正上方10mm；最终精确放置的起点。
     pose:
       xyz:
+      - 0.132
       - 0.595
-      - -0.132
       - 0.34
       rpy:
       - 0.0
       - 0.0
-      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
@@ -237,13 +237,13 @@ points:
     description: 光谱仪取杯点；比放杯点低10mm。
     pose:
       xyz:
+      - 0.132
       - 0.600
-      - -0.132
       - 0.312
       rpy:
       - 0.0
       - 0.0
-      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - process
@@ -253,30 +253,27 @@ points:
     description: 光谱仪取杯点正上方10mm；最终精确夹取的起点。
     pose:
       xyz:
+      - 0.132
       - 0.600
-      - -0.132
       - 0.322
       rpy:
       - 0.0
       - 0.0
-      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
     - precision_approach
     - advanced
   cleaning_transition_seed:
-    description: 清洗区独立IK分支种子；调光谱仪点位时保持清洗轨迹关节分支不变。
-    pose:
-      xyz:
-      - 0.57
-      - -0.12
-      - 0.45
-      rpy:
-      - 0.0
-      - 0.0
-      - 0.0
-    ik_seed: outlet_2_hover
+    description: 新台架清洗区固定IK分支种子；由离线Pinocchio扫描得到。
+    joints:
+    - -0.75791545
+    - 1.44562238
+    - 1.54831584
+    - -0.10257441
+    - 1.44202475
+    - -0.00024761
     tags:
     - system
     - ik_seed
@@ -284,29 +281,29 @@ points:
     description: 清洗区域共享进退点。
     pose:
       xyz:
-      - 0.2
-      - 0.5
-      - 0.45
+      - 0.09126
+      - -0.34374
+      - 0.45000
       rpy:
       - 0.0
       - 0.0
-      - 1.5708
+      - -1.5708
     ik_seed: cleaning_transition_seed
     tags:
     - cleaning
     - safety
     - advanced
   clean_dump_hover:
-    description: 新倒料点正上方的垂直进退点；倒料Y微调时与倒料点同步。
+    description: 新倒料点正上方200mm的垂直进退点。
     pose:
       xyz:
-      - 0.2
-      - 0.45
-      - 0.45
+      - 0.09126
+      - -0.34374
+      - 0.45000
       rpy:
       - 0.0
       - 0.0
-      - 1.5708
+      - -1.5708
     ik_seed: clean_hover
     tags:
     - cleaning
@@ -316,33 +313,29 @@ points:
     description: 杯子倒料工艺点。
     pose:
       xyz:
-      - 0.2
-      - 0.45
-      - 0.2
+      - 0.09126
+      - -0.34374
+      - 0.25000
       rpy:
       - 0.0
       - 0.0
-      - 1.5708
+      - -1.5708
     ik_seed: clean_hover
     tags:
     - process
     - cleaning
     - tunable
-    tags:
-    - system
-    - recovery
-    - advanced
   clean_dump_pour:
     description: 倒料点保持位置并将杯子转到已验证的负向倒料姿态。
     pose:
       xyz:
-      - 0.2
-      - 0.45
-      - 0.2
+      - 0.09126
+      - -0.34374
+      - 0.25000
       rpy:
       - -2.5
       - 0.0
-      - 1.5708
+      - -1.5708
     ik_seed: clean_dump
     tags:
     - cleaning
@@ -352,62 +345,62 @@ points:
     description: 倒料限位回退0.4rad的单次抖料点。
     pose:
       xyz:
-      - 0.2
-      - 0.45
-      - 0.2
+      - 0.09126
+      - -0.34374
+      - 0.25000
       rpy:
       - -2.1
       - 0.0
-      - 1.5708
+      - -1.5708
     ik_seed: clean_dump_pour
     tags:
     - cleaning
     - fixed_sequence
     - advanced
   brush_entry:
-    description: 已实机确认的固定毛刷入口；不随倒料点微调联动。
+    description: 倒料完成后保持姿态沿base_link正X移动150mm的毛刷入口。
     pose:
       xyz:
-      - 0.2
-      - 0.55
-      - 0.2
+      - 0.24126
+      - -0.34374
+      - 0.25000
       rpy:
-      - -2.49999946
-      - 0.00000084
-      - 1.570802
+      - -2.5
+      - 0.0
+      - -1.5708
     ik_seed: clean_dump_pour
     tags:
     - cleaning
     - safety
     - advanced
   brush_clear_high:
-    description: 毛刷退出后先垂直抬升到此高度，再跨区返回，避免低位经过光谱仪。
+    description: 毛刷退出后在倒料点上方200mm的跨区返回点。
     pose:
       xyz:
-      - 0.2
-      - 0.55
-      - 0.45
+      - 0.09126
+      - -0.34374
+      - 0.45000
       rpy:
-      - -2.49999946
-      - 0.00000084
-      - 1.570802
-    ik_seed: brush_entry
+      - 0.0
+      - 0.0
+      - -1.5708
+    ik_seed: clean_hover
     tags:
     - system
     - cleaning
     - safety
     - advanced
   brush_center:
-    description: 从毛刷入口沿倒料姿态的杯体轴线下套100mm后的清洁点。
+    description: 从正X偏置150mm入口沿翻腕后的杯口轴再套入100mm。
     pose:
       xyz:
-      - 0.140153
-      - 0.55
-      - 0.119886
+      - 0.301107
+      - -0.343740
+      - 0.16988564
       rpy:
-      - -2.49999946
-      - 0.00000084
-      - 1.570802
+      - -2.5
+      - 0.0
+      - -1.5708
     ik_seed: brush_entry
     tags:
     - process
@@ -456,6 +449,28 @@ routes:
       to: clean_hover
       velocity_scale: 0.60
       acceleration_scale: 0.40
+  clean_dump_to_home_commission:
+    start: clean_dump
+    velocity_scale: 1.00
+    acceleration_scale: 0.50
+    segments:
+    - name: vertical_leave_raised_dump
+      type: linear
+      to: clean_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: return_original_home
+      type: joint
+      to: home_near
+  clean_hover_to_home_commission:
+    start: clean_hover
+    velocity_scale: 1.00
+    acceleration_scale: 0.50
+    segments:
+    - name: return_original_home
+      type: joint
+      to: home_near
   home_to_clean_dump_recovery:
     start: home_near
     segments:
@@ -499,12 +514,36 @@ routes:
     - name: enter_production_wait
       type: joint
       to: outlet_wait
+  home_to_outlet_wait_continuous:
+    start: home_near
+    segments:
+    - name: recover_through_safe
+      type: joint
+      to: safe_joint_center
+      velocity_scale: 0.65
+      acceleration_scale: 0.50
+    - name: enter_production_wait
+      type: joint
+      to: outlet_wait
+      acceleration_scale: 0.50
   outlet_wait_to_safe_center:
     start: outlet_wait
     segments:
     - name: leave_production_area
       type: joint
       to: safe_joint_center
+  outlet_wait_to_home_continuous:
+    start: outlet_wait
+    segments:
+    - name: leave_production_area
+      type: joint
+      to: safe_joint_center
+      acceleration_scale: 0.50
+    - name: maintenance_home
+      type: joint
+      to: home_near
+      velocity_scale: 0.65
+      acceleration_scale: 0.50
   outlet_wait_to_outlet_1_grasp:
     start: outlet_wait
     segments:
@@ -874,7 +913,7 @@ routes:
   clean_dump_to_pour:
     start: clean_dump
     velocity_scale: 1.00
-    acceleration_scale: 1.00
+    acceleration_scale: 0.45
     segments:
     - name: rotate_wrist_to_pour_limit
       type: joint
@@ -895,17 +934,54 @@ routes:
     velocity_scale: 0.70
     acceleration_scale: 0.70
     segments:
-    - name: leave_dump_without_upright_stop
+    - name: return_wrist_upright_at_dump
       type: joint
+      to: clean_dump
+    - name: vertical_leave_dump
+      type: linear
       to: clean_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
   clean_dump_pour_to_brush_entry:
     start: clean_dump_pour
     velocity_scale: 0.60
     acceleration_scale: 0.50
     segments:
-    - name: transfer_directly_to_brush_above
-      type: joint
+    - name: offset_positive_x_150mm
+      type: linear
       to: brush_entry
+      constraints:
+        keep_orientation: true
+  brush_entry_to_clean_dump_pour:
+    start: brush_entry
+    velocity_scale: 1.00
+    acceleration_scale: 0.60
+    segments:
+    - name: return_negative_x_150mm_to_dump
+      type: linear
+      to: clean_dump_pour
+      constraints:
+        keep_orientation: true
+  clean_dump_pour_to_clean_dump:
+    start: clean_dump_pour
+    velocity_scale: 1.00
+    acceleration_scale: 0.45
+    segments:
+    - name: return_wrist_upright_in_place
+      type: joint
+      to: clean_dump
+  clean_dump_to_clean_hover:
+    start: clean_dump
+    velocity_scale: 1.00
+    acceleration_scale: 0.70
+    segments:
+    - name: vertical_lift_from_dump
+      type: linear
+      to: clean_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
   brush_entry_to_center:
     start: brush_entry
     velocity_scale: 1.00
@@ -931,6 +1007,14 @@ routes:
     velocity_scale: 0.75
     acceleration_scale: 0.65
     segments:
+    - name: return_negative_x_150mm_to_dump
+      type: linear
+      to: clean_dump_pour
+      constraints:
+        keep_orientation: true
+    - name: return_wrist_upright_before_lift
+      type: joint
+      to: clean_dump
     - name: vertical_lift_clear_of_spectrometer
       type: linear
       to: brush_clear_high
@@ -967,18 +1051,18 @@ routes:
   brush_entry_to_clean_hover:
     start: brush_entry
     segments:
-    - name: retract_to_pour_station_with_pour_orientation
+    - name: return_negative_x_150mm_to_dump
       type: linear
       to: clean_dump_pour
       velocity_scale: 1.00
-      acceleration_scale: 1.00
+      acceleration_scale: 0.60
       constraints:
         keep_orientation: true
     - name: return_wrist_upright_after_cleaning
       type: joint
       to: clean_dump
       velocity_scale: 1.00
-      acceleration_scale: 1.00
+      acceleration_scale: 0.45
     - name: vertical_leave_cleaning_station
       type: linear
       to: clean_dump_hover
@@ -986,13 +1070,6 @@ routes:
       acceleration_scale: 1.00
       constraints:
         vertical_axis: z
-        keep_orientation: true
-    - name: align_to_cleaning_transfer
-      type: linear
-      to: clean_hover
-      velocity_scale: 1.00
-      acceleration_scale: 1.00
-      constraints:
         keep_orientation: true
   brush_center_to_clean_hover_smooth:
     start: brush_center
@@ -1004,14 +1081,21 @@ routes:
       to: brush_entry
       constraints:
         keep_orientation: true
-    - name: clear_brush_with_pour_orientation
+    - name: return_negative_x_150mm_to_dump
       type: linear
       to: clean_dump_pour
       constraints:
         keep_orientation: true
-    - name: continuous_transfer_to_clean_hover
+    - name: rotate_cup_upright_at_dump
       type: joint
+      to: clean_dump
+      velocity_scale: 1.00
+      acceleration_scale: 0.45
+    - name: lift_vertically_from_dump
+      type: linear
       to: clean_hover
+      constraints:
+        keep_orientation: true
   clean_hover_to_outlet_1_return:
     start: clean_hover
     segments:
@@ -1105,9 +1189,6 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
-    - name: return_via_safe_center
-      type: joint
-      to: safe_joint_center
     - name: return_original_home
       type: joint
       to: home_near
@@ -1146,15 +1227,7 @@ routes:
     velocity_scale: 1.00
     acceleration_scale: 1.00
     segments:
-    - name: leave_home
-      type: joint
-      to: safe_joint_center
-      velocity_scale: 0.80
-      acceleration_scale: 0.75
-    - name: cross_to_outlet_area
-      type: joint
-      to: outlet_wait
-    - name: transfer_above_outlet_1
+    - name: direct_to_outlet_1_high
       type: joint
       to: outlet_1_hover
     - name: vertical_approach_outlet_1
@@ -1173,6 +1246,31 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  home_to_outlet_1_hover_commission:
+    start: home_near
+    velocity_scale: 1.00
+    acceleration_scale: 0.50
+    segments:
+    - name: direct_to_new_outlet_1_high
+      type: joint
+      to: outlet_1_hover
+  new_layout_high_tour_commission:
+    start: home_near
+    velocity_scale: 1.00
+    acceleration_scale: 0.50
+    segments:
+    - name: visit_new_outlet_1_high
+      type: joint
+      to: outlet_1_hover
+    - name: visit_transformed_spectrometer_high
+      type: joint
+      to: spectrometer_hover
+    - name: visit_raised_dump_high
+      type: joint
+      to: clean_hover
+    - name: return_original_home
+      type: joint
+      to: home_near
   spectrometer_place_to_pick_smooth:
     start: spectrometer_place
     velocity_scale: 0.70
@@ -1216,19 +1314,31 @@ routes:
     velocity_scale: 1.00
     acceleration_scale: 1.00
     segments:
+    - name: return_negative_x_150mm_to_dump
+      type: linear
+      to: clean_dump_pour
+      velocity_scale: 1.00
+      acceleration_scale: 0.60
+      constraints:
+        keep_orientation: true
+    - name: return_wrist_upright_before_lift
+      type: joint
+      to: clean_dump
+      velocity_scale: 1.00
+      acceleration_scale: 0.45
     - name: vertical_lift_clear_of_spectrometer
       type: linear
       to: brush_clear_high
-      velocity_scale: 0.75
-      acceleration_scale: 0.65
+      velocity_scale: 1.00
+      acceleration_scale: 0.70
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: high_cross_station_transfer
       type: joint
       to: outlet_1_hover
-      velocity_scale: 0.90
-      acceleration_scale: 0.75
+      velocity_scale: 1.00
+      acceleration_scale: 0.70
     - name: vertical_approach_outlet_1
       type: linear
       to: outlet_1_pregrasp

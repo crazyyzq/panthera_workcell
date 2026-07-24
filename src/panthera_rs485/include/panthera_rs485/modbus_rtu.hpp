@@ -26,7 +26,9 @@ public:
   ModbusRtuMaster(
     const std::string & port,
     int baudrate,
-    std::chrono::milliseconds timeout);
+    std::chrono::milliseconds timeout,
+    SerialParity parity = SerialParity::NONE,
+    int stop_bits = 1);
 
   std::vector<uint16_t> readInputRegisters(
     uint8_t slave_id,
@@ -37,6 +39,11 @@ public:
     uint8_t slave_id,
     uint16_t start_address,
     uint16_t register_count);
+
+  void writeSingleRegister(
+    uint8_t slave_id,
+    uint16_t address,
+    uint16_t value);
 
   void writeMultipleRegisters(
     uint8_t slave_id,

@@ -13,7 +13,6 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>panthera_interfaces</exec_depend>
   <exec_depend>panthera_motion</exec_depend>
-  <exec_depend>panthera_pose_tuner</exec_depend>
   <exec_depend>panthera_spectrometer_cell</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>

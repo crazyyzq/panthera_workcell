@@ -298,6 +298,25 @@ RobotActions::RobotActions(rclcpp::Node::SharedPtr node, WorkcellConfig config)
   config_(std::move(config)),
   rng_(config_.simulation.randomSeed + 11)
 {
+  if (!config_.simulation.enabled) {
+    joint_state_callback_group_ =
+      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = joint_state_callback_group_;
+    joint_state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
+      "/joint_states",
+      rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(joint_state_mutex_);
+        if (!isPlausibleArmJointState(*msg, has_joint_state_ ? &latest_joint_state_ : nullptr)) {
+          return;
+        }
+        latest_joint_state_ = *msg;
+        latest_joint_state_received_ = node_->now();
+        has_joint_state_ = true;
+      },
+      options);
+  }
 }
 
 ActionResult RobotActions::initialize()
@@ -380,14 +399,21 @@ ActionResult RobotActions::recoverHomeAfterError()
     RCLCPP_ERROR(logger_, "%s", motor_stop.message.c_str());
   }
 
-  if (motion_client_) {
-    const auto cancel_future = motion_client_->async_cancel_all_goals();
-    cancel_future.wait_for(std::chrono::duration<double>(config_.motion.cancelWaitSec));
-  }
-
   std::vector<double> current;
   if (!getLatestArmJointValues(current) || current.size() != home.size()) {
     return ActionResult::fail("error recovery refused: fresh six-joint encoder state unavailable");
+  }
+  double initial_max_error = 0.0;
+  for (std::size_t index = 0; index < home.size(); ++index) {
+    initial_max_error = std::max(initial_max_error, std::abs(current[index] - home[index]));
+  }
+  if (initial_max_error > config_.motion.errorRecoveryPathToleranceRad) {
+    std::ostringstream error;
+    error << "automatic Home recovery refused: max_error=" << initial_max_error
+          << "rad exceeds safe near-Home envelope="
+          << config_.motion.errorRecoveryPathToleranceRad
+          << "rad; keep enabled";
+    return ActionResult::fail(error.str());
   }
 
   auto confirm_home = [this, &home, &joint_names, kSettledVelocityRadSec](
@@ -429,86 +455,111 @@ ActionResult RobotActions::recoverHomeAfterError()
     return ActionResult::ok("error recovery skipped: encoder already confirms home_near");
   }
 
+  if (motion_client_) {
+    const auto cancel_future = motion_client_->async_cancel_all_goals();
+    cancel_future.wait_for(std::chrono::duration<double>(config_.motion.cancelWaitSec));
+  }
+
   if (!arm_recovery_client_->wait_for_action_server(
       std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
   {
     return ActionResult::fail("error recovery unavailable: arm controller action server missing");
   }
 
-  FollowTrajectory::Goal goal;
-  goal.trajectory.header.stamp = node_->now() + rclcpp::Duration::from_seconds(0.10);
-  goal.trajectory.joint_names = joint_names;
-  trajectory_msgs::msg::JointTrajectoryPoint target;
-  target.positions = home;
-  target.velocities.assign(home.size(), 0.0);
-  target.accelerations.assign(home.size(), 0.0);
-  target.time_from_start = secondsToDuration(config_.motion.errorRecoveryDurationSec);
-  goal.trajectory.points.push_back(target);
+  const auto send_home_once = [&]() -> ActionResult {
+      FollowTrajectory::Goal goal;
+      goal.trajectory.header.stamp = node_->now() + rclcpp::Duration::from_seconds(0.10);
+      goal.trajectory.joint_names = joint_names;
+      trajectory_msgs::msg::JointTrajectoryPoint start;
+      start.positions = current;
+      start.velocities.assign(current.size(), 0.0);
+      start.accelerations.assign(current.size(), 0.0);
+      start.time_from_start = secondsToDuration(0.20);
+      goal.trajectory.points.push_back(start);
 
-  for (const auto & joint_name : joint_names) {
-    control_msgs::msg::JointTolerance path_tolerance;
-    path_tolerance.name = joint_name;
-    path_tolerance.position = config_.motion.errorRecoveryPathToleranceRad;
-    goal.path_tolerance.push_back(path_tolerance);
+      trajectory_msgs::msg::JointTrajectoryPoint target;
+      target.positions = home;
+      target.velocities.assign(home.size(), 0.0);
+      target.accelerations.assign(home.size(), 0.0);
+      target.time_from_start = secondsToDuration(config_.motion.errorRecoveryDurationSec);
+      goal.trajectory.points.push_back(target);
 
-    control_msgs::msg::JointTolerance goal_tolerance;
-    goal_tolerance.name = joint_name;
-    goal_tolerance.position = config_.motion.errorRecoveryGoalToleranceRad;
-    goal_tolerance.velocity = kSettledVelocityRadSec;
-    goal.goal_tolerance.push_back(goal_tolerance);
-  }
-  goal.goal_time_tolerance = secondsToDuration(config_.motion.errorRecoveryTimeoutMarginSec);
+      for (const auto & joint_name : joint_names) {
+        control_msgs::msg::JointTolerance path_tolerance;
+        path_tolerance.name = joint_name;
+        path_tolerance.position = config_.motion.errorRecoveryPathToleranceRad;
+        goal.path_tolerance.push_back(path_tolerance);
 
-  RCLCPP_ERROR(
-    logger_,
-    "SAFETY_RECOVERY_START keep_enabled=true target=home_near duration=%.2fs",
-    config_.motion.errorRecoveryDurationSec);
-  const auto goal_future = arm_recovery_client_->async_send_goal(goal);
-  if (goal_future.wait_for(
-      std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=
-    std::future_status::ready)
-  {
-    return ActionResult::fail("error recovery failed: controller goal response timeout; keep enabled");
-  }
-  const auto goal_handle = goal_future.get();
-  if (!goal_handle) {
-    return ActionResult::fail("error recovery failed: controller rejected Home goal; keep enabled");
-  }
+        control_msgs::msg::JointTolerance goal_tolerance;
+        goal_tolerance.name = joint_name;
+        goal_tolerance.position = config_.motion.errorRecoveryGoalToleranceRad;
+        goal_tolerance.velocity = kSettledVelocityRadSec;
+        goal.goal_tolerance.push_back(goal_tolerance);
+      }
+      goal.goal_time_tolerance = secondsToDuration(config_.motion.errorRecoveryTimeoutMarginSec);
 
-  const auto result_future = arm_recovery_client_->async_get_result(goal_handle);
-  const double result_timeout = config_.motion.errorRecoveryDurationSec +
-    config_.motion.errorRecoveryTimeoutMarginSec;
-  if (result_future.wait_for(std::chrono::duration<double>(result_timeout)) !=
-    std::future_status::ready)
-  {
-    return ActionResult::fail("error recovery failed: controller result timeout; keep enabled");
-  }
-  const auto wrapped = result_future.get();
-  if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED || !wrapped.result ||
-    wrapped.result->error_code != FollowTrajectory::Result::SUCCESSFUL)
-  {
-    const std::string detail = wrapped.result ? wrapped.result->error_string : "missing result";
-    return ActionResult::fail("error recovery controller failure: " + detail + "; keep enabled");
-  }
-
-  const auto confirm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  do {
-    if (confirm_home(max_error, max_velocity)) {
-      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
-      fixed_point_ = "home_near";
-      active_outlet_ = OutletId::NONE;
       RCLCPP_ERROR(
-        logger_, "SAFETY_RECOVERY_CONFIRMED target=home_near max_error=%.6f max_velocity=%.6f",
-        max_error, max_velocity);
-      return ActionResult::ok("error recovery encoder-confirmed at home_near");
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  } while (std::chrono::steady_clock::now() < confirm_deadline);
+        logger_,
+        "SAFETY_RECOVERY_START keep_enabled=true target=home_near duration=%.2fs",
+        config_.motion.errorRecoveryDurationSec);
+      const auto goal_future = arm_recovery_client_->async_send_goal(goal);
+      if (goal_future.wait_for(
+          std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=
+        std::future_status::ready)
+      {
+        return ActionResult::fail("controller goal response timeout");
+      }
+      const auto goal_handle = goal_future.get();
+      if (!goal_handle) {
+        return ActionResult::fail("controller rejected Home goal");
+      }
 
-  std::ostringstream error;
-  error << "error recovery final encoder confirmation failed: max_error=" << max_error
-        << " max_velocity=" << max_velocity << "; keep enabled";
-  return ActionResult::fail(error.str());
+      const auto result_future = arm_recovery_client_->async_get_result(goal_handle);
+      const double result_timeout = config_.motion.errorRecoveryDurationSec +
+        config_.motion.errorRecoveryTimeoutMarginSec;
+      if (result_future.wait_for(std::chrono::duration<double>(result_timeout)) !=
+        std::future_status::ready)
+      {
+        const auto cancel_future = arm_recovery_client_->async_cancel_goal(goal_handle);
+        cancel_future.wait_for(std::chrono::duration<double>(config_.motion.cancelWaitSec));
+        if (!confirm_home(max_error, max_velocity)) {
+          return ActionResult::fail("controller result timeout");
+        }
+      } else {
+        const auto wrapped = result_future.get();
+        if (wrapped.code != rclcpp_action::ResultCode::SUCCEEDED || !wrapped.result ||
+          wrapped.result->error_code != FollowTrajectory::Result::SUCCESSFUL)
+        {
+          const std::string detail = wrapped.result ? wrapped.result->error_string :
+            "missing result";
+          return ActionResult::fail("controller failure: " + detail);
+        }
+      }
+
+      const auto confirm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      do {
+        if (confirm_home(max_error, max_velocity)) {
+          std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+          fixed_point_ = "home_near";
+          active_outlet_ = OutletId::NONE;
+          RCLCPP_ERROR(
+            logger_,
+            "SAFETY_RECOVERY_CONFIRMED target=home_near max_error=%.6f max_velocity=%.6f",
+            max_error, max_velocity);
+          return ActionResult::ok("error recovery encoder-confirmed at home_near");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      } while (std::chrono::steady_clock::now() < confirm_deadline);
+
+      std::ostringstream error;
+      error << "final encoder confirmation failed: max_error=" << max_error
+            << " max_velocity=" << max_velocity;
+      return ActionResult::fail(error.str());
+    };
+
+  const auto result = send_home_once();
+  return result.success ? result :
+         ActionResult::fail("error recovery failed: " + result.message + "; keep enabled");
 }
 
 ActionResult RobotActions::reset()
@@ -519,13 +570,11 @@ ActionResult RobotActions::reset()
   }
   if (usesFixedMotion() && motion_client_) {
     motion_client_->async_cancel_all_goals();
-    {
-      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
-      fixed_point_.clear();
-      active_outlet_ = OutletId::NONE;
+    const auto recovery = recoverHomeAfterError();
+    if (!recovery.success) {
+      return ActionResult::fail("fixed motion reset failed: " + recovery.message);
     }
-    return ActionResult::ok(
-      "fixed motion reset: active goal cancelled; restart after placing arm at configured start point");
+    return ActionResult::ok("fixed motion reset complete: " + recovery.message);
   }
   if (!config_.simulation.enabled && arm_) {
     std::lock_guard<std::mutex> lock(motion_mutex_);
@@ -1211,6 +1260,15 @@ ActionResult RobotActions::moveToOutletWait()
     if (current_point == "home_near") {
       return ActionResult::ok("remain at Home until an outlet task is selected");
     }
+    if (current_point.empty()) {
+      const auto recovery = recoverHomeAfterError();
+      if (!recovery.success) {
+        return ActionResult::fail(
+          "fixed outlet wait could not recover unknown start: " + recovery.message);
+      }
+      return ActionResult::ok(
+        "fixed outlet wait recovered unknown start to encoder-confirmed Home");
+    }
     if (current_point != "safe_joint_center") {
       return ActionResult::fail(
         "fixed outlet wait requires known home_near or safe_joint_center start; current=" +
@@ -1326,6 +1384,33 @@ ActionResult RobotActions::initializeFixedMotionInterface()
   if (!gripper_result.success) {
     return gripper_result;
   }
+  if (!config_.simulation.enabled) {
+    std::vector<double> current;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!getLatestArmJointValues(current) && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (current.size() != config_.motion.homeJointPose.size()) {
+      return ActionResult::fail("fixed motion start refused: fresh Home encoder state unavailable");
+    }
+    double max_error = 0.0;
+    std::size_t max_index = 0;
+    for (std::size_t index = 0; index < current.size(); ++index) {
+      const double error = std::abs(current[index] - config_.motion.homeJointPose[index]);
+      if (error > max_error) {
+        max_error = error;
+        max_index = index;
+      }
+    }
+    constexpr double kFixedStartToleranceRad = 0.05;
+    if (max_error > kFixedStartToleranceRad) {
+      std::ostringstream error;
+      error << "fixed motion start refused: Home encoder mismatch joint" << max_index + 1
+            << " max_error=" << max_error << "rad tolerance="
+            << kFixedStartToleranceRad << "rad";
+      return ActionResult::fail(error.str());
+    }
+  }
 
   {
     std::lock_guard<std::mutex> lock(fixed_state_mutex_);
@@ -1356,23 +1441,6 @@ ActionResult RobotActions::initializeGripperAndJointStateInterfaces()
     gripper_client_ = rclcpp_action::create_client<FollowTrajectory>(
       node_, kGripperAction, gripper_callback_group_);
 
-    joint_state_callback_group_ =
-      node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
-    rclcpp::SubscriptionOptions joint_state_options;
-    joint_state_options.callback_group = joint_state_callback_group_;
-    joint_state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      "/joint_states",
-      rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::JointState::SharedPtr msg) {
-        std::lock_guard<std::mutex> lock(joint_state_mutex_);
-        if (!isPlausibleArmJointState(*msg, has_joint_state_ ? &latest_joint_state_ : nullptr)) {
-          return;
-        }
-        latest_joint_state_ = *msg;
-        latest_joint_state_received_ = node_->now();
-        has_joint_state_ = true;
-      },
-      joint_state_options);
   } catch (const std::exception & exc) {
     return ActionResult::fail(
       std::string("initialize gripper/joint-state interfaces failed: ") + exc.what());
@@ -2151,6 +2219,9 @@ bool RobotActions::getLatestArmJointValues(std::vector<double> & positions) cons
   if (!has_joint_state_) {
     return false;
   }
+  if ((node_->now() - latest_joint_state_received_).seconds() > 0.5) {
+    return false;
+  }
 
   std::vector<double> ordered;
   ordered.reserve(joint_names.size());
@@ -2227,6 +2298,8 @@ ActionResult RobotActions::sendGripperTo(
     if (allow_grasp_contact) {
       auto path_tolerance = tolerance;
       path_tolerance.position = 0.10;
+      // Velocity here is checked throughout the path, not only after settling.
+      path_tolerance.velocity = 0.0;
       goal.path_tolerance.push_back(path_tolerance);
     }
     goal.goal_time_tolerance = secondsToDuration(config_.gripper.commandTimeoutMarginSec);
@@ -2364,6 +2437,27 @@ bool RobotActions::waitForGripperTarget(
 
 ActionResult RobotActions::setCleaningMotor(bool enabled, const std::string & label)
 {
+  return setCleaningMotorDuty(
+    enabled, enabled ? config_.cleaning.motorRs485DutyPermille : 0, label);
+}
+
+ActionResult RobotActions::setBrush(bool enabled, double speed_percent)
+{
+  if (!std::isfinite(speed_percent) || speed_percent < 0.0 || speed_percent > 100.0) {
+    return ActionResult::fail("brush speed must be finite and in [0, 100] percent");
+  }
+  if (enabled && speed_percent < 1.0) {
+    return ActionResult::fail("brush start requires speed >= 1 percent");
+  }
+  const int direction = config_.cleaning.motorRs485DutyPermille < 0 ? -1 : 1;
+  const int duty = enabled ?
+    direction * static_cast<int>(std::lround(speed_percent * 10.0)) : 0;
+  return setCleaningMotorDuty(enabled, duty, enabled ? "manual brush start/update" : "manual brush stop");
+}
+
+ActionResult RobotActions::setCleaningMotorDuty(
+  bool enabled, int duty_permille, const std::string & label)
+{
   constexpr uint16_t kSpeedRegister = 0x0040;
   constexpr uint16_t kControlModeRegister = 0x0080;
   constexpr uint16_t kCommunicationTimeoutRegister = 0x008e;
@@ -2405,7 +2499,7 @@ ActionResult RobotActions::setCleaningMotor(bool enabled, const std::string & la
           kCommunicationTimeoutRegister,
           static_cast<uint16_t>(config_.cleaning.motorRs485CommunicationTimeoutDs));
       }
-      const int command = enabled ? config_.cleaning.motorRs485DutyPermille : 0;
+      const int command = enabled ? duty_permille : 0;
       cleaning_motor_modbus_->writeSingleRegister(
         config_.cleaning.motorRs485SlaveId,
         kSpeedRegister,

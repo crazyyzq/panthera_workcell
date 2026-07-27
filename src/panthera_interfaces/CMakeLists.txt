@@ -31,6 +31,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GripperSrv.srv"
   "srv/RunWorkflow.srv"
   "srv/SetSpeedScale.srv"
+  "srv/StageJog.srv"
+  "srv/SetBrush.srv"
   "srv/SetDigitalInput.srv"
   "srv/SetDigitalOutput.srv"
   DEPENDENCIES std_msgs

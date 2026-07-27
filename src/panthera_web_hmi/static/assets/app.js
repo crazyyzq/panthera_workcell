@@ -40,6 +40,40 @@ const flowLabels = {
   RESET: '复位',
 };
 
+const modeLabels = {
+  AUTO: '自动',
+  MANUAL: '人工',
+  PAUSED: '已暂停',
+  IDLE: '空闲',
+  ESTOP: '急停',
+  ERROR: '故障',
+};
+
+const debugPhaseLabels = {
+  inactive: '未进入调试',
+  pausing: '正在暂停自动流程',
+  recovering_home: '正在确认 Home',
+  moving_safe: '正在前往安全点',
+  moving_target: '正在前往目标点',
+  ready: '可以点动',
+  jogging: '正在点动',
+  saving: '正在保存并校验',
+  returning: '正在安全退出',
+  error: '调试异常',
+};
+
+const coreServiceNames = [
+  'auto_mode',
+  'manual_mode',
+  'actual_cycle_outlet_1',
+  'actual_cycle_outlet_2',
+  'detection_done',
+  'speed_scale',
+  'spectrometer_stop_motion',
+  'spectrometer_recover_home',
+  'reload_config',
+];
+
 const actionStates = new Set([
   'PICK_FROM_OUTLET',
   'MEASURE_SPECTROMETER_BEFORE_PLACE',
@@ -52,20 +86,6 @@ const actionStates = new Set([
   'RESET',
 ]);
 
-const workflowCommands = new Set([
-  'workflow_visible_motion_check',
-  'workflow_fixed_large_motion_demo',
-  'workflow_cup_pick_place',
-  'workflow_outlet_1_pick_check_actual',
-  'workflow_outlet_2_pick_check_actual',
-  'workflow_spectrometer_place_check_actual',
-  'workflow_clean_dump_check_actual',
-  'workflow_arm_home',
-  'workflow_gripper_open',
-  'workflow_gripper_close',
-]);
-
-const safeStateRequestTargets = new Set(['IDLE', 'WAIT_DISCHARGE', 'PAUSED', 'RESET', 'ESTOP']);
 const CAMERA_REFRESH_INTERVAL_MS = 33;
 
 let lastState = null;
@@ -74,75 +94,18 @@ let latestSnapshot = null;
 let cameraMode = 'rgb';
 let lastCameraRefreshMs = 0;
 let estopClearAcknowledged = false;
-let poseTunerDebugMode = false;
-let poseTunerTargets = [];
-let poseTunerBusy = false;
 let speedScalePercent = 100;
 let speedScaleDirty = false;
 let speedScalePendingPercent = null;
 let speedScalePendingUntilMs = 0;
-let pointConfig = null;
-let pointConfigDirty = false;
-let pointConfigSelectedPose = '';
 let motionCatalog = null;
 let motionCatalogReferences = {};
 let motionCatalogSelectedPoint = '';
 let motionCatalogSelectedRoute = '';
 let motionCatalogDirty = false;
 let motionCatalogShowAdvancedPoints = false;
+let debugBusy = false;
 let activePage = localStorage.getItem('panthera_hmi_page') || 'dashboard';
-
-const pointMotionLabels = {
-  outlet_approach_y: '出料口入口 Y',
-  outlet_near_y: '出料口靠近 Y',
-  outlet_high_z: '出料口高位 Z',
-  outlet_grip_z: '出料口夹取 Z',
-  outlet_transfer_z: '取杯后抬高 Z',
-  spectrometer_approach_x_offset: '光谱仪接近 X 偏移',
-  spectrometer_high_z: '光谱仪高位 Z',
-  clean_high_z: '清理高位 Z',
-  clean_approach_y: '清理入口 Y',
-  clean_pre_z: '清理低位 Z',
-  clean_ready_z: '清理准备 Z',
-};
-
-const pointAxisLabels = {
-  laser_min_mm: '激光最小 mm',
-  laser_max_mm: '激光最大 mm',
-  axis_zero_laser_mm: '基准激光 mm',
-  axis_scale_m_per_mm: '轴换算 m/mm',
-  axis: '移动轴 x/y/z',
-  place_offset_xyz: '放杯补偿 xyz',
-  pick_offset_xyz: '取杯补偿 xyz',
-};
-
-const pointCleaningLabels = {
-  pour_wrist_joint_index: '倒料关节下标',
-  pour_direction: '倒料旋转方向',
-  pour_angle_rad: '倒料角 rad',
-  pour_velocity_scale: '倒料速度',
-  pour_acceleration_scale: '倒料加速度',
-  pour_hold_sec: '倒料停留 s',
-  shake_count: '摆动次数',
-  shake_angle_rad: '摆动角 rad',
-  shake_hold_sec: '摆动停留 s',
-  brush_enabled: '启用毛刷清洁',
-  brush_pose: '毛刷点位',
-  brush_velocity_scale: '毛刷靠近速度',
-  brush_acceleration_scale: '毛刷靠近加速度',
-  brush_approach_offset_xyz: '毛刷进入偏移 xyz',
-  brush_upright_retreat_offset_xyz: '毛刷回正前退出 xyz',
-  brush_stroke_count: '毛刷往复次数',
-  brush_stroke_offset_xyz: '毛刷往复偏移 xyz',
-  brush_hold_sec: '毛刷停留 s',
-  brush_motor_stop_delay_sec: '毛刷退出后电机延时 s',
-  motor_rs485_enabled: '毛刷电机 RS485 启用',
-  motor_rs485_device: '毛刷电机 RS485 设备',
-  motor_rs485_baudrate: '毛刷电机波特率',
-  motor_rs485_slave_id: '毛刷电机站号',
-  motor_rs485_duty_permille: '毛刷电机占空比(千分比)',
-  motor_rs485_communication_timeout_ds: '毛刷通信中断保护(0.1s)',
-};
 
 function $(id) {
   return document.getElementById(id);
@@ -176,9 +139,6 @@ function setActivePage(page) {
   if (activePage === 'points') {
     if (!motionCatalog) {
       loadMotionCatalog();
-    }
-    if (!pointConfig) {
-      loadPointConfig();
     }
   }
 }
@@ -314,23 +274,6 @@ function appendLog(text, kind = '') {
   }
 }
 
-function initStateSelect() {
-  const select = $('targetStateSelect');
-  if (!select) {
-    return;
-  }
-  select.innerHTML = '';
-  flowStates.forEach((state) => {
-    const option = document.createElement('option');
-    option.value = state;
-    option.textContent = `${state} - ${flowLabels[state] || ''}`;
-    if (!safeStateRequestTargets.has(state)) {
-      option.dataset.risky = 'true';
-    }
-    select.appendChild(option);
-  });
-}
-
 function renderFlow(activeState) {
   const list = $('flowList');
   if (!list) {
@@ -412,7 +355,12 @@ function commandRule(command, services, state, context) {
   }
 
   if (command === 'simulate_estop') {
-    return {enabled: true, reason: '立即触发急停'};
+    return {enabled: true, reason: '请求软件停止；危险时优先使用硬件急停'};
+  }
+
+  if (latestSnapshot?.debug?.active &&
+      !['manual_mode', 'clear_estop', 'request_reset'].includes(command)) {
+    return {enabled: false, reason: '点位调试中，生产命令已锁定'};
   }
 
   if (isEstop(state)) {
@@ -449,27 +397,24 @@ function commandRule(command, services, state, context) {
     return {enabled: ['IDLE', 'WAIT_DISCHARGE', 'PAUSED'].includes(state), reason: '启动或恢复自动'};
   }
 
-  if (command === 'step_once') {
-    return {enabled: state === 'PAUSED', reason: state === 'PAUSED' ? '人工单步推进' : '需要先暂停到 PAUSED'};
-  }
-
   if (command === 'outlet_1_done' || command === 'outlet_2_done' ||
       command === 'actual_cycle_outlet_1' || command === 'actual_cycle_outlet_2') {
-    return {enabled: ['IDLE', 'WAIT_DISCHARGE', 'PAUSED'].includes(state), reason: '出料完成信号/真实循环触发'};
-  }
-
-  if (command === 'detection_done') {
+    const canStartPaused = state === 'PAUSED' && !hasActiveTask(context) &&
+      ['IDLE', 'WAIT_DISCHARGE'].includes(context.paused_from_state);
     return {
-      enabled: ['WAIT_DETECTION_DONE', 'PAUSED'].includes(state),
-      reason: state === 'WAIT_DETECTION_DONE' ? '人工确认光谱检测完成' : '需要处于等待检测完成状态',
+      enabled: ['IDLE', 'WAIT_DISCHARGE'].includes(state) || canStartPaused,
+      reason: '仅可在等待出料且没有进行中任务时触发',
     };
   }
 
-  if (workflowCommands.has(command)) {
-    const busy = actionStates.has(state) || hasActiveTask(context);
+  if (command === 'detection_done') {
+    const canConfirmPaused = state === 'PAUSED' && hasActiveTask(context) &&
+      context.paused_from_state === 'WAIT_DETECTION_DONE';
     return {
-      enabled: ['IDLE', 'PAUSED'].includes(state) && !busy,
-      reason: busy ? '当前有任务或动作正在执行' : '手动调试动作',
+      enabled: state === 'WAIT_DETECTION_DONE' || canConfirmPaused,
+      reason: state === 'WAIT_DETECTION_DONE' || canConfirmPaused
+        ? '人工确认光谱检测完成'
+        : '需要处于等待检测完成状态',
     };
   }
 
@@ -477,12 +422,13 @@ function commandRule(command, services, state, context) {
 }
 
 function renderServices(services, state, context) {
-  const values = Object.values(services || {});
-  const ready = values.filter((item) => item.ready).length;
-  setText('serviceBadge', values.length ? `服务 ${ready}/${values.length}` : '服务 --');
+  const ready = coreServiceNames.filter((name) => services?.[name]?.ready).length;
+  const missing = coreServiceNames.filter((name) => !services?.[name]?.ready);
+  setText('serviceBadge', `核心服务 ${ready}/${coreServiceNames.length}`);
   const serviceBadge = $('serviceBadge');
   if (serviceBadge) {
-    serviceBadge.className = values.length && ready === values.length ? 'badge badge-ok' : 'badge badge-warn';
+    serviceBadge.className = ready === coreServiceNames.length ? 'badge badge-ok' : 'badge badge-warn';
+    serviceBadge.title = missing.length ? `未就绪：${missing.join(', ')}` : '生产核心服务全部就绪';
   }
 
   document.querySelectorAll('button[data-command]').forEach((button) => {
@@ -492,178 +438,6 @@ function renderServices(services, state, context) {
     button.title = rule.reason || button.title || '';
     button.setAttribute('aria-disabled', String(button.disabled));
   });
-}
-
-function renderStateRequestControl(state) {
-  const button = $('publishStateRequest');
-  const select = $('targetStateSelect');
-  if (!button || !select) {
-    return;
-  }
-  const target = select.value;
-  let enabled = true;
-  let reason = '提交状态机请求';
-
-  if (state === 'ESTOP' && !['RESET', 'ESTOP'].includes(target)) {
-    enabled = false;
-    reason = 'ESTOP 中只允许请求 RESET 或保持 ESTOP';
-  } else if (actionStates.has(target)) {
-    enabled = false;
-    reason = '动作状态只能由状态机流程进入，不能从 HMI 直接请求';
-  } else if (!safeStateRequestTargets.has(target)) {
-    enabled = false;
-    reason = '该目标未开放为 HMI 手动请求';
-  }
-
-  button.disabled = !enabled || button.classList.contains('loading');
-  button.title = reason;
-}
-
-function selectedPoseTunerTarget() {
-  const select = $('poseTunerTargetSelect');
-  if (!select || !select.value) {
-    return null;
-  }
-  return poseTunerTargets.find((target) => target.name === select.value) || null;
-}
-
-function poseTunerSafetyRule(services, state, context, dryRun) {
-  if (!poseTunerDebugMode) {
-    return {enabled: false, reason: '调试模式关闭'};
-  }
-  if (!services || !services.pose_tuner_run || !services.pose_tuner_run.ready) {
-    return {enabled: false, reason: 'pose_tuner 服务未就绪'};
-  }
-  if (!selectedPoseTunerTarget()) {
-    return {enabled: false, reason: '未选择点位'};
-  }
-  if (state === 'ESTOP' || state === 'ERROR') {
-    return {enabled: false, reason: `${state} 状态禁止点位调试`};
-  }
-  if (context.active_action_name || context.active_command_id) {
-    return {enabled: false, reason: '状态机动作执行中'};
-  }
-  if (!dryRun) {
-    const activeTask = hasActiveTask(context);
-    const autoMode = context.auto_mode === true;
-    if (autoMode || activeTask || !['IDLE', 'PAUSED', 'WAIT_DISCHARGE'].includes(state)) {
-      return {enabled: false, reason: '真实执行要求空闲/人工安全状态'};
-    }
-  }
-  return {enabled: true, reason: dryRun ? '只规划不运动' : '调试模式真实运动'};
-}
-
-function formatPoseTunerTarget(target) {
-  if (!target) {
-    return '未选择点位';
-  }
-  if (target.kind === 'joint') {
-    return [
-      target.name,
-      `joint rad: ${(target.joints_rad || []).map((v) => Number(v).toFixed(3)).join(', ') || '--'}`,
-      target.description || '',
-    ].join('\n');
-  }
-  const xyz = target.xyz_mm || [];
-  const rpy = target.rpy_deg || [];
-  return [
-    target.name,
-    `XYZ mm: ${xyz.map((v) => Number(v).toFixed(2)).join(', ') || '--'}`,
-    `RPY deg: ${rpy.map((v) => Number(v).toFixed(2)).join(', ') || '--'}`,
-    target.description || '',
-  ].join('\n');
-}
-
-function populatePoseTunerTargets(targets) {
-  poseTunerTargets = Array.isArray(targets) ? targets : [];
-  const select = $('poseTunerTargetSelect');
-  if (!select) {
-    return;
-  }
-  const current = select.value;
-  select.innerHTML = '';
-  if (!poseTunerTargets.length) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = poseTunerDebugMode ? '未读取到点位' : '请先开启调试模式';
-    select.appendChild(option);
-    return;
-  }
-  poseTunerTargets.forEach((target) => {
-    const option = document.createElement('option');
-    option.value = target.name;
-    option.textContent = target.kind === 'joint' ? `${target.name} [joint]` : target.name;
-    select.appendChild(option);
-  });
-  if (current && poseTunerTargets.some((target) => target.name === current)) {
-    select.value = current;
-  }
-}
-
-function renderPoseTuner(snapshot, state, context) {
-  const services = snapshot.services || {};
-  const poseTuner = snapshot.pose_tuner || {};
-  if (!poseTunerTargets.length && Array.isArray(poseTuner.targets) && poseTuner.targets.length) {
-    populatePoseTunerTargets(poseTuner.targets);
-  }
-  const panel = document.querySelector('.pose-tuner-panel');
-  const mode = $('poseTunerDebugMode');
-  const modeText = $('poseTunerModeText');
-  const select = $('poseTunerTargetSelect');
-  const dryRunButton = $('poseTunerDryRun');
-  const executeButton = $('poseTunerExecute');
-  const reloadButton = $('poseTunerReload');
-  const stopButton = $('poseTunerStop');
-  const targetCard = $('poseTunerTargetCard');
-  const resultBox = $('poseTunerResult');
-  const logBox = $('poseTunerLog');
-
-  if (mode) {
-    mode.checked = poseTunerDebugMode;
-  }
-  if (modeText) {
-    modeText.textContent = poseTunerDebugMode ? '开启' : '关闭';
-    modeText.style.color = poseTunerDebugMode ? '#b45309' : '';
-  }
-  if (panel) {
-    panel.classList.toggle('debug-on', poseTunerDebugMode);
-  }
-  if (select) {
-    select.disabled = !poseTunerDebugMode || poseTunerBusy;
-  }
-  if (reloadButton) {
-    reloadButton.disabled = !poseTunerDebugMode || poseTunerBusy;
-  }
-  if (stopButton) {
-    stopButton.disabled = !(services.pose_tuner_stop && services.pose_tuner_stop.ready) || poseTunerBusy;
-    stopButton.title = stopButton.disabled ? 'pose_tuner stop 服务未就绪' : '停止当前 MoveIt 执行';
-  }
-
-  const dryRule = poseTunerSafetyRule(services, state, context, true);
-  const executeRule = poseTunerSafetyRule(services, state, context, false);
-  if (dryRunButton) {
-    dryRunButton.disabled = !dryRule.enabled || poseTunerBusy;
-    dryRunButton.title = dryRule.reason;
-  }
-  if (executeButton) {
-    executeButton.disabled = !executeRule.enabled || poseTunerBusy;
-    executeButton.title = executeRule.reason;
-  }
-  if (targetCard) {
-    targetCard.textContent = formatPoseTunerTarget(selectedPoseTunerTarget());
-  }
-
-  if (poseTuner.last_result && resultBox && !poseTunerBusy) {
-    resultBox.textContent = `${poseTuner.last_result.success ? 'OK' : 'FAIL'} | ${poseTuner.last_result.message || '--'}`;
-  }
-  if (logBox) {
-    logBox.innerHTML = '';
-    (poseTuner.log || []).slice(0, 8).forEach((entry) => {
-      const item = document.createElement('div');
-      item.textContent = `${entry.timestamp || '--'} ${entry.dry_run ? 'DRY' : 'RUN'} ${entry.target_name || '--'} ${entry.success ? 'OK' : 'FAIL'} ${entry.message || ''}`;
-      logBox.appendChild(item);
-    });
-  }
 }
 
 function setMotionCatalogResult(text, ok = true) {
@@ -838,6 +612,7 @@ async function loadMotionCatalog() {
     motionCatalogDirty = false;
     setText('motionCatalogPath', result.path || '--');
     renderMotionCatalog();
+    renderDebugPointOptions();
     setMotionCatalogResult(
       result.reload_available
         ? '轨迹目录已读取，Motion Server 可执行编译校验。'
@@ -978,16 +753,6 @@ async function saveMotionCatalog(button) {
   }
 }
 
-function setPointResult(text, ok = true) {
-  const box = $('pointConfigResult');
-  if (!box) {
-    return;
-  }
-  box.textContent = text || '';
-  box.classList.toggle('failed', !ok);
-  box.classList.toggle('success', ok && !!text);
-}
-
 function numericInputValue(id) {
   const el = $(id);
   const value = el ? Number(el.value) : NaN;
@@ -995,335 +760,6 @@ function numericInputValue(id) {
     throw new Error(`${id} 不是有效数字`);
   }
   return value;
-}
-
-function setPointPoseInputs(name) {
-  const pose = pointConfig && pointConfig.named_poses ? pointConfig.named_poses[name] : null;
-  pointConfigSelectedPose = name || '';
-  setText('pointPoseTitle', name || '未选择点位');
-  const values = pose || {xyz: ['', '', ''], rpy: ['', '', '']};
-  const ids = ['pointX', 'pointY', 'pointZ', 'pointRoll', 'pointPitch', 'pointYaw'];
-  const data = [...(values.xyz || []), ...(values.rpy || [])];
-  ids.forEach((id, index) => {
-    const input = $(id);
-    if (input) {
-      input.value = data[index] === undefined || data[index] === null ? '' : String(data[index]);
-      input.disabled = !pose;
-    }
-  });
-}
-
-function syncSelectedPointPoseFromInputs() {
-  if (!pointConfig || !pointConfigSelectedPose) {
-    return;
-  }
-  pointConfig.named_poses[pointConfigSelectedPose] = {
-    xyz: [
-      numericInputValue('pointX'),
-      numericInputValue('pointY'),
-      numericInputValue('pointZ'),
-    ],
-    rpy: [
-      numericInputValue('pointRoll'),
-      numericInputValue('pointPitch'),
-      numericInputValue('pointYaw'),
-    ],
-  };
-}
-
-function createPointParamInput(section, key, value, labelText) {
-  const label = document.createElement('label');
-  label.className = 'point-param-row';
-  const title = document.createElement('span');
-  title.textContent = labelText || key;
-  label.appendChild(title);
-
-  if (typeof value === 'boolean') {
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.checked = value;
-    input.dataset.pointSection = section;
-    input.dataset.pointKey = key;
-    input.addEventListener('change', onPointParamChanged);
-    label.appendChild(input);
-    return label;
-  }
-
-  if (Array.isArray(value)) {
-    const group = document.createElement('div');
-    group.className = 'point-param-array';
-    value.forEach((item, index) => {
-      const input = document.createElement('input');
-      input.type = 'number';
-      input.step = '0.001';
-      input.value = String(item);
-      input.dataset.pointSection = section;
-      input.dataset.pointKey = key;
-      input.dataset.pointIndex = String(index);
-      input.addEventListener('input', onPointParamChanged);
-      group.appendChild(input);
-    });
-    label.appendChild(group);
-    return label;
-  }
-
-  if (key.endsWith('_pose')) {
-    const select = document.createElement('select');
-    select.dataset.pointSection = section;
-    select.dataset.pointKey = key;
-    Object.keys(pointConfig.named_poses || {}).forEach((name) => {
-      const option = document.createElement('option');
-      option.value = name;
-      option.textContent = name;
-      select.appendChild(option);
-    });
-    select.value = value === undefined || value === null ? '' : String(value);
-    select.addEventListener('change', onPointParamChanged);
-    label.appendChild(select);
-    return label;
-  }
-
-  if (section === 'cleaning' && key === 'pour_direction') {
-    const select = document.createElement('select');
-    [
-      {value: '-1', text: '负向 (-1)'},
-      {value: '0', text: '自动 (0)'},
-      {value: '1', text: '正向 (+1)'},
-    ].forEach((item) => {
-      const option = document.createElement('option');
-      option.value = item.value;
-      option.textContent = item.text;
-      select.appendChild(option);
-    });
-    select.value = String(value);
-    select.dataset.pointSection = section;
-    select.dataset.pointKey = key;
-    select.addEventListener('change', onPointParamChanged);
-    label.appendChild(select);
-    return label;
-  }
-
-  const input = document.createElement('input');
-  input.type = key === 'axis' ? 'text' : 'number';
-  input.step = key.includes('count') || key.includes('index') ? '1' : '0.001';
-  input.value = value === undefined || value === null ? '' : String(value);
-  input.dataset.pointSection = section;
-  input.dataset.pointKey = key;
-  input.addEventListener('input', onPointParamChanged);
-  label.appendChild(input);
-  return label;
-}
-
-function renderPointParamGroup(container, title, section, values, labels) {
-  const group = document.createElement('div');
-  group.className = 'point-param-group';
-  const heading = document.createElement('h3');
-  heading.textContent = title;
-  group.appendChild(heading);
-  Object.keys(values || {}).forEach((key) => {
-    group.appendChild(createPointParamInput(section, key, values[key], labels[key] || key));
-  });
-  container.appendChild(group);
-}
-
-function renderPointConfig() {
-  const select = $('pointPoseSelect');
-  const editor = $('pointParamEditor');
-  if (!pointConfig || !select || !editor) {
-    return;
-  }
-
-  const current = pointConfigSelectedPose || select.value;
-  select.innerHTML = '';
-  Object.keys(pointConfig.named_poses || {}).forEach((name) => {
-    const option = document.createElement('option');
-    option.value = name;
-    option.textContent = name;
-    select.appendChild(option);
-  });
-  if (current && pointConfig.named_poses && pointConfig.named_poses[current]) {
-    select.value = current;
-  } else if (select.options.length) {
-    select.value = select.options[0].value;
-  }
-  setPointPoseInputs(select.value);
-
-  editor.innerHTML = '';
-  renderPointParamGroup(editor, 'motion', 'motion', pointConfig.motion || {}, pointMotionLabels);
-  renderPointParamGroup(editor, 'spectrometer_axis', 'spectrometer_axis', pointConfig.spectrometer_axis || {}, pointAxisLabels);
-  renderPointParamGroup(editor, 'cleaning', 'cleaning', pointConfig.cleaning || {}, pointCleaningLabels);
-}
-
-function onPointPoseInputChanged() {
-  try {
-    syncSelectedPointPoseFromInputs();
-    pointConfigDirty = true;
-    setPointResult('点位已修改，保存后可点击“重载生效”。', true);
-  } catch (error) {
-    setPointResult(String(error), false);
-  }
-}
-
-function onPointParamChanged(event) {
-  if (!pointConfig) {
-    return;
-  }
-  const input = event.target;
-  const section = input.dataset.pointSection;
-  const key = input.dataset.pointKey;
-  if (!section || !key || !pointConfig[section]) {
-    return;
-  }
-  try {
-    if (input.dataset.pointIndex !== undefined) {
-      const index = Number(input.dataset.pointIndex);
-      const current = Array.isArray(pointConfig[section][key]) ? pointConfig[section][key] : [];
-      current[index] = Number(input.value);
-      if (!Number.isFinite(current[index])) {
-        throw new Error(`${section}.${key}[${index}] 不是有效数字`);
-      }
-      pointConfig[section][key] = current;
-    } else if (input.type === 'checkbox') {
-      pointConfig[section][key] = input.checked;
-    } else if (input.tagName === 'SELECT') {
-      const value = input.value.trim();
-      if (!value) {
-        throw new Error(`${section}.${key} 不能为空`);
-      }
-      pointConfig[section][key] = value;
-    } else if (key === 'axis') {
-      const axis = input.value.trim().toLowerCase();
-      if (!['x', 'y', 'z'].includes(axis)) {
-        throw new Error('axis 只能是 x/y/z');
-      }
-      pointConfig[section][key] = axis;
-    } else {
-      const value = Number(input.value);
-      if (!Number.isFinite(value)) {
-        throw new Error(`${section}.${key} 不是有效数字`);
-      }
-      pointConfig[section][key] = value;
-    }
-    pointConfigDirty = true;
-    setPointResult('参数已修改，保存后可点击“重载生效”。', true);
-  } catch (error) {
-    setPointResult(String(error), false);
-  }
-}
-
-async function loadPointConfig() {
-  const saveButton = $('pointConfigSave');
-  const reloadButton = $('pointConfigReload');
-  const applyReloadButton = $('pointConfigApplyReload');
-  [saveButton, reloadButton, applyReloadButton].forEach((button) => {
-    if (button) {
-      button.disabled = true;
-    }
-  });
-  setPointResult('读取点位配置...', true);
-  try {
-    const response = await fetch('/api/point_config');
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(result.message || '读取失败');
-    }
-    pointConfig = result.config || {};
-    pointConfigDirty = false;
-    setText('pointConfigPath', result.path || '--');
-    renderPointConfig();
-    setPointResult('点位配置已读取。', true);
-    appendLog(`point_config load: ${result.path || '--'}`, 'log-ok');
-  } catch (error) {
-    setPointResult(`读取点位配置失败: ${error}`, false);
-    appendLog(`point_config load failed: ${error}`, 'log-error');
-  } finally {
-    [saveButton, reloadButton, applyReloadButton].forEach((button) => {
-      if (button) {
-        button.disabled = false;
-      }
-    });
-  }
-}
-
-async function savePointConfig(button) {
-  if (!pointConfig) {
-    setPointResult('请先读取点位配置。', false);
-    return;
-  }
-  try {
-    syncSelectedPointPoseFromInputs();
-  } catch (error) {
-    setPointResult(String(error), false);
-    return;
-  }
-
-  const confirmed = await confirmAction(
-    '保存会覆盖 spectrometer_cell.yaml 中的点位和路径参数，并自动生成备份。保存后可点击“重载生效”。确认保存？',
-    '保存点位配置');
-  if (!confirmed) {
-    appendLog('CANCEL point_config save', 'log-warn');
-    return;
-  }
-
-  setButtonFeedback(button, 'loading');
-  setPointResult('保存点位配置...', true);
-  try {
-    const response = await fetch('/api/point_config', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({config: pointConfig}),
-    });
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(result.message || '保存失败');
-    }
-    pointConfigDirty = false;
-    const reloadResult = result.reload_result || {};
-    const reloadText = result.runtime_reloaded
-      ? '运行节点已自动重载'
-      : `运行节点未重载: ${reloadResult.message || '请空闲后点击“重载生效”'}`;
-    setPointResult(`${result.message || '保存成功'}；备份: ${result.backup_path || '--'}；${reloadText}`, !!result.runtime_reloaded);
-    appendLog(`point_config save: ${(result.changed || []).length} fields`, 'log-ok');
-    if (result.reload_result) {
-      appendLog(`point_config auto reload: ${result.reload_result.message || '--'}`, result.runtime_reloaded ? 'log-ok' : 'log-warn');
-    }
-    setButtonFeedback(button, 'success');
-  } catch (error) {
-    setPointResult(`保存点位配置失败: ${error}`, false);
-    appendLog(`point_config save failed: ${error}`, 'log-error');
-    setButtonFeedback(button, 'failed');
-  } finally {
-    if (button) {
-      button.classList.remove('loading');
-    }
-  }
-}
-
-async function reloadPointConfigRuntime(button) {
-  setButtonFeedback(button, 'loading');
-  setPointResult('正在通知运行节点重载配置...', true);
-  try {
-    const response = await fetch('/api/point_config/reload', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({source: 'web_hmi'}),
-    });
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(result.message || '重载失败');
-    }
-    setPointResult(result.message || '运行节点已重载配置', true);
-    appendLog(`point_config reload: ${result.message || '--'}`, 'log-ok');
-    setButtonFeedback(button, 'success');
-  } catch (error) {
-    setPointResult(`重载配置失败: ${error}`, false);
-    appendLog(`point_config reload failed: ${error}`, 'log-error');
-    setButtonFeedback(button, 'failed');
-  } finally {
-    if (button) {
-      button.classList.remove('loading');
-    }
-  }
 }
 
 function cameraHealthClass(channel) {
@@ -1398,7 +834,6 @@ function renderMotion(motion, services) {
   const applyButton = $('applySpeedScale');
   const resetButton = $('resetSpeedScale');
   const restartCameraButton = $('restartCameraButton');
-  const pointConfigApplyReloadButton = $('pointConfigApplyReload');
   const percent = Number(motion && motion.speed_percent ? motion.speed_percent : speedScalePercent);
   const nowMs = Date.now();
   if (speedScalePendingPercent !== null && Number.isFinite(percent) &&
@@ -1414,7 +849,7 @@ function renderMotion(motion, services) {
 
   const sliderActive = slider && document.activeElement === slider;
   if (!speedScaleDirty && !sliderActive && !hasPendingSpeed && Number.isFinite(percent)) {
-    speedScalePercent = Math.max(20, Math.min(120, Math.round(percent)));
+    speedScalePercent = Math.max(20, Math.min(100, Math.round(percent)));
   }
   if (slider && !speedScaleDirty && !sliderActive) {
     slider.value = String(speedScalePercent);
@@ -1438,14 +873,6 @@ function renderMotion(motion, services) {
     restartCameraButton.title = cameraReady ? '重启 Gemini305 相机驱动' : '相机重启脚本未就绪';
   }
 
-  if (pointConfigApplyReloadButton) {
-    const reloadReady = !!(services && services.reload_config && services.reload_config.ready);
-    pointConfigApplyReloadButton.disabled =
-      !reloadReady || pointConfigApplyReloadButton.classList.contains('loading');
-    pointConfigApplyReloadButton.title = reloadReady
-      ? '让 spectrometer_cell 重新读取已保存的点位配置'
-      : '配置重载服务未就绪';
-  }
 }
 
 function renderSignal(signal) {
@@ -1501,6 +928,175 @@ function renderToolPose(snapshot) {
   }
 }
 
+function renderDebugPointOptions() {
+  const select = $('debugPointSelect');
+  if (!select || !motionCatalog || !motionCatalog.points) {
+    return;
+  }
+  const previous = select.value;
+  const points = Object.entries(motionCatalog.points)
+    .filter(([, point]) => Array.isArray(point.tags) && point.tags.includes('tunable') && point.pose)
+    .sort(([left], [right]) => left.localeCompare(right));
+  select.innerHTML = '';
+  points.forEach(([name, point]) => {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = point.description ? `${name} · ${point.description}` : name;
+    select.appendChild(option);
+  });
+  if (points.some(([name]) => name === previous)) {
+    select.value = previous;
+  }
+}
+
+function setDebugResult(message, ok = true) {
+  const box = $('debugResult');
+  if (!box) {
+    return;
+  }
+  box.textContent = message || '--';
+  box.classList.toggle('error-text', !ok);
+}
+
+function renderDebug(snapshot) {
+  const debug = snapshot.debug || {};
+  const tool = snapshot.tool_pose || {};
+  const active = !!debug.active;
+  const ready = active && debug.phase === 'ready' && !debugBusy;
+  const status = $('debugStatus');
+  if (status) {
+    const phaseLabel = debugPhaseLabels[debug.phase] || debug.phase || '未进入调试';
+    status.textContent = active ? `${phaseLabel} · ${debug.selected_point}` : phaseLabel;
+    status.className = debug.phase === 'error'
+      ? 'pill pill-error'
+      : (ready ? 'pill pill-ok' : 'pill pill-warn');
+  }
+  const select = $('debugPointSelect');
+  if (select && debug.selected_point) {
+    select.value = debug.selected_point;
+  }
+  if (select) {
+    select.disabled = active || debugBusy;
+  }
+  const enter = $('debugEnter');
+  if (enter) {
+    enter.disabled = active || debugBusy || !select || !select.value;
+  }
+
+  document.querySelectorAll('.jog-button').forEach((button) => {
+    button.disabled = !ready;
+  });
+  ['debugGripperOpen', 'debugGripperClose', 'debugBrushStart', 'debugBrushStop',
+    'debugBrushSave', 'debugSave', 'debugReferenceZero', 'debugExit'].forEach((id) => {
+    const button = $(id);
+    if (button) {
+      button.disabled = !active || debugBusy || (id !== 'debugExit' && !ready);
+    }
+  });
+  document.querySelectorAll('.advanced-maintenance input, .advanced-maintenance select, .advanced-maintenance textarea, .advanced-maintenance button').forEach((control) => {
+    control.disabled = active || debugBusy;
+  });
+
+  const position = tool.position_mm || {};
+  const rpy = tool.rpy_deg || {};
+  setText('debugPoseX', Number.isFinite(position.x) ? `${position.x.toFixed(2)} mm` : '--');
+  setText('debugPoseY', Number.isFinite(position.y) ? `${position.y.toFixed(2)} mm` : '--');
+  setText('debugPoseZ', Number.isFinite(position.z) ? `${position.z.toFixed(2)} mm` : '--');
+  setText('debugPoseRoll', Number.isFinite(rpy.roll) ? `${rpy.roll.toFixed(2)}°` : '--');
+  setText('debugPosePitch', Number.isFinite(rpy.pitch) ? `${rpy.pitch.toFixed(2)}°` : '--');
+  setText('debugPoseYaw', Number.isFinite(rpy.yaw) ? `${rpy.yaw.toFixed(2)}°` : '--');
+  const delta = debug.reference_delta;
+  setText('debugReferenceDelta', delta
+    ? `相对零点 X ${delta.x_mm.toFixed(2)} / Y ${delta.y_mm.toFixed(2)} / Z ${delta.z_mm.toFixed(2)} mm · Roll ${delta.roll_deg.toFixed(2)} / Pitch ${delta.pitch_deg.toFixed(2)} / Yaw ${delta.yaw_deg.toFixed(2)}°`
+    : '参考零点未设置');
+  setText('debugInterlock', active
+    ? `${debugPhaseLabels[debug.phase] || debug.phase} · 已点动 ${debug.jog_count || 0} 次 · ${debug.dirty ? '有未保存修改' : '点位与配置一致'}`
+    : '选择点位后，点击“进入调试并前往该点”。');
+  if (debug.last_message) {
+    setDebugResult(debug.last_message, debug.phase !== 'error');
+  }
+}
+
+async function postJson(path, body = {}) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.message || `HTTP ${response.status}`);
+  }
+  return result;
+}
+
+async function runDebugRequest(path, body, button) {
+  if (debugBusy) {
+    return null;
+  }
+  debugBusy = true;
+  setButtonFeedback(button, 'loading');
+  renderDebug(latestSnapshot || {});
+  try {
+    const result = await postJson(path, body);
+    setDebugResult(result.message, !!result.success);
+    appendLog(`DEBUG ${path}: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
+    setButtonFeedback(button, result.success ? 'success' : 'failed');
+    return result;
+  } catch (error) {
+    setDebugResult(String(error), false);
+    appendLog(`DEBUG ${path}: ${error}`, 'log-error');
+    setButtonFeedback(button, 'failed');
+    return {success: false, message: String(error)};
+  } finally {
+    debugBusy = false;
+    if (button) {
+      button.classList.remove('loading');
+    }
+    try {
+      render(await fetchSnapshot());
+    } catch (_) {
+      renderDebug(latestSnapshot || {});
+    }
+  }
+}
+
+async function sendDebugJog(button) {
+  const linearStep = Number($('debugLinearStep').value);
+  const angularStep = Number($('debugAngularStep').value);
+  const translation = [0, 0, 0];
+  const rotation = [0, 0, 0];
+  const sign = Number(button.dataset.jogSign);
+  const linearAxes = {x: 0, y: 1, z: 2};
+  const rotationAxes = {roll: 0, pitch: 1, yaw: 2};
+  if (button.dataset.jogAxis) {
+    if (!Number.isFinite(linearStep) || linearStep < 2 || linearStep > 20) {
+      setDebugResult('MIT 微调的平移步进必须在 2–20 mm，推荐 5 mm。', false);
+      return;
+    }
+    translation[linearAxes[button.dataset.jogAxis]] = sign * linearStep / 1000;
+  } else {
+    if (!Number.isFinite(angularStep) || angularStep < 0.1 || angularStep > 10) {
+      setDebugResult('旋转步进必须在 0.1–10°。', false);
+      return;
+    }
+    rotation[rotationAxes[button.dataset.jogRotation]] = sign * angularStep * Math.PI / 180;
+  }
+  await runDebugRequest('/api/debug/jog', {translation_m: translation, rotation_rad: rotation}, button);
+}
+
+function openZeroDialog() {
+  $('zeroPassword').value = '';
+  setText('zeroError', '');
+  $('zeroOverlay').classList.remove('hidden');
+  window.setTimeout(() => $('zeroPassword').focus(), 0);
+}
+
+function closeZeroDialog() {
+  $('zeroPassword').value = '';
+  $('zeroOverlay').classList.add('hidden');
+}
+
 function render(snapshot) {
   latestSnapshot = snapshot;
   const cell = snapshot.spectrometer_cell || {};
@@ -1512,12 +1108,14 @@ function render(snapshot) {
     estopClearAcknowledged = false;
   }
 
-  setText('stateText', state);
+  const stateLabel = flowLabels[state] || state;
+  const modeLabel = modeLabels[mode] || mode;
+  setText('stateText', `${stateLabel} · ${state}`);
   setText('stateAge', formatAge(cell.state_age_sec));
   setText('stateDuration', `持续 ${formatAge(cell.state_age_sec)}`);
   setText('previousState', `上一步 ${context.previous_state || '--'}`);
   setText('transitionReason', `原因 ${context.last_transition_reason || '--'}`);
-  setText('modeText', mode);
+  setText('modeText', modeLabel);
   setText('cycleId', context.cycle_id ?? '--');
   setText('outletId', context.outlet || '--');
   setText('pendingQueue', formatQueue(context.pending_outlets));
@@ -1539,12 +1137,12 @@ function render(snapshot) {
 
   const stateBadge = $('stateBadge');
   if (stateBadge) {
-    stateBadge.textContent = state;
+    stateBadge.textContent = stateLabel;
     stateBadge.className = stateClass(state);
   }
   const modeBadge = $('modeBadge');
   if (modeBadge) {
-    modeBadge.textContent = `模式 ${mode}`;
+    modeBadge.textContent = `模式 ${modeLabel}`;
     modeBadge.className = stateClass(state);
   }
   const estopZone = $('estopZone');
@@ -1577,8 +1175,7 @@ function render(snapshot) {
   setText('jointAge', formatAge((snapshot.joint_state || {}).age_sec));
   renderServices(snapshot.services || {}, state, context);
   renderMotion(snapshot.motion || {}, snapshot.services || {});
-  renderStateRequestControl(state);
-  renderPoseTuner(snapshot, state, context);
+  renderDebug(snapshot);
 }
 
 async function fetchSnapshot() {
@@ -1693,61 +1290,17 @@ async function sendCommand(command, button) {
   }
 }
 
-async function sendStateRequest(button) {
-  const target = $('targetStateSelect') ? $('targetStateSelect').value : '';
-  const reason = $('stateRequestReason') ? $('stateRequestReason').value.trim() : '';
-  const force = $('forceStateRequest') ? $('forceStateRequest').checked : false;
-  const resultBox = $('commandResult');
-
-  if (!target) {
-    if (resultBox) {
-      resultBox.textContent = '请选择目标状态';
-    }
-    return;
-  }
-  if (!reason) {
-    if (resultBox) {
-      resultBox.textContent = '状态请求必须填写原因';
-    }
-    return;
-  }
-
-  setButtonFeedback(button, 'loading');
-  appendLog(`STATE REQUEST target=${target} force=${force} reason=${reason}`, 'log-warn');
-  try {
-    const response = await fetch('/api/state_request', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        target_state: target,
-        reason,
-        force,
-        source: 'web_hmi',
-        requested_at: new Date().toISOString(),
-      }),
-    });
-    const result = await response.json();
-    if (resultBox) {
-      resultBox.textContent = result.message || (result.success ? 'state request accepted' : 'state request rejected');
-    }
-    appendLog(`state_request ${target}: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
-    setButtonFeedback(button, result.success ? 'success' : 'failed');
-  } catch (error) {
-    if (resultBox) {
-      resultBox.textContent = String(error);
-    }
-    appendLog(`state_request ${target}: ${error}`, 'log-error');
-    setButtonFeedback(button, 'failed');
-  } finally {
-    if (button) {
-      button.classList.remove('loading');
-    }
-  }
-}
-
 async function sendSpeedScale(percent, button) {
   const resultBox = $('commandResult');
-  const scale = Math.max(0.20, Math.min(1.20, Number(percent) / 100.0));
+  const numericPercent = Number(percent);
+  if (!Number.isFinite(numericPercent) || numericPercent < 20 || numericPercent > 100) {
+    if (resultBox) {
+      resultBox.textContent = '速度必须在 20%–100% 之间。';
+    }
+    setButtonFeedback(button, 'failed');
+    return;
+  }
+  const scale = numericPercent / 100.0;
   setButtonFeedback(button, 'loading');
   appendLog(`SET SPEED ${Math.round(scale * 100)}%`, 'log-warn');
 
@@ -1817,149 +1370,99 @@ async function restartCamera(button) {
   }
 }
 
-async function loadPoseTunerTargets() {
-  const resultBox = $('poseTunerResult');
-  if (resultBox) {
-    resultBox.textContent = '读取点位列表...';
-  }
-  poseTunerBusy = true;
-  try {
-    const response = await fetch('/api/pose_tuner/list');
-    const result = await response.json();
-    if (result.success) {
-      populatePoseTunerTargets(result.targets || []);
-      if (resultBox) {
-        resultBox.textContent = result.message || '点位已刷新';
-      }
-      appendLog(`pose_tuner list: ${result.message || '--'}`, 'log-ok');
-    } else {
-      if (resultBox) {
-        resultBox.textContent = result.message || '读取点位失败';
-      }
-      appendLog(`pose_tuner list failed: ${result.message || '--'}`, 'log-error');
-    }
-  } catch (error) {
-    if (resultBox) {
-      resultBox.textContent = String(error);
-    }
-    appendLog(`pose_tuner list error: ${error}`, 'log-error');
-  } finally {
-    poseTunerBusy = false;
-    if (latestSnapshot) {
-      renderPoseTuner(
-        latestSnapshot,
-        (latestSnapshot.spectrometer_cell || {}).state || 'UNKNOWN',
-        (latestSnapshot.spectrometer_cell || {}).context || {});
-    }
-  }
-}
-
-async function runPoseTunerTarget(dryRun, button) {
-  const target = selectedPoseTunerTarget();
-  const resultBox = $('poseTunerResult');
-  if (!target) {
-    if (resultBox) {
-      resultBox.textContent = '请先选择点位';
-    }
-    return;
-  }
-
-  if (!dryRun) {
-    const confirmed = await confirmAction(
-      [
-        '当前处于点位调试模式。',
-        `目标点位：${target.name}`,
-        '该操作会真实移动机械臂。',
-        '确认执行？',
-      ].join('\n'),
-      '点位真实执行确认');
-    if (!confirmed) {
-      appendLog(`CANCEL pose_tuner execute ${target.name}`, 'log-warn');
-      return;
-    }
-  }
-
-  poseTunerBusy = true;
-  setButtonFeedback(button, 'loading');
-  if (resultBox) {
-    resultBox.textContent = dryRun ? '发送 dry_run 规划...' : '发送真实执行...';
-  }
-  appendLog(`POSE_TUNER ${dryRun ? 'DRY_RUN' : 'EXECUTE'} ${target.name}`, dryRun ? 'log-warn' : 'log-error');
-
-  try {
-    const response = await fetch('/api/pose_tuner/run', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        target_name: target.name,
-        dry_run: dryRun,
-        debug_mode: poseTunerDebugMode,
-        source: 'web_hmi',
-        requested_at: new Date().toISOString(),
-      }),
-    });
-    const result = await response.json();
-    if (resultBox) {
-      resultBox.textContent = result.message || (result.success ? 'ok' : 'failed');
-    }
-    appendLog(`pose_tuner ${target.name}: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
-    setButtonFeedback(button, result.success ? 'success' : 'failed');
-  } catch (error) {
-    if (resultBox) {
-      resultBox.textContent = String(error);
-    }
-    appendLog(`pose_tuner ${target.name}: ${error}`, 'log-error');
-    setButtonFeedback(button, 'failed');
-  } finally {
-    poseTunerBusy = false;
-    if (button) {
-      button.classList.remove('loading');
-    }
-    if (latestSnapshot) {
-      renderPoseTuner(
-        latestSnapshot,
-        (latestSnapshot.spectrometer_cell || {}).state || 'UNKNOWN',
-        (latestSnapshot.spectrometer_cell || {}).context || {});
-    }
-  }
-}
-
-async function stopPoseTuner(button) {
-  const resultBox = $('poseTunerResult');
-  poseTunerBusy = true;
-  setButtonFeedback(button, 'loading');
-  if (resultBox) {
-    resultBox.textContent = '发送 MoveIt stop...';
-  }
-  try {
-    const response = await fetch('/api/pose_tuner/stop', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({source: 'web_hmi', requested_at: new Date().toISOString()}),
-    });
-    const result = await response.json();
-    if (resultBox) {
-      resultBox.textContent = result.message || (result.success ? 'stopped' : 'stop failed');
-    }
-    appendLog(`pose_tuner stop: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
-    setButtonFeedback(button, result.success ? 'success' : 'failed');
-  } catch (error) {
-    if (resultBox) {
-      resultBox.textContent = String(error);
-    }
-    appendLog(`pose_tuner stop: ${error}`, 'log-error');
-    setButtonFeedback(button, 'failed');
-  } finally {
-    poseTunerBusy = false;
-    if (button) {
-      button.classList.remove('loading');
-    }
-  }
-}
-
 function wireButtons() {
   document.querySelectorAll('[data-page-target]').forEach((button) => {
     button.addEventListener('click', () => setActivePage(button.dataset.pageTarget));
+  });
+
+  document.querySelectorAll('.step-presets button').forEach((button) => {
+    button.addEventListener('click', () => {
+      const group = button.closest('.step-presets');
+      const input = group ? $(group.dataset.stepTarget) : null;
+      if (input) {
+        input.value = button.dataset.stepValue;
+      }
+    });
+  });
+
+  const debugEnter = $('debugEnter');
+  if (debugEnter) {
+    debugEnter.addEventListener('click', async () => {
+      const point = $('debugPointSelect').value;
+      if (!point || !(await confirmAction(
+        `机械臂将先确认/恢复 Home，再经过安全调试点前往 ${point}。确认工位周围安全。`,
+        '进入点位调试'))) {
+        return;
+      }
+      await runDebugRequest('/api/debug/enter', {point_name: point}, debugEnter);
+    });
+  }
+
+  document.querySelectorAll('.jog-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!button.disabled) {
+        sendDebugJog(button);
+      }
+    });
+  });
+
+  const gripperOpen = $('debugGripperOpen');
+  const gripperClose = $('debugGripperClose');
+  gripperOpen?.addEventListener('click', () => runDebugRequest(
+    '/api/debug/gripper', {command: 'open'}, gripperOpen));
+  gripperClose?.addEventListener('click', () => runDebugRequest(
+    '/api/debug/gripper', {command: 'close'}, gripperClose));
+
+  const brushSlider = $('debugBrushSpeed');
+  brushSlider?.addEventListener('input', () => {
+    setText('debugBrushSpeedValue', `${brushSlider.value}%`);
+  });
+  const brushStart = $('debugBrushStart');
+  const brushStop = $('debugBrushStop');
+  const brushSave = $('debugBrushSave');
+  brushStart?.addEventListener('click', () => runDebugRequest(
+    '/api/debug/brush', {enabled: true, speed_percent: Number(brushSlider.value)}, brushStart));
+  brushStop?.addEventListener('click', () => runDebugRequest(
+    '/api/debug/brush', {enabled: false, speed_percent: 0}, brushStop));
+  brushSave?.addEventListener('click', () => runDebugRequest(
+    '/api/debug/brush', {
+      enabled: !!((latestSnapshot || {}).debug || {}).brush_enabled,
+      speed_percent: Number(brushSlider.value),
+      persist_default: true,
+    }, brushSave));
+
+  const debugSave = $('debugSave');
+  debugSave?.addEventListener('click', () => runDebugRequest('/api/debug/save', {}, debugSave));
+  const debugExit = $('debugExit');
+  debugExit?.addEventListener('click', async () => {
+    const dirty = !!((latestSnapshot || {}).debug || {}).dirty;
+    const message = dirty
+      ? '未保存点位不会写入配置；机械臂将沿标定安全退出路线回到安全调试点和 Home。确认继续？'
+      : '机械臂将沿标定退出路线回到安全调试点和 Home。确认继续？';
+    if (await confirmAction(message, '退出点位调试')) {
+      await runDebugRequest('/api/debug/exit', {}, debugExit);
+    }
+  });
+
+  $('debugReferenceZero')?.addEventListener('click', openZeroDialog);
+  $('zeroCancel')?.addEventListener('click', closeZeroDialog);
+  $('zeroApply')?.addEventListener('click', async () => {
+    const password = $('zeroPassword').value;
+    const result = await runDebugRequest(
+      '/api/debug/reference_zero', {password}, $('zeroApply'));
+    $('zeroPassword').value = '';
+    if (result && result.success) {
+      closeZeroDialog();
+    } else {
+      setText('zeroError', result ? result.message : '设置失败');
+    }
+  });
+  $('zeroPassword')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      $('zeroApply').click();
+    } else if (event.key === 'Escape') {
+      closeZeroDialog();
+    }
   });
 
   document.querySelectorAll('button[data-command]').forEach((button) => {
@@ -1976,21 +1479,6 @@ function wireButtons() {
       sendCommand(command, button);
     });
   });
-
-  const stateRequestButton = $('publishStateRequest');
-  if (stateRequestButton) {
-    stateRequestButton.addEventListener('click', async () => {
-      if (stateRequestButton.disabled) {
-        return;
-      }
-      const message = stateRequestButton.dataset.confirm;
-      if (message && !(await confirmAction(message, '状态请求确认'))) {
-        appendLog('CANCEL state_request', 'log-warn');
-        return;
-      }
-      sendStateRequest(stateRequestButton);
-    });
-  }
 
   document.querySelectorAll('[data-camera-mode]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -2038,78 +1526,6 @@ function wireButtons() {
       setText('speedScaleValue', '100%');
       if (!resetSpeed.disabled) {
         sendSpeedScale(100, resetSpeed);
-      }
-    });
-  }
-
-  const select = $('targetStateSelect');
-  if (select) {
-    select.addEventListener('change', () => {
-      const cell = latestSnapshot ? latestSnapshot.spectrometer_cell || {} : {};
-      renderStateRequestControl(cell.state || 'UNKNOWN');
-    });
-  }
-
-  const poseMode = $('poseTunerDebugMode');
-  if (poseMode) {
-    poseMode.addEventListener('change', async () => {
-      poseTunerDebugMode = poseMode.checked;
-      appendLog(`POSE_TUNER_DEBUG ${poseTunerDebugMode ? 'ON' : 'OFF'}`, poseTunerDebugMode ? 'log-warn' : '');
-      if (poseTunerDebugMode && !poseTunerTargets.length) {
-        await loadPoseTunerTargets();
-      } else if (latestSnapshot) {
-        renderPoseTuner(
-          latestSnapshot,
-          (latestSnapshot.spectrometer_cell || {}).state || 'UNKNOWN',
-          (latestSnapshot.spectrometer_cell || {}).context || {});
-      }
-    });
-  }
-
-  const poseSelect = $('poseTunerTargetSelect');
-  if (poseSelect) {
-    poseSelect.addEventListener('change', () => {
-      if (latestSnapshot) {
-        renderPoseTuner(
-          latestSnapshot,
-          (latestSnapshot.spectrometer_cell || {}).state || 'UNKNOWN',
-          (latestSnapshot.spectrometer_cell || {}).context || {});
-      }
-    });
-  }
-
-  const poseReload = $('poseTunerReload');
-  if (poseReload) {
-    poseReload.addEventListener('click', () => {
-      if (!poseReload.disabled) {
-        loadPoseTunerTargets();
-      }
-    });
-  }
-
-  const poseDryRun = $('poseTunerDryRun');
-  if (poseDryRun) {
-    poseDryRun.addEventListener('click', () => {
-      if (!poseDryRun.disabled) {
-        runPoseTunerTarget(true, poseDryRun);
-      }
-    });
-  }
-
-  const poseExecute = $('poseTunerExecute');
-  if (poseExecute) {
-    poseExecute.addEventListener('click', () => {
-      if (!poseExecute.disabled) {
-        runPoseTunerTarget(false, poseExecute);
-      }
-    });
-  }
-
-  const poseStop = $('poseTunerStop');
-  if (poseStop) {
-    poseStop.addEventListener('click', () => {
-      if (!poseStop.disabled) {
-        stopPoseTuner(poseStop);
       }
     });
   }
@@ -2201,43 +1617,6 @@ function wireButtons() {
     motionRouteDelete.addEventListener('click', deleteMotionRoute);
   }
 
-  const pointPoseSelect = $('pointPoseSelect');
-  if (pointPoseSelect) {
-    pointPoseSelect.addEventListener('change', () => {
-      try {
-        syncSelectedPointPoseFromInputs();
-      } catch (error) {
-        setPointResult(String(error), false);
-      }
-      setPointPoseInputs(pointPoseSelect.value);
-    });
-  }
-
-  ['pointX', 'pointY', 'pointZ', 'pointRoll', 'pointPitch', 'pointYaw'].forEach((id) => {
-    const input = $(id);
-    if (input) {
-      input.addEventListener('input', onPointPoseInputChanged);
-    }
-  });
-
-  const pointReload = $('pointConfigReload');
-  if (pointReload) {
-    pointReload.addEventListener('click', loadPointConfig);
-  }
-
-  const pointSave = $('pointConfigSave');
-  if (pointSave) {
-    pointSave.addEventListener('click', () => savePointConfig(pointSave));
-  }
-
-  const pointApplyReload = $('pointConfigApplyReload');
-  if (pointApplyReload) {
-    pointApplyReload.addEventListener('click', () => {
-      if (!pointApplyReload.disabled) {
-        reloadPointConfigRuntime(pointApplyReload);
-      }
-    });
-  }
 }
 
 async function pollFallback() {
@@ -2250,7 +1629,6 @@ async function pollFallback() {
 }
 
 async function boot() {
-  initStateSelect();
   setActivePage(activePage);
   renderFlow('UNKNOWN');
   renderCamera({});

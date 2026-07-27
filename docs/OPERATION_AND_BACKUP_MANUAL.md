@@ -9,13 +9,13 @@
 Windows 共享路径：
 
 ```text
-\\192.168.199.168\b1s_share\panthera_workcell_ws
+\\192.168.137.186\b1s_share\panthera_workcell_ws
 ```
 
 HMI 地址：
 
 ```text
-http://192.168.199.168:8080
+http://192.168.137.186:8080
 ```
 
 ## 1. 一键启动
@@ -23,20 +23,21 @@ http://192.168.199.168:8080
 推荐使用脚本启动整套系统：
 
 ```bash
-cd ~/panthera_workcell_ws
+cd /home/b1/panthera_workcell_ws
 scripts/start_workcell.sh
 ```
 
 该脚本会启动：
 
 - 机械臂硬件接口和 `ros2_control`
-- MoveIt `move_group`
-- YAML 工作流执行器 `/run_workflow`
-- RS485 激光测距节点
+- MIT 重力补偿硬件模式（Kp 60、Kd 5.5）
+- 固定轨迹 Motion Server（生产运行不实时规划）
 - C++ 光谱检测长期状态机
 - Web HMI
-- 点位调试节点
-- Gemini305 相机，默认请求 `1280x800@30fps`
+
+生产一键启动不会启动旧 MoveIt workflow、激光、相机或点位调试节点，确保只有
+Motion Server 一个机械臂命令源。脚本只有在控制器 active、Motion Server 静止、
+编码器位于原 Home、HMI 服务全部就绪后才报告成功；默认工作速度为 100%。
 
 启动日志保存到：
 
@@ -49,21 +50,27 @@ validation_logs/<时间>_start_workcell
 正常关闭使用：
 
 ```bash
-cd ~/panthera_workcell_ws
+cd /home/b1/panthera_workcell_ws
 scripts/stop_workcell.sh
 ```
 
-该脚本会先尝试让机械臂回到安全位：
+该脚本只在流程已结束、杯子已释放、机械臂静止且编码器确认位于原 Home 时关闭：
 
-1. 优先调用 `/run_workflow` 执行 `arm_home`
-2. 如果失败，再尝试点位调试目标 `safe_joint_center`
-3. 然后终止 HMI、状态机、相机、MoveIt、控制器等 ROS 进程
+1. 暂停自动状态机，阻止新任务进入
+2. 明确停止毛刷并取消残留运动目标
+3. 先终止一键启动拥有的整个进程组
+4. 清理生产链及旧链残留进程并验证 8080 端口释放
+
+如果流程仍在运行，脚本会等待本轮正常完成；超时或无法确认 Home 时保持硬件上电，
+拒绝强行失能。
 
 只在维护或紧急清进程时使用不回零版本：
 
 ```bash
-scripts/stop_workcell.sh --no-home
+scripts/stop_workcell.sh --force
 ```
+
+该参数会跳过流程和 Home 保护，只能在人工确认机械安全的维护/紧急场景使用。
 
 ## 3. HMI 常用功能
 
@@ -339,10 +346,9 @@ scripts/start_workcell.sh
 
 1. 确认机械臂周围安全，电源和急停状态正常。
 2. 执行 `scripts/start_workcell.sh`。
-3. 打开 HMI：`http://192.168.199.168:8080`。
-4. 检查状态机、激光、相机、关节状态。
-5. 如需调点，打开点位调试模式，先 `dry_run`，再真实执行。
-6. 正常生产使用自动流程按钮或外部 RS485/IO 信号触发。
-7. 相机卡死时先点“重启相机”。
-8. 下班或维护前执行 `scripts/stop_workcell.sh`，让机械臂先回安全位再关闭进程。
-9. 修改源码或文档后执行 `scripts/backup_source_docs.sh` 生成干净备份。
+3. 打开 HMI：`http://192.168.137.186:8080`。
+4. 确认状态为 `WAIT_DISCHARGE`、速度 100%、机械臂和 HMI 服务正常。
+5. 点击 `OUTLET_1 真实循环`；光谱仪阶段完成后点击 `检测完成`。
+6. 本轮结束并回到 `WAIT_DISCHARGE` 后，才执行 `scripts/stop_workcell.sh`。
+7. 关闭脚本显示 `Home=verified ... processes=clean` 后再切断设备电源。
+8. 修改源码或文档后执行 `scripts/backup_source_docs.sh` 生成干净备份。

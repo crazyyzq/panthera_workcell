@@ -108,13 +108,14 @@
       <div class="command-section safety-section">
         <div class="section-title">安全</div>
         <div class="estop-zone" id="estopZone">
-          <button class="estop-button" id="estopButton" data-command="simulate_estop" type="button" title="立即触发急停">
+          <button class="estop-button" id="estopButton" data-command="simulate_estop" type="button" title="请求软件停止；紧急情况优先按硬件急停">
             <span class="estop-cap">
-              <span class="estop-main">急停</span>
-              <span class="estop-en">EMERGENCY STOP</span>
+              <span class="estop-main">软件急停</span>
+              <span class="estop-en">SOFTWARE STOP</span>
             </span>
           </button>
         </div>
+        <div class="software-stop-note">软件按钮不能替代控制柜上的硬件急停；人员或设备有危险时请直接按硬件急停。</div>
         <div class="button-grid">
           <button class="cmd neutral" data-command="clear_estop" data-confirm="确认机械急停已释放，再清除软件急停状态。" type="button">清除急停</button>
           <button class="cmd warn" data-command="request_reset" data-confirm="确认现场安全，执行人工复位。" type="button">人工复位</button>
@@ -125,17 +126,15 @@
       <div class="command-section">
         <div class="section-title">自动运行</div>
         <div class="button-grid">
-          <button class="cmd primary" data-command="auto_mode" type="button">启动自动</button>
+          <button class="cmd primary" data-command="auto_mode" type="button">启动 / 恢复自动</button>
           <button class="cmd neutral" data-command="manual_mode" type="button">暂停自动</button>
-          <button class="cmd primary" data-command="auto_mode" type="button">恢复自动</button>
-          <button class="cmd neutral" data-command="step_once" type="button">单步下一状态</button>
         </div>
       </div>
 
       <div class="command-section speed-section">
         <div class="section-title">动作速度</div>
         <div class="speed-control">
-          <input id="speedScaleSlider" type="range" min="20" max="120" step="5" value="100">
+          <input id="speedScaleSlider" type="range" min="20" max="100" step="5" value="100">
           <strong id="speedScaleValue">100%</strong>
         </div>
         <div class="button-grid">
@@ -144,71 +143,17 @@
         </div>
       </div>
 
-      <div class="command-section state-debug">
-        <div class="section-title">状态机调试</div>
-        <div class="form-grid">
-          <label>
-            <span>目标状态</span>
-            <select id="targetStateSelect"></select>
-          </label>
-          <label>
-            <span>请求原因</span>
-            <input id="stateRequestReason" type="text" placeholder="调试、排故或人工确认原因">
-          </label>
-          <label class="check-line">
-            <input id="forceStateRequest" type="checkbox">
-            <span>强制请求</span>
-          </label>
-          <button id="publishStateRequest" class="cmd warn" data-confirm="状态请求不会直接改状态，但可能触发复位、暂停或急停服务。确认继续？" type="button">发布目标状态请求</button>
-        </div>
-      </div>
-
-      <div class="command-section pose-tuner-panel">
-        <div class="section-title">点位调试</div>
-        <label class="switch-line">
-          <input id="poseTunerDebugMode" type="checkbox">
-          <span>调试模式</span>
-          <strong id="poseTunerModeText">关闭</strong>
-        </label>
-        <div class="form-grid">
-          <label>
-            <span>目标点位</span>
-            <select id="poseTunerTargetSelect" disabled>
-              <option value="">请先开启调试模式</option>
-            </select>
-          </label>
-          <div class="pose-tuner-target-card" id="poseTunerTargetCard">
-            <span>未选择点位</span>
-          </div>
-          <div class="button-grid">
-            <button id="poseTunerDryRun" class="cmd neutral" type="button" disabled>只规划 dry_run</button>
-            <button id="poseTunerExecute" class="cmd warn" type="button" disabled>真实执行</button>
-            <button id="poseTunerStop" class="cmd neutral" type="button">停止 MoveIt</button>
-            <button id="poseTunerReload" class="cmd neutral" type="button" disabled>刷新点位</button>
-          </div>
-        </div>
-        <div class="pose-tuner-result" id="poseTunerResult">调试模式关闭</div>
-        <div class="pose-tuner-log" id="poseTunerLog"></div>
-      </div>
-
       <div class="command-section">
         <div class="section-title">真实流程调试</div>
         <div class="button-grid">
           <button class="cmd primary" data-command="actual_cycle_outlet_1" data-confirm="确认 OUTLET_1 杯子、光谱仪、清理位周围安全，启动真实循环。" type="button">OUTLET_1 真实循环</button>
           <button class="cmd primary" data-command="actual_cycle_outlet_2" data-confirm="确认 OUTLET_2 杯子、光谱仪、清理位周围安全，启动真实循环。" type="button">OUTLET_2 真实循环</button>
           <button class="cmd warn" data-command="detection_done" data-confirm="确认光谱仪检测已经完成，机械臂将重新测距并取回杯子。" type="button">检测完成</button>
-          <button class="cmd neutral" data-command="workflow_arm_home" type="button">回安全位</button>
-        </div>
-        <div class="coordinate-card">
-          <span>OUTLET_1 (-25, -428.53, 100) mm</span>
-          <span>OUTLET_2 (155, -428.53, 100) mm</span>
-          <span>光谱仪基准 (584.14, -121.03, 290) mm @ 激光 150 mm</span>
-          <span>清理位 (250, 400, 120) mm</span>
         </div>
       </div>
 
-      <div class="command-section">
-        <div class="section-title">流程信号模拟</div>
+      <details class="command-section maintenance-signals">
+        <summary>维护：模拟出料信号</summary>
         <div class="button-grid">
           <button class="cmd primary" data-command="outlet_1_done" type="button">OUTLET_1 出料完成</button>
           <button class="cmd primary" data-command="outlet_2_done" type="button">OUTLET_2 出料完成</button>
@@ -218,28 +163,96 @@
           <strong id="recentEventName">--</strong>
           <span id="recentEventDetail">--</span>
         </div>
-      </div>
-
-      <div class="command-section">
-        <div class="section-title">手动动作</div>
-        <div class="button-grid">
-          <button class="cmd neutral" data-command="workflow_outlet_1_pick_check_actual" data-confirm="确认机械臂周围安全，仅检查 OUTLET_1 上方/取杯点路径。" type="button">OUTLET_1 点位检查</button>
-          <button class="cmd neutral" data-command="workflow_outlet_2_pick_check_actual" data-confirm="确认机械臂周围安全，仅检查 OUTLET_2 上方/取杯点路径。" type="button">OUTLET_2 点位检查</button>
-          <button class="cmd neutral" data-command="workflow_spectrometer_place_check_actual" data-confirm="确认光谱仪附近安全，仅检查光谱仪基准点路径。" type="button">光谱仪点位检查</button>
-          <button class="cmd neutral" data-command="workflow_clean_dump_check_actual" data-confirm="确认清理位附近安全，仅检查倒料点路径。" type="button">清理位点检</button>
-          <button class="cmd primary" data-command="workflow_visible_motion_check" data-confirm="确认机械臂周围安全，执行可见幅度动作检查。" type="button">可见动作检查</button>
-          <button class="cmd primary" data-command="workflow_fixed_large_motion_demo" data-confirm="确认机械臂周围安全，执行较大幅度运动验证。" type="button">大幅运动验证</button>
-          <button class="cmd neutral" data-command="workflow_arm_home" type="button">回安全位</button>
-          <button class="cmd neutral" data-command="workflow_gripper_open" type="button">夹爪打开</button>
-          <button class="cmd neutral" data-command="workflow_gripper_close" type="button">夹爪闭合</button>
-          <button class="cmd warn" data-command="workflow_cup_pick_place" data-confirm="确认夹取路径、杯子和工装安全，执行完整抓放流程。" type="button">完整抓放流程</button>
-        </div>
-      </div>
+      </details>
 
       <div id="commandResult" class="command-result"></div>
     </section>
 
-    <section class="panel point-config-panel" data-page="points">
+    <section class="panel commissioning-panel" data-page="points">
+      <div class="panel-head">
+        <h2>机械臂点位示教</h2>
+        <span id="debugStatus" class="pill pill-warn">未进入调试</span>
+      </div>
+      <div class="debug-entry-row">
+        <label>
+          <span>要修改的工艺点</span>
+          <select id="debugPointSelect"></select>
+        </label>
+        <button id="debugEnter" class="cmd warn" type="button">进入调试并前往该点</button>
+        <span id="debugPath" class="muted">Home → 安全调试点 → 工位安全接近点 → 目标点</span>
+      </div>
+      <div id="debugInterlock" class="point-config-alert">选择点位后，点击“进入调试并前往该点”。</div>
+
+      <div class="debug-workspace">
+        <div class="debug-position">
+          <div class="section-title">实测夹取中心</div>
+          <div class="debug-pose-grid">
+            <div><span>X</span><strong id="debugPoseX">--</strong></div>
+            <div><span>Y</span><strong id="debugPoseY">--</strong></div>
+            <div><span>Z</span><strong id="debugPoseZ">--</strong></div>
+            <div><span>Roll</span><strong id="debugPoseRoll">--</strong></div>
+            <div><span>Pitch</span><strong id="debugPosePitch">--</strong></div>
+            <div><span>Yaw</span><strong id="debugPoseYaw">--</strong></div>
+          </div>
+          <div id="debugReferenceDelta" class="debug-delta">参考零点未设置</div>
+        </div>
+
+        <div class="debug-jog-panel">
+          <div class="debug-step-row">
+            <label><span>平移步进 mm</span><input id="debugLinearStep" type="number" min="0.5" max="20" step="0.5" value="5"></label>
+            <div class="step-presets" data-step-target="debugLinearStep">
+              <button type="button" data-step-value="2">2</button><button type="button" data-step-value="5">5</button><button type="button" data-step-value="10">10</button><button type="button" data-step-value="20">20</button>
+            </div>
+          </div>
+          <div class="linear-jog-grid">
+            <button class="jog-button" data-jog-axis="y" data-jog-sign="1" type="button">↑<span>前 +Y</span></button>
+            <button class="jog-button" data-jog-axis="x" data-jog-sign="-1" type="button">←<span>左 -X</span></button>
+            <button class="jog-button" data-jog-axis="z" data-jog-sign="1" type="button">▲<span>上 +Z</span></button>
+            <button class="jog-button" data-jog-axis="x" data-jog-sign="1" type="button">→<span>右 +X</span></button>
+            <button class="jog-button" data-jog-axis="y" data-jog-sign="-1" type="button">↓<span>后 -Y</span></button>
+            <button class="jog-button" data-jog-axis="z" data-jog-sign="-1" type="button">▼<span>下 -Z</span></button>
+          </div>
+        </div>
+
+        <div class="debug-rotate-panel">
+          <div class="debug-step-row">
+            <label><span>旋转步进 °</span><input id="debugAngularStep" type="number" min="0.1" max="10" step="0.1" value="1"></label>
+            <div class="step-presets" data-step-target="debugAngularStep">
+              <button type="button" data-step-value="0.5">0.5</button><button type="button" data-step-value="1">1</button><button type="button" data-step-value="2">2</button><button type="button" data-step-value="5">5</button><button type="button" data-step-value="10">10</button>
+            </div>
+          </div>
+          <div class="rotation-jog-grid">
+            <span>Roll / X</span><button class="jog-button" data-jog-rotation="roll" data-jog-sign="-1" type="button">−</button><button class="jog-button" data-jog-rotation="roll" data-jog-sign="1" type="button">+</button>
+            <span>Pitch / Y</span><button class="jog-button" data-jog-rotation="pitch" data-jog-sign="-1" type="button">−</button><button class="jog-button" data-jog-rotation="pitch" data-jog-sign="1" type="button">+</button>
+            <span>Yaw / Z</span><button class="jog-button" data-jog-rotation="yaw" data-jog-sign="-1" type="button">−</button><button class="jog-button" data-jog-rotation="yaw" data-jog-sign="1" type="button">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="debug-tools">
+        <div>
+          <div class="section-title">夹爪</div>
+          <button id="debugGripperOpen" class="cmd neutral" type="button">打开夹爪</button>
+          <button id="debugGripperClose" class="cmd neutral" type="button">闭合夹爪</button>
+        </div>
+        <div class="debug-brush">
+          <div class="section-title">毛刷</div>
+          <label><span>速度</span><input id="debugBrushSpeed" type="range" min="1" max="100" step="1" value="50"><strong id="debugBrushSpeedValue">50%</strong></label>
+          <button id="debugBrushStart" class="cmd primary" type="button">启动毛刷</button>
+          <button id="debugBrushStop" class="cmd neutral" type="button">停止毛刷</button>
+          <button id="debugBrushSave" class="cmd neutral" type="button">保存默认速度</button>
+        </div>
+      </div>
+
+      <div class="debug-final-actions">
+        <button id="debugSave" class="cmd primary" type="button">保存并热重载</button>
+        <button id="debugReferenceZero" class="cmd neutral" type="button">设置调试零点</button>
+        <button id="debugExit" class="cmd warn" type="button">放弃未保存修改并回 Home</button>
+      </div>
+      <div id="debugResult" class="command-result">请选择点位后执行。</div>
+    </section>
+
+    <section class="panel point-config-panel advanced-maintenance" data-page="points">
       <div class="panel-head">
         <h2>固定轨迹目录（主数据源）</h2>
         <div class="point-config-actions">
@@ -292,45 +305,6 @@
         </details>
       </div>
       <div id="motionCatalogResult" class="command-result"></div>
-    </section>
-
-    <section class="panel point-config-panel" data-page="points">
-      <div class="panel-head">
-        <h2>旧状态机参数（迁移期）</h2>
-        <div class="point-config-actions">
-          <span id="pointConfigPath" class="muted">--</span>
-          <button id="pointConfigReload" class="cmd neutral compact" type="button">重新读取</button>
-          <button id="pointConfigSave" class="cmd primary compact" type="button">保存配置</button>
-          <button id="pointConfigApplyReload" class="cmd warn compact" type="button">重载生效</button>
-        </div>
-      </div>
-      <div class="point-config-alert">
-        保存只写入 YAML 文件，不会立即移动机械臂；点击“重载生效”后，空闲或暂停状态下的运行节点会重新读取配置。
-      </div>
-      <div class="point-config-grid">
-        <div class="point-config-list">
-          <div class="section-title">named_poses</div>
-          <select id="pointPoseSelect" size="12"></select>
-        </div>
-        <div class="point-config-editor">
-          <div class="section-title">当前点位</div>
-          <div class="pose-edit-title" id="pointPoseTitle">未选择点位</div>
-          <div class="point-input-grid">
-            <label><span>X m</span><input id="pointX" type="number" step="0.001"></label>
-            <label><span>Y m</span><input id="pointY" type="number" step="0.001"></label>
-            <label><span>Z m</span><input id="pointZ" type="number" step="0.001"></label>
-            <label><span>Roll rad</span><input id="pointRoll" type="number" step="0.001"></label>
-            <label><span>Pitch rad</span><input id="pointPitch" type="number" step="0.001"></label>
-            <label><span>Yaw rad</span><input id="pointYaw" type="number" step="0.001"></label>
-          </div>
-          <div class="point-config-hint" id="pointPoseHint">坐标是 base_link 下 gripper_center 目标点，单位 m/rad。</div>
-        </div>
-        <div class="point-config-params">
-          <div class="section-title">路径和传感器参数</div>
-          <div id="pointParamEditor" class="point-param-editor"></div>
-        </div>
-      </div>
-      <div id="pointConfigResult" class="command-result"></div>
     </section>
 
     <section class="panel laser-panel" data-page="dashboard">
@@ -402,6 +376,19 @@
       <div class="confirm-actions">
         <button id="confirmCancel" class="cmd neutral" type="button">取消</button>
         <button id="confirmOk" class="cmd warn" type="button">确认执行</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="zeroOverlay" class="confirm-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="zeroTitle">
+    <div class="confirm-dialog">
+      <h2 id="zeroTitle">设置调试参考零点</h2>
+      <p>只清零本次调试的相对显示，不修改电机编码器零位。</p>
+      <label class="password-field"><span>维护密码</span><input id="zeroPassword" type="password" autocomplete="current-password"></label>
+      <div id="zeroError" class="modal-error"></div>
+      <div class="confirm-actions">
+        <button id="zeroCancel" class="cmd neutral" type="button">取消</button>
+        <button id="zeroApply" class="cmd warn" type="button">确认设置</button>
       </div>
     </div>
   </div>

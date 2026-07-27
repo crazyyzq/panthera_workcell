@@ -30,6 +30,41 @@ defaults:
   max_lateral_error_m: 0.001
   ik_timeout_sec: 0.1
   ik_attempts: 20
+commissioning:
+  safe_point: safe_joint_center
+  translation_followers:
+    outlet_1_grasp:
+    - point: outlet_1_pregrasp
+      axes: xyz
+    - point: outlet_1_hover
+      axes: xy
+    outlet_2_grasp:
+    - point: outlet_2_pregrasp
+      axes: xyz
+    - point: outlet_2_hover
+      axes: xy
+    spectrometer_place:
+    - point: spectrometer_preplace
+      axes: xyz
+    - point: spectrometer_hover
+      axes: xy
+    spectrometer_pick:
+    - point: spectrometer_prepick
+      axes: xyz
+    - point: spectrometer_pick_hover
+      axes: xy
+    clean_dump:
+    - point: clean_dump_pour
+      axes: xyz
+    - point: clean_dump_shake_relief
+      axes: xyz
+    - point: clean_hover
+      axes: xy
+    - point: clean_dump_hover
+      axes: xy
+    brush_center:
+    - point: brush_entry
+      axes: xyz
 points:
   home_near:
     description: 机械臂近零位，仅用于维护和关机回位。
@@ -1379,3 +1414,113 @@ routes:
       to: outlet_wait
       velocity_scale: 0.85
       acceleration_scale: 0.85
+  debug_safe_to_outlet_1_grasp:
+    start: safe_joint_center
+    velocity_scale: 0.55
+    acceleration_scale: 0.35
+    segments:
+    - {name: enter_outlet_wait, type: joint, to: outlet_wait}
+    - {name: enter_outlet_1_hover, type: joint, to: outlet_1_hover}
+    - name: vertical_to_outlet_1_pregrasp
+      type: linear
+      to: outlet_1_pregrasp
+      constraints: {vertical_axis: z, keep_orientation: true}
+    - name: precision_to_outlet_1_grasp
+      type: linear
+      to: outlet_1_grasp
+      velocity_scale: 0.30
+      acceleration_scale: 0.25
+      constraints: {vertical_axis: z, keep_orientation: true}
+  debug_outlet_1_grasp_to_safe:
+    start: outlet_1_grasp
+    velocity_scale: 0.55
+    acceleration_scale: 0.35
+    segments:
+    - {name: leave_grasp, type: linear, to: outlet_1_pregrasp, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: rise_to_hover, type: linear, to: outlet_1_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: leave_outlet, type: joint, to: outlet_wait}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}
+  debug_safe_to_outlet_2_grasp:
+    start: safe_joint_center
+    velocity_scale: 0.55
+    acceleration_scale: 0.35
+    segments:
+    - {name: enter_outlet_wait, type: joint, to: outlet_wait}
+    - {name: enter_outlet_2_hover, type: joint, to: outlet_2_hover}
+    - {name: vertical_to_outlet_2_pregrasp, type: linear, to: outlet_2_pregrasp, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: precision_to_outlet_2_grasp, type: linear, to: outlet_2_grasp, velocity_scale: 0.30, acceleration_scale: 0.25, constraints: {vertical_axis: z, keep_orientation: true}}
+  debug_outlet_2_grasp_to_safe:
+    start: outlet_2_grasp
+    velocity_scale: 0.55
+    acceleration_scale: 0.35
+    segments:
+    - {name: leave_grasp, type: linear, to: outlet_2_pregrasp, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: rise_to_hover, type: linear, to: outlet_2_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: leave_outlet, type: joint, to: outlet_wait}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}
+  debug_safe_to_spectrometer_place:
+    start: safe_joint_center
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: enter_spectrometer_hover, type: joint, to: spectrometer_hover}
+    - {name: vertical_to_preplace, type: linear, to: spectrometer_preplace, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: precision_to_place, type: linear, to: spectrometer_place, velocity_scale: 0.30, acceleration_scale: 0.25, constraints: {vertical_axis: z, keep_orientation: true}}
+  debug_spectrometer_place_to_safe:
+    start: spectrometer_place
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: leave_place, type: linear, to: spectrometer_preplace, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: rise_from_spectrometer, type: linear, to: spectrometer_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}
+  debug_safe_to_spectrometer_pick:
+    start: safe_joint_center
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: enter_spectrometer_pick_hover, type: joint, to: spectrometer_pick_hover}
+    - {name: vertical_to_prepick, type: linear, to: spectrometer_prepick, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: precision_to_pick, type: linear, to: spectrometer_pick, velocity_scale: 0.30, acceleration_scale: 0.25, constraints: {vertical_axis: z, keep_orientation: true}}
+  debug_spectrometer_pick_to_safe:
+    start: spectrometer_pick
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: leave_pick, type: linear, to: spectrometer_prepick, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: rise_from_spectrometer, type: linear, to: spectrometer_pick_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}
+  debug_safe_to_clean_dump:
+    start: safe_joint_center
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: enter_clean_hover, type: joint, to: clean_hover}
+    - {name: vertical_to_dump, type: linear, to: clean_dump, constraints: {vertical_axis: z, keep_orientation: true}}
+  debug_clean_dump_to_safe:
+    start: clean_dump
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: vertical_leave_dump, type: linear, to: clean_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}
+  debug_safe_to_brush_center:
+    start: safe_joint_center
+    velocity_scale: 0.45
+    acceleration_scale: 0.30
+    segments:
+    - {name: enter_clean_hover, type: joint, to: clean_hover}
+    - {name: vertical_to_dump, type: linear, to: clean_dump, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: rotate_to_pour, type: joint, to: clean_dump_pour}
+    - {name: translate_to_brush_entry, type: linear, to: brush_entry, constraints: {keep_orientation: true}}
+    - {name: insert_brush, type: linear, to: brush_center, velocity_scale: 0.30, acceleration_scale: 0.25, constraints: {keep_orientation: true}}
+  debug_brush_center_to_safe:
+    start: brush_center
+    velocity_scale: 0.45
+    acceleration_scale: 0.30
+    segments:
+    - {name: retract_brush, type: linear, to: brush_entry, velocity_scale: 0.30, acceleration_scale: 0.25, constraints: {keep_orientation: true}}
+    - {name: translate_back_to_pour, type: linear, to: clean_dump_pour, constraints: {keep_orientation: true}}
+    - {name: return_upright, type: joint, to: clean_dump}
+    - {name: vertical_leave_dump, type: linear, to: clean_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}

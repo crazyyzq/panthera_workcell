@@ -15,7 +15,8 @@ Web UI <-> HTTP/SSE <-> panthera_web_hmi ROS2 node <-> ROS2 topics/services
 - 显示激光传感器实时距离、RS485/IO 流程信号、机械臂关节状态。
 - 提供 OUTLET_1/OUTLET_2 出料完成触发、急停、清除急停、人工复位按钮。
 - 急停按钮按现场工业急停风格设计，点击后立即发送急停请求，不做二次确认。
-- 操作台按安全、自动运行、状态机调试、流程信号模拟、手动动作分区。
+- 操作台按安全、自动运行、流程信号模拟和点位示教分区。
+- 点位示教支持 XYZ 和基坐标系 Roll/Pitch/Yaw 点动、夹爪、毛刷及实测点位热保存。
 - 高风险动作有确认弹层，按钮会根据 ESTOP、ERROR、PAUSED、动作中等状态自动禁用。
 - 使用 SSE 实时刷新，HTTP 状态接口可用于调试和第三方接入。
 
@@ -37,24 +38,7 @@ Web HMI 的急停是 ROS2 软件急停入口，真实产线仍必须保留硬接
 - `清除急停`：只在 `ESTOP` 状态开放。
 - `人工复位`：急停清除后或 `ERROR` 状态开放。
 - `启动自动` / `恢复自动`：只在安全空闲、等待出料或暂停状态开放。
-- `单步下一状态`：只在 `PAUSED` 状态开放。
-- `手动动作`：只在 `IDLE` 或 `PAUSED` 且没有活动任务时开放。
-
-### 状态机调试
-
-状态机调试区提供“目标状态请求”，前端不会直接修改状态机变量，只会把请求发送给 HMI 后端。后端再根据当前状态和安全规则决定是否映射到已有 ROS2 service。
-
-当前开放目标：
-
-| 目标状态 | 后端映射 |
-| --- | --- |
-| `ESTOP` | `/spectrometer_cell/simulate_estop` |
-| `RESET` | `/spectrometer_cell/request_reset` |
-| `PAUSED` | `/spectrometer_cell/manual_mode` |
-| `WAIT_DISCHARGE` | `/spectrometer_cell/auto_mode` |
-| `IDLE` | 视当前状态映射到 `request_reset` 或 `manual_mode` |
-
-机器人动作状态，例如 `PICK_FROM_OUTLET`、`PLACE_TO_SPECTROMETER`、`CLEAN_CUP` 等，不允许从 HMI 直接跳入，必须由状态机流程自然进入。
+- `点位示教`：仅允许空任务、未持杯且工位未占用时进入，进入后自动保持 `PAUSED`。
 
 ## 启动
 
@@ -88,7 +72,7 @@ ros2 launch panthera_web_hmi spectrometer_cell_hmi.launch.py \
 浏览器打开：
 
 ```text
-http://192.168.199.168:8080
+http://192.168.137.186:8080
 ```
 
 ## Gemini305 相机
@@ -158,20 +142,6 @@ Content-Type: application/json
 {"command": "outlet_1_done"}
 ```
 
-发送状态请求：
-
-```text
-POST /api/state_request
-Content-Type: application/json
-
-{
-  "target_state": "WAIT_DISCHARGE",
-  "reason": "manual debug after safety check",
-  "force": false,
-  "source": "web_hmi"
-}
-```
-
 可用命令：
 
 | Web 命令 | 默认 ROS2 service |
@@ -183,13 +153,6 @@ Content-Type: application/json
 | `request_reset` | `/spectrometer_cell/request_reset` |
 | `manual_mode` | `/spectrometer_cell/manual_mode` |
 | `auto_mode` | `/spectrometer_cell/auto_mode` |
-| `step_once` | `/spectrometer_cell/step_once` |
-| `workflow_visible_motion_check` | `/run_workflow` + `visible_motion_check` |
-| `workflow_fixed_large_motion_demo` | `/run_workflow` + `fixed_large_motion_demo` |
-| `workflow_cup_pick_place` | `/run_workflow` + `cup_pick_place` |
-| `workflow_arm_home` | `/run_workflow` + `arm_home` |
-| `workflow_gripper_open` | `/run_workflow` + `gripper_open` |
-| `workflow_gripper_close` | `/run_workflow` + `gripper_close` |
 
 ## ROS2 订阅接口
 
@@ -222,7 +185,6 @@ Content-Type: application/json
 | `service_request_reset` | `/spectrometer_cell/request_reset` | 人工复位 service |
 | `service_manual_mode` | `/spectrometer_cell/manual_mode` | 切换人工/暂停 service |
 | `service_auto_mode` | `/spectrometer_cell/auto_mode` | 启动/恢复自动 service |
-| `service_step_once` | `/spectrometer_cell/step_once` | 单步推进 service |
 
 ## 现场建议
 
@@ -244,39 +206,29 @@ curl http://127.0.0.1:18080/api/status
 curl -I http://127.0.0.1:18080/api/camera/rgb.bmp
 curl -I http://127.0.0.1:18080/api/camera/depth.bmp
 ```
-## 点位配置调试页面
+## 机械臂点位示教
 
-HMI 首页新增 `点位配置调试` 面板，用来直接编辑：
+标准操作顺序：
 
-- `named_poses` 中所有点位的 `xyz` 和 `rpy`
-- `motion` 中出料口、光谱仪、清理区的中间过渡参数
-- `spectrometer_axis` 中激光测距换算参数
-- `cleaning` 中倒料和摆动参数
+1. 选择带 `tunable` 标签的工艺点并点击 `执行到点位`。
+2. 系统暂停自动流程，验证或恢复原始 Home，再经过安全调试点到目标点。
+3. 设置平移步进（MIT 模式 2–20 mm，默认/推荐 5 mm）或角度步进，通过右、左、前、后、上、下及 Roll/Pitch/Yaw 按钮点动；以页面显示的实测 TCP 为准。
+4. 按需测试夹爪和毛刷；毛刷速度可保存为下次默认值。
+5. 点击 `保存点位并热重载`。后端读取实测 TCP，更新关联接近点，编译全部路线后原子保存。
+6. 点击 `放弃未保存并回 Home` 安全退出；自动流程仍保持暂停，由操作员确认后恢复。
 
-使用流程：
+坐标映射固定为 `+X=右`、`+Y=前`、`+Z=上`，旋转也以 `base_link` 为基准。单次平移上限 20 mm，单次旋转上限 10 度。任一步编译或热重载失败都会恢复原目录。
 
-1. 打开 HMI。
-2. 在 `点位配置调试` 面板点击 `重新读取`。
-3. 选择左侧点位，修改 `X/Y/Z` 和 `Roll/Pitch/Yaw`。
-4. 按需修改右侧路径参数。
-5. 点击 `保存配置`。
-6. 点击 `重载生效`，让 `spectrometer_cell` 重新读取已保存的配置。
+密码保护的 `设置调试零点` 只改变当前会话的相对读数，不写电机编码器、不修改原始 Home。高级目录维护仍可编辑 `motion_catalog.yaml`，但不应作为日常点位微调入口。
 
-保存动作只会写入 YAML 文件，不会立即移动机械臂；`重载生效` 只刷新运行节点配置，也不会主动执行动作。每次保存都会自动生成备份文件：
+示教 API：
 
 ```text
-spectrometer_cell.yaml.bak_YYYYMMDD_HHMMSS
-```
-
-默认编辑的配置文件：
-
-```text
-/home/b1/panthera_workcell_ws/src/panthera_spectrometer_cell/config/spectrometer_cell.yaml
-```
-
-也可以通过 HMI 节点参数覆盖：
-
-```bash
-ros2 run panthera_web_hmi web_hmi_node --ros-args \
-  -p point_config_path:=/home/b1/panthera_workcell_ws/src/panthera_spectrometer_cell/config/spectrometer_cell.yaml
+POST /api/debug/enter
+POST /api/debug/jog
+POST /api/debug/save
+POST /api/debug/exit
+POST /api/debug/gripper
+POST /api/debug/brush
+POST /api/debug/reference_zero
 ```

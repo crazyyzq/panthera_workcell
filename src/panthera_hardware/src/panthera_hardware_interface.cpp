@@ -10,6 +10,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
@@ -59,6 +60,39 @@ bool isPlausibleArmPosition(double position)
   // The vendor SDK uses 999 as a communication/status sentinel. No Panthera
   // arm joint can physically approach this range.
   return std::isfinite(position) && std::abs(position) <= 10.0;
+}
+
+bool readMedianArmPositions(
+  panthera::Panthera & robot,
+  std::array<double, 6> & median_positions)
+{
+  // Serial devices can expose a cached/999 frame while coming online. Never
+  // use one frame as the first MIT position target.
+  std::array<std::vector<double>, 6> samples;
+  for (int attempt = 0; attempt < 10 && samples[0].size() < 5; ++attempt) {
+    robot.send_get_motor_state_cmd();
+    robot.motor_send_cmd();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    const auto positions = robot.getCurrentPos();
+    if (positions.size() < 6 ||
+      !std::all_of(
+        positions.begin(), positions.begin() + 6,
+        [](double position) {return isPlausibleArmPosition(position);}))
+    {
+      continue;
+    }
+    for (std::size_t joint = 0; joint < 6; ++joint) {
+      samples[joint].push_back(positions[joint]);
+    }
+  }
+  if (samples[0].size() < 5) {
+    return false;
+  }
+  for (std::size_t joint = 0; joint < 6; ++joint) {
+    std::nth_element(samples[joint].begin(), samples[joint].begin() + 2, samples[joint].end());
+    median_positions[joint] = samples[joint][2];
+  }
+  return true;
 }
 
 bool parseGainVector(const char * value, std::vector<double> & gains)
@@ -462,15 +496,16 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
   // Read initial joint states
   try
   {
-    robot_->send_get_motor_state_cmd();
-    robot_->motor_send_cmd();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Read 6 arm joint states
-    auto positions = robot_->getCurrentPos();
+    std::array<double, 6> positions{};
+    if (!readMedianArmPositions(*robot_, positions)) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        "Failed to collect five valid arm-state samples during configuration");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
     auto velocities = robot_->getCurrentVel();
     auto torques = robot_->getCurrentTorque();
-    if (positions.size() < 6 || velocities.size() < 6 || torques.size() < 6)
+    if (velocities.size() < 6 || torques.size() < 6)
     {
       RCLCPP_ERROR_THROTTLE(
         rclcpp::get_logger("PantheraHardwareInterface"),
@@ -485,12 +520,6 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
 
     for (size_t i = 0; i < 6; i++)
     {
-      if (!isPlausibleArmPosition(positions[i])) {
-        RCLCPP_ERROR(
-          rclcpp::get_logger("PantheraHardwareInterface"),
-          "Reject invalid initial arm state on joint %zu: %.6f", i + 1, positions[i]);
-        return hardware_interface::CallbackReturn::ERROR;
-      }
       hw_positions_[i] = positions[i];
       hw_velocities_[i] = velocities[i];
       hw_efforts_[i] = torques[i];
@@ -589,26 +618,16 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_activate(
   // Read current state and set as command
   try
   {
-    // The SDK can expose one cached/stale frame while the serial devices are
-    // coming online. Never latch a single frame as the first MIT target.
-    std::array<std::vector<double>, 6> position_samples;
-    for (int attempt = 0; attempt < 10 && position_samples[0].size() < 5; ++attempt) {
-      robot_->send_get_motor_state_cmd();
-      robot_->motor_send_cmd();
-      std::this_thread::sleep_for(std::chrono::milliseconds(30));
-      const auto positions = robot_->getCurrentPos();
-      if (positions.size() < 6 ||
-        !std::all_of(
-          positions.begin(), positions.begin() + 6,
-          [](double position) {return isPlausibleArmPosition(position);}))
-      {
-        continue;
-      }
-      for (size_t i = 0; i < 6; ++i) {
-        position_samples[i].push_back(positions[i]);
-      }
-    }
-    if (position_samples[0].size() < 5) {
+    // on_deactivate() leaves every motor in brake mode. Explicitly restart the
+    // motor boards before activation; normal MIT writes can otherwise report
+    // success while the joints remain braked.
+    robot_->set_reset();
+    RCLCPP_INFO(
+      rclcpp::get_logger("PantheraHardwareInterface"),
+      "Motor boards restarted to clear brake mode");
+
+    std::array<double, 6> positions{};
+    if (!readMedianArmPositions(*robot_, positions)) {
       RCLCPP_ERROR(
         rclcpp::get_logger("PantheraHardwareInterface"),
         "Failed to collect five valid arm-state samples during activation");
@@ -618,10 +637,8 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_activate(
     // Read 6 arm joint positions
     for (size_t i = 0; i < 6; i++)
     {
-      auto & samples = position_samples[i];
-      std::nth_element(samples.begin(), samples.begin() + 2, samples.end());
-      hw_positions_[i] = samples[2];
-      hw_commands_positions_[i] = samples[2];
+      hw_positions_[i] = positions[i];
+      hw_commands_positions_[i] = positions[i];
     }
 
     // Read gripper position (7th joint, index 6 = L_finger_joint) if present
@@ -919,6 +936,33 @@ hardware_interface::return_type PantheraHardwareInterface::write(
       arm_efforts[index] = std::clamp(
         arm_efforts[index], -arm_max_torques[index], arm_max_torques[index]);
     }
+
+    // The CAN bridge supports one packet mode at a time. The gripper is most
+    // reliable in its native pos/vel/max-torque mode, so send it first and
+    // always finish the cycle with the six-axis command below. Reversing this
+    // order leaves the arm without refreshed MIT commands and can drop joints.
+    if (info_.joints.size() > 6)
+    {
+      const double gripper_pos_m = hw_commands_positions_[6];
+      if (!std::isfinite(gripper_pos_m) || gripper_rad_to_m_ <= 0.0) {
+        RCLCPP_ERROR_THROTTLE(
+          rclcpp::get_logger("PantheraHardwareInterface"),
+          throttle_clock_, 1000,
+          "Rejected invalid gripper command or conversion factor");
+        return hardware_interface::return_type::ERROR;
+      }
+      const double gripper_pos_rad = gripper_pos_m / gripper_rad_to_m_;
+      constexpr double kProtocolVelocityLimitRad = 50.0;
+      const double gripper_vel_rad = std::clamp(
+        max_velocities_[6] / gripper_rad_to_m_,
+        0.0, kProtocolVelocityLimitRad);
+      if (!robot_->gripperControl(
+          gripper_pos_rad, gripper_vel_rad, max_torques_[6]))
+      {
+        return hardware_interface::return_type::ERROR;
+      }
+    }
+
     // Control 6 arm joints. Never report a successful hardware cycle when the
     // vendor SDK rejected the command.
     bool arm_command_ok = false;
@@ -987,52 +1031,6 @@ hardware_interface::return_type PantheraHardwareInterface::write(
       return hardware_interface::return_type::ERROR;
     }
 
-    // Control gripper (7th joint, index 6) if present
-    // Convert from meters to radians for hardware
-    if (info_.joints.size() > 6)
-    {
-      double gripper_pos_m = hw_commands_positions_[6];
-      if (!std::isfinite(gripper_pos_m) || gripper_rad_to_m_ <= 0.0) {
-        RCLCPP_ERROR_THROTTLE(
-          rclcpp::get_logger("PantheraHardwareInterface"),
-          throttle_clock_, 1000,
-          "Rejected invalid gripper command or conversion factor");
-        return hardware_interface::return_type::ERROR;
-      }
-      double gripper_pos_rad = gripper_pos_m / gripper_rad_to_m_;
-      double gripper_vel_m =
-        control_mode_ == "full_control" ? hw_commands_velocities_[6] : max_velocities_[6];
-      gripper_vel_m = std::clamp(
-        gripper_vel_m, -max_velocities_[6], max_velocities_[6]);
-      double gripper_vel_rad = gripper_vel_m / gripper_rad_to_m_;
-      constexpr double kProtocolVelocityLimitRad = 50.0;
-      gripper_vel_rad = std::clamp(
-        gripper_vel_rad, -kProtocolVelocityLimitRad, kProtocolVelocityLimitRad);
-      double gripper_max_torque = max_torques_[6];
-
-      if (control_mode_ == "full_control")
-      {
-        // Use MIT mode for gripper
-        double gripper_torque = hw_commands_efforts_[6];
-        double gripper_kp = kp_gains_[6];
-        double gripper_kd = kd_gains_[6];
-        if (!robot_->gripperControlMIT(
-            gripper_pos_rad, gripper_vel_rad, gripper_torque,
-            gripper_kp, gripper_kd))
-        {
-          return hardware_interface::return_type::ERROR;
-        }
-      }
-      else
-      {
-        // Use posVelMaxTorque mode for gripper
-        if (!robot_->gripperControl(
-            gripper_pos_rad, std::abs(gripper_vel_rad), gripper_max_torque))
-        {
-          return hardware_interface::return_type::ERROR;
-        }
-      }
-    }
   }
   catch (const std::exception & e)
   {

@@ -16,7 +16,6 @@ def generate_launch_description():
     start_camera = LaunchConfiguration('start_camera')
     start_workflow = LaunchConfiguration('start_workflow')
     start_laser = LaunchConfiguration('start_laser')
-    start_pose_tuner = LaunchConfiguration('start_pose_tuner')
     rgb_topic = LaunchConfiguration('rgb_topic')
     depth_topic = LaunchConfiguration('depth_topic')
     compressed_rgb_topic = LaunchConfiguration('compressed_rgb_topic')
@@ -125,20 +124,6 @@ def generate_launch_description():
         }.items(),
     )
 
-    pose_tuner_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare('panthera_pose_tuner'),
-                'launch',
-                'pose_tuner.launch.py',
-            ])
-        ]),
-        launch_arguments={
-            'execute_motion': 'true',
-        }.items(),
-        condition=IfCondition(start_pose_tuner),
-    )
-
     web_node = Node(
         package='panthera_web_hmi',
         executable='web_hmi_node',
@@ -173,7 +158,6 @@ def generate_launch_description():
         DeclareLaunchArgument('start_camera', default_value='false'),
         DeclareLaunchArgument('start_workflow', default_value='false'),
         DeclareLaunchArgument('start_laser', default_value='false'),
-        DeclareLaunchArgument('start_pose_tuner', default_value='false'),
         DeclareLaunchArgument('rgb_topic', default_value='/camera/color/image_raw'),
         DeclareLaunchArgument('depth_topic', default_value='/camera/depth/image_raw'),
         DeclareLaunchArgument('compressed_rgb_topic', default_value='/camera/color/image_raw/compressed'),
@@ -207,6 +191,5 @@ def generate_launch_description():
         camera_launch,
         workflow_launch,
         rs485_launch,
-        pose_tuner_launch,
         web_node,
     ])

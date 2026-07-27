@@ -25,6 +25,7 @@
   <exec_depend>panthera_spectrometer_cell</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>panthera_ht_config</exec_depend>
+  <exec_depend>panthera_rs485</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>

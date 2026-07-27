@@ -7,6 +7,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include "panthera_interfaces/srv/set_speed_scale.hpp"
+#include "panthera_interfaces/srv/set_brush.hpp"
 #include "panthera_spectrometer_cell/Config.h"
 #include "panthera_spectrometer_cell/RobotActions.h"
 #include "panthera_spectrometer_cell/Sensors.h"
@@ -66,10 +67,13 @@ int main(int argc, char ** argv)
 
   RCLCPP_INFO(
     node->get_logger(),
-    "starting panthera spectrometer cell: config=%s simulation=%s tick_rate=%.2fHz",
+    "starting panthera spectrometer cell: config=%s simulation=%s tick_rate=%.2fHz "
+    "motion_backend=%s fixed_start=%s",
     config_file.c_str(),
     config.simulation.enabled ? "true" : "false",
-    config.loop.tickRateHz);
+    config.loop.tickRateHz,
+    config.motion.backend.c_str(),
+    config.motion.fixedStartPoint.c_str());
 
   auto robot = std::make_shared<panthera_spectrometer_cell::RobotActions>(node, config);
   auto sensors = std::make_shared<panthera_spectrometer_cell::Sensors>(node, config);
@@ -92,6 +96,62 @@ int main(int argc, char ** argv)
       response->applied_scale = robot->speedScale();
     });
 
+  auto debug_callback_group = node->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  auto gripper_open_service = node->create_service<std_srvs::srv::Trigger>(
+    "/spectrometer_cell/debug/gripper_open",
+    [robot, state_machine](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+      if (state_machine->currentState() != panthera_spectrometer_cell::State::PAUSED) {
+        response->success = false;
+        response->message = "gripper debug command requires PAUSED state";
+        return;
+      }
+      const auto result = robot->openGripper();
+      response->success = result.success;
+      response->message = result.message;
+    },
+    rmw_qos_profile_services_default,
+    debug_callback_group);
+  auto gripper_close_service = node->create_service<std_srvs::srv::Trigger>(
+    "/spectrometer_cell/debug/gripper_close",
+    [robot, state_machine](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+      if (state_machine->currentState() != panthera_spectrometer_cell::State::PAUSED) {
+        response->success = false;
+        response->message = "gripper debug command requires PAUSED state";
+        return;
+      }
+      const auto result = robot->closeGripper();
+      response->success = result.success;
+      response->message = result.message;
+    },
+    rmw_qos_profile_services_default,
+    debug_callback_group);
+  auto brush_service = node->create_service<panthera_interfaces::srv::SetBrush>(
+    "/spectrometer_cell/debug/set_brush",
+    [robot, state_machine](
+      const std::shared_ptr<panthera_interfaces::srv::SetBrush::Request> request,
+      std::shared_ptr<panthera_interfaces::srv::SetBrush::Response> response) {
+      if (request->enabled &&
+        state_machine->currentState() != panthera_spectrometer_cell::State::PAUSED)
+      {
+        response->success = false;
+        response->message = "brush start requires PAUSED state";
+        response->enabled = false;
+        response->applied_speed_percent = 0.0;
+        return;
+      }
+      const auto result = robot->setBrush(request->enabled, request->speed_percent);
+      response->success = result.success;
+      response->message = result.message;
+      response->enabled = result.success && request->enabled;
+      response->applied_speed_percent = response->enabled ? request->speed_percent : 0.0;
+    },
+    rmw_qos_profile_services_default,
+    debug_callback_group);
+
   auto stop_callback_group = node->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   auto stop_motion_service = node->create_service<std_srvs::srv::Trigger>(
     "/spectrometer_cell/stop_motion",
@@ -99,6 +159,18 @@ int main(int argc, char ** argv)
       const std::shared_ptr<std_srvs::srv::Trigger::Request>,
       std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
       const auto result = robot->stop();
+      response->success = result.success;
+      response->message = result.message;
+    },
+    rmw_qos_profile_services_default,
+    stop_callback_group);
+
+  auto recover_home_service = node->create_service<std_srvs::srv::Trigger>(
+    "/spectrometer_cell/recover_home",
+    [robot](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+      const auto result = robot->recoverHomeAfterError();
       response->success = result.success;
       response->message = result.message;
     },

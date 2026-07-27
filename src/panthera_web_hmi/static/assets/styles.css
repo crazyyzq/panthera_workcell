@@ -324,6 +324,26 @@ h2 {
   font-weight: 800;
 }
 
+.software-stop-note {
+  margin-top: 10px;
+  color: #991b1b;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.maintenance-signals summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.maintenance-signals[open] summary {
+  margin-bottom: 12px;
+}
+
 .hidden {
   display: none !important;
 }
@@ -579,14 +599,18 @@ h2 {
   gap: 10px;
 }
 
-.point-input-grid label,
-.point-param-row {
+.point-input-grid input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.point-input-grid label {
   display: grid;
   gap: 5px;
 }
 
-.point-input-grid span,
-.point-param-row span {
+.point-input-grid span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
@@ -597,32 +621,6 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
-}
-
-.point-param-editor {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.point-param-group {
-  min-width: 0;
-}
-
-.point-param-group h3 {
-  margin: 0 0 8px;
-  color: #334155;
-  font-size: 13px;
-}
-
-.point-param-row {
-  margin-bottom: 8px;
-}
-
-.point-param-array {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
 }
 
 .estop-zone {
@@ -1232,6 +1230,193 @@ button.failed {
   gap: 10px;
 }
 
+.commissioning-panel {
+  grid-column: 1 / -1;
+}
+
+.debug-entry-row,
+.debug-step-row,
+.debug-tools,
+.debug-final-actions {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.debug-entry-row label,
+.debug-step-row label {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.debug-entry-row select,
+.debug-step-row input,
+.password-field input {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #fff;
+  color: var(--text);
+}
+
+.debug-workspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(330px, 1.2fr) minmax(260px, 0.8fr);
+  gap: 18px;
+  margin-top: 18px;
+  padding-block: 18px;
+  border-block: 1px solid var(--line);
+}
+
+.debug-pose-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.debug-pose-grid div {
+  min-height: 58px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  display: grid;
+  align-content: center;
+}
+
+.debug-pose-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.debug-pose-grid strong {
+  margin-top: 3px;
+  font-size: 15px;
+}
+
+.debug-delta {
+  margin-top: 10px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.step-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.step-presets button {
+  min-width: 38px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #f8fafc;
+  color: #334155;
+}
+
+.linear-jog-grid {
+  width: min(100%, 380px);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(86px, 1fr));
+  grid-template-areas:
+    ". front ."
+    "left up right"
+    ". back down";
+  gap: 8px;
+  margin: 14px auto 0;
+}
+
+.linear-jog-grid .jog-button:nth-child(1) { grid-area: front; }
+.linear-jog-grid .jog-button:nth-child(2) { grid-area: left; }
+.linear-jog-grid .jog-button:nth-child(3) { grid-area: up; }
+.linear-jog-grid .jog-button:nth-child(4) { grid-area: right; }
+.linear-jog-grid .jog-button:nth-child(5) { grid-area: back; }
+.linear-jog-grid .jog-button:nth-child(6) { grid-area: down; }
+
+.jog-button {
+  min-width: 0;
+  height: 62px;
+  border: 1px solid #94a3b8;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.jog-button span {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.jog-button:hover:not(:disabled),
+.step-presets button:hover:not(:disabled) {
+  background: var(--blue-soft);
+  border-color: #60a5fa;
+}
+
+.jog-button:active:not(:disabled) {
+  background: #dbeafe;
+}
+
+.rotation-jog-grid {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) 58px 58px;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.rotation-jog-grid .jog-button {
+  height: 48px;
+}
+
+.debug-tools {
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-top: 16px;
+}
+
+.debug-tools > div {
+  min-width: 280px;
+}
+
+.debug-brush label {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) 52px;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.debug-final-actions {
+  margin-top: 16px;
+}
+
+.advanced-maintenance {
+  opacity: 0.94;
+}
+
+.password-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.modal-error {
+  min-height: 20px;
+  color: var(--red);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
 @media (max-width: 1420px) {
   .layout {
     grid-template-columns: minmax(320px, 0.95fr) minmax(440px, 1.2fr);
@@ -1282,6 +1467,14 @@ button.failed {
   .camera-frame {
     min-height: 210px;
   }
+
+  .debug-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .point-config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 620px) {
@@ -1310,6 +1503,25 @@ button.failed {
 
   .flow-item {
     grid-template-columns: 24px 1fr;
+  }
+
+  .debug-entry-row,
+  .debug-step-row,
+  .debug-final-actions,
+  .debug-tools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .debug-entry-row label,
+  .debug-step-row label,
+  .debug-tools > div {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .debug-pose-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .flow-cn {

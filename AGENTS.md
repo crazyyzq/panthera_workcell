@@ -5,8 +5,9 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- Current controller address: `172.20.10.2`. The Windows share is
-  `\\172.20.10.2\b1s_share\panthera_workcell_ws` and maps to the canonical workspace.
+- Current controller address: `192.168.137.186`. The Windows share is
+  `\\192.168.137.186\b1s_share\panthera_workcell_ws` and maps to the canonical
+  workspace. Treat older `10.89.*`, `172.20.*`, and `192.168.8.*` addresses as stale.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -22,7 +23,7 @@ This file contains durable repository context and operating rules for future age
 - `src/panthera_interfaces`: shared ROS messages and services.
 - `src/panthera_task_framework`: legacy YAML workflow executor; currently plans each motion with MoveIt.
 - `src/panthera_spectrometer_cell`: production-oriented spectrometer state machine and its current duplicated MoveIt `RobotActions` implementation.
-- `src/panthera_pose_tuner`: legacy point tuner with hard-coded point definitions.
+- `src/panthera_pose_tuner`: legacy point tuner with hard-coded point definitions; it is no longer launched or exposed by the production HMI.
 - `src/panthera_web_hmi`: ROS/Web bridge and static HMI.
 - `src/panthera_rs485`: serial/Modbus, laser and RS485 state adapters.
 - `src/panthera_io`: optional GPIO/DIDO adapter; real GPIO is disabled by default because the installed interface board/pinmux is not confirmed.
@@ -50,14 +51,27 @@ This file contains durable repository context and operating rules for future age
 - Commissioned MIT arm gains are `Kp=[60,60,60,60,60,60]` and
   `Kd=[5.5,5.5,5.5,5.5,5.5,5.5]`. They are launch-configurable but malformed, non-finite, or
   negative vectors must fail closed. The gripper stays on retained position control.
+- The vendor CAN bridge has one packet mode per CAN port. The six arm motors use
+  MIT, while motor 7 (the gripper) uses its proven pos/vel/max-torque mode. In every
+  hardware write cycle send the gripper packet first and the six-axis MIT packet
+  last. Sending arm MIT first and gripper pos/vel last clears the six MIT fields to
+  `0x8000`, starves joints of refreshed holding commands, and caused the repeatable
+  random joint death/J4 collapse. Forcing motor 7 into MIT did not move the gripper.
+  Do not reverse this ordering or mix another packet mode after the arm command.
+- `on_deactivate()` brakes the motors, so `on_activate()` must reset the motor boards
+  before latching encoder state and accepting controller commands. A controller can
+  otherwise report `active` while the physical joints remain braked.
 - The 2026-07-24 physical acceptance found that the upstream all-axis gravity
   scale `[1,1,1,1,1,1]` causes unsafe joint drift on this arm. The current
-  machine calibration is `[0,1,1.5,0,0,0]`: it held at startup and tracked the
+  machine calibration is `[0,1,1.5,1,0,0]`: it held at startup and tracked the
   `home_to_safe_center` joint target within 0.024 rad in a direct-controller test.
   Keep the scale launch-configurable and do not restore the upstream default
   without a new staged physical acceptance.
-- Hardware activation must latch a median of multiple valid encoder frames, never
-  one SDK frame. A single-frame latch produced a repeatable joint1 startup drift.
+- Hardware configuration and activation must each latch the median of five valid
+  encoder frames collected over up to ten SDK reads, never one frame. The SDK
+  reports `999` while a serial motor is still coming online; treat that as a
+  retryable invalid sample, not a joint position and not an immediate process
+  crash. A single-frame latch produced a repeatable joint1 startup drift.
 - The SDK can continuously report quantized nonzero velocity while the encoder
   position is stationary (joint5 repeatedly reported about `0.062 rad/s`). Motion
   Server therefore estimates settled motion from an 11-frame least-squares encoder
@@ -96,6 +110,10 @@ This file contains durable repository context and operating rules for future age
   `brush_entry_to_outlet_1_return_continuous`); other main segments were about
   4.7-6.5 rad/s^2. Treat joint6 continuous retiming/blending as the next motion
   optimization; do not tune MIT Kp/Kd to mask this trajectory-level discontinuity.
+- Joints 1-5 use route path tolerance `0.15 rad` (or `0.20 rad` during
+  pouring). Joint6 alone uses `0.45 rad` path tolerance because a measured
+  `0.3536 rad` transient wrist lag caused a false abort at the former `0.35 rad`
+  boundary; final position/velocity tolerances remain strict.
 - Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
 - The cleaning brush motor driver is AQMD6030NS-A3 on `/dev/ttyS8`, Modbus RTU
   slave `0x02`, default `9600/8E1`. Its SW8 must be ON. The manual uses an
@@ -113,6 +131,9 @@ This file contains durable repository context and operating rules for future age
 - Production gripper close is a retained position target of `0.0 m`; it must remain
   commanded until an explicit release/open operation. Do not auto-release because
   contact prevents the encoder from reaching zero.
+- Gripper path tolerance must not include a nonzero velocity tolerance. The SDK reports
+  quantized finger velocity while opening/closing, and applying the final settled
+  velocity threshold to the whole path caused immediate false aborts.
 - After brush cleaning, first retract from `brush_center` to `brush_entry` along the
   calibrated cup axis, then lift vertically to `brush_clear_high` (`z=0.45 m`) before
   crossing to outlet 1. A direct low transfer from `brush_entry` toward the outlet can
@@ -120,6 +141,31 @@ This file contains durable repository context and operating rules for future age
 - Never execute real robot motion merely to test a code change. Use build, unit, simulation and dry-run validation first.
 - Before real motion, confirm the workspace is clear, hardware E-stop is available, the controller is healthy, the robot is stationary, and the current joints are within the trajectory start tolerance.
 - Never silently bridge an arbitrary current state to a cached trajectory. Reject start mismatch or use a separately commissioned recovery route.
+- A transient controller path-tolerance violation gets one bounded suffix resume:
+  wait for measured settling, require the current state within `0.50 rad` of the
+  unexecuted trajectory, restart from the nearest remaining point with measured
+  zero velocity and at least a 0.25-second first interval. Never loop retries or
+  resume an unknown/divergent pose.
+- Fixed-motion startup requires fresh encoders within `0.05 rad` of commissioned
+  Home. The dedicated recovery service may use the configured `0.50 rad` envelope
+  and a 10-second smooth trajectory, followed by a fresh encoder confirmation.
+  This was physically validated from a J4 fault pose about `0.31 rad` from Home.
+  Outside that envelope, keep the arm enabled and holding for operator inspection.
+  The `INIT` state must never invent an automatic Home path from an unknown pose.
+- One-key start/stop must bound every ROS CLI call. It terminates stale daemon and
+  non-launch `ros2 action/control/node/param/service/topic/...` clients, but never
+  the active `ros2 launch` process during a healthy idempotent start. Startup READY
+  also requires fresh encoders and nontrivial J2+J3+J4 holding effort; controller
+  lifecycle state alone is insufficient.
+- A 2026-07-27 maintenance test confirmed that a large direct interpolation from
+  a gravity-loaded lowered pose to Home can initially lower joint4 further.
+  After physical clearance is confirmed, manual maintenance recovery must first
+  use the commissioned `safe_joint_center`, settle and verify encoders, then move
+  to original Home. Do not turn this into automatic unknown-pose recovery.
+- After any abnormal impact, loud mechanical noise, dropped link, dead joint, or
+  suspected collision, stop motion and require a physical mechanical/wiring
+  inspection plus explicit operator confirmation before re-energizing. Passing
+  software state or encoder checks alone is not sufficient.
 - Only one node may command `/arm_controller/follow_joint_trajectory`.
 - A software stop/HMI button is not a replacement for a wired hardware E-stop.
 - Config reload is allowed only while idle/paused and with no active motion goal. New config becomes active only after complete validation/compilation succeeds.
@@ -145,8 +191,8 @@ This file contains durable repository context and operating rules for future age
   to `0.523599 rad` (30 degrees). This is an engineering assumption, not completed
   physical validation; confirm brush direction at low speed before insertion.
 - Spectrometer sensor correction axis is inconsistent across historical docs/config (X versus Y). Confirm physical direction before enabling sensor mode.
-- HMI exposes full point/route CRUD for `motion_catalog.yaml`. Saves use schema checks, Motion Server compilation, atomic replacement and automatic rollback. The lower legacy state-machine parameter editor remains only during migration.
-- The optimized catalog has 17 points and 23 routes. Only 6 points carry the `tunable`
+- HMI exposes full point/route CRUD for `motion_catalog.yaml`. Saves use schema checks, Motion Server compilation, atomic replacement and automatic rollback. The legacy numeric point editor and MoveIt pose-tuner controls have been removed; do not add a second point source.
+- The optimized catalog has 24 points and 63 routes. Only 6 points carry the `tunable`
   tag and appear in the normal HMI view; `advanced` hover/recovery points are hidden by
   default. Do not reintroduce per-action approach/pre/near/retreat points unless measured
   collision evidence requires them.
@@ -164,6 +210,54 @@ This file contains durable repository context and operating rules for future age
   AQMD communication and short 10%/50% duty-cycle operation were physically verified
   at slave `0x02`; steady PWM read back as 100/500 and 0 after each stop command.
 
+## HMI point commissioning
+
+- Point commissioning uses the same fixed-trajectory compiler and `/motion/execute`
+  action as production. It must not create another controller publisher or start
+  MoveGroup/`panthera_pose_tuner`.
+- The operator mapping is base-frame `+X=right`, `+Y=front`, `+Z=up`. Roll, pitch,
+  and yaw jogs are also about base-frame axes. One request may change exactly one
+  degree of freedom; the backend rejects translation above 20 mm or rotation above
+  10 degrees per click.
+- MIT static joint tracking error can swallow small Cartesian commands near the
+  extended outlet pose. Translation requests are limited to `2..20 mm`, rotations to
+  `0.1..10 deg`, and exactly one axis per request. Never amplify or automatically
+  repeat a failed jog: that accumulated a 17.8 mm TCP error in real testing. Every
+  completed jog is checked against the measured TCP (`2 mm`, `1.5 deg`); an inaccurate
+  result locks the session in `error` and requires the encoder-confirmed safe exit.
+  Save the measured TCP, never the nominal command.
+- Entering a tunable point pauses the state machine, verifies or recovers to original
+  Home, then runs `home_to_safe_center` and the point's validated
+  `debug_safe_to_<point>` route. Exiting must not replay inverse jogs: MIT endpoint
+  error accumulates and made that sequence diverge. Instead, align the measured
+  current state into `debug_<point>_to_safe` within its dedicated 0.50 rad limit,
+  then run `safe_center_to_home`; automatic mode remains paused. If either safe-exit
+  route fails, keep power enabled and use encoder-confirmed Home recovery as the
+  final fallback.
+- All commissioning operations are serialized. Gripper and brush commands are
+  accepted only in an active, ready commissioning session. The brush remains owned
+  by `panthera_spectrometer_cell` through the verified Modbus driver.
+- While a commissioning session is active, the HMI backend must reject production
+  auto/workflow/cycle commands, global speed changes, and external catalog/config
+  reloads even if another browser bypasses disabled buttons. Only the commissioning
+  save paths may perform their validated internal atomic reload. Emergency stop,
+  clear-estop, reset, and staying paused remain available.
+- Production outlet and detection signals are state-gated in the HMI backend as
+  well as in the browser. A cycle starts only from an empty `IDLE`/`WAIT_DISCHARGE`
+  boundary, and detection completion is accepted only from
+  `WAIT_DETECTION_DONE` (or a pause whose resume target is that state).
+- Commissioning translation jogs accept 0.5-20 mm per command; rotation jogs
+  accept 0.1-10 degrees. Keep the browser limits and backend validation identical.
+- The red HMI control is explicitly a software stop and must never be labelled or
+  presented as a substitute for the wired hardware E-stop.
+- Save always samples a fresh measured `base_link -> gripper_center` transform,
+  updates the selected canonical point and its declared translation followers,
+  compiles every enabled route, atomically replaces the YAML, and reloads only on
+  complete success. A compile/reload failure must restore the previous catalog.
+- The password-protected "zero" control sets only a temporary relative display
+  reference for the current commissioning session. It does not reset motor encoders,
+  alter the commissioned Home vector, or persist a hardware zero.
+
 ## Build and validation
 
 Run on the Ubuntu target:
@@ -179,10 +273,19 @@ colcon test-result --verbose
 
 For focused development, use `--packages-up-to <package>` and still run a full build before handoff.
 
-As of the initial fixed-motion refactor, a full workspace build succeeds, while the
-legacy full test suite still reports 34 pre-existing formatting/lint failures (mostly
-`ament_uncrustify`). Do not misclassify those as Motion Server functional failures;
-keep focused package tests green and reduce the legacy lint debt in dedicated commits.
+As of 2026-07-28, focused tests report 17/17 Motion functional tests and 14/14 HMI
+functional tests green. Hardware and state-machine compile/static checks pass; each
+still has one legacy whole-package `ament_uncrustify` failure. Do not mass-format
+vendor/legacy packages during a functional change; reduce that debt in a dedicated
+commit.
+
+The 2026-07-28 physical regression after the CAN ordering fix completed three
+combined Home-to-outlet-wait round trips with simultaneous gripper commands, then
+three complete safe stop/cold-start cycles. All 12 arm routes and 12 gripper actions
+completed on their first attempt; all starts reached READY on attempt 1, all stops
+verified original Home, and no stale non-launch ROS CLI remained. A separate
+three-cycle telemetry run had a 30.5 ms maximum joint-state sample gap and no arm
+dropout.
 
 The commissioning-only fixed motion launch is:
 
@@ -205,6 +308,55 @@ the only arm-trajectory owner. The configured `motion.fixed_start_point` is a de
 not a homing command; the server still verifies fresh encoder positions before execution.
 
 Runtime outputs belong in `build/`, `install/`, `log/`, `validation_logs/` and `.runtime/`; do not commit them.
+
+The production lifecycle entry points are `scripts/start_workcell.sh` and
+`scripts/stop_workcell.sh`. Start owns one `setsid` launch group for
+`fixed_spectrometer_cell.launch.py` at speed 1.0 and reports success only after
+controllers, Motion Server, fresh Home encoders, and HMI services pass. Stop
+must verify an empty cycle, settled Motion Server, and original Home before
+disabling, then terminate the owned group and verify all related processes are
+gone. Never restore the legacy MoveIt/workflow/camera/laser startup chain to
+these production scripts. `--force` is an explicit maintenance escape hatch,
+not a normal shutdown path.
+- Production ROS control is local to the IPC: `ROS_LOCALHOST_ONLY=1` and
+  `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` restrict DDS to UDP loopback while avoiding
+  stale Fast DDS shared-memory locks. Remote operation uses HTTP/SSH. Never run
+  production with UDP-only transport unless localhost isolation is also enabled;
+  otherwise cable removal can split local participants and strand the controller.
+- Start/stop must stop any stale ROS 2 CLI daemon before health queries.
+  `ros2 control list_controllers` on this Humble install otherwise reuses a daemon
+  left in `!rclpy.ok()` and falsely reports startup failure while controllers run.
+- `b1` must belong to the `realtime` group and
+  `/etc/security/limits.d/99-panthera-realtime.conf` must match
+  `config/system/99-panthera-realtime.conf`. A fresh login must report
+  `ulimit -r = 99`, `ulimit -l = unlimited`, and the ros2_control update thread must
+  run as `SCHED_FIFO 50`. Missing realtime scheduling is a production preflight
+  failure, not an ignorable warning.
+- Keep the top-level production launch arguments distinct:
+  `hardware_config_file` is the vendor `Follower_absolute.yaml`, while
+  `cell_config_file` is `spectrometer_cell.yaml`. Reusing the generic name
+  `config_file` across nested launches caused each consumer to receive the
+  other's YAML and must not be reintroduced.
+- Repeated disable/enable cycles can let joint4 settle downward by roughly
+  10-15 mrad per cycle. Normal shutdown therefore calls
+  `/spectrometer_cell/recover_home` and confirms fresh encoders before
+  terminating ros2_control. Startup may auto-recover only a small drift within
+  0.10 rad; a larger mismatch stays powered and requires operator inspection.
+- Recovery trajectories must contain an explicit first point sampled from fresh
+  encoders before the Home endpoint. A one-point recovery lets the controller
+  interpolate from its stale previous desired state and can jerk a joint. Manual
+  reset is valid from every state, and manual pause must allow `IDLE -> PAUSED`;
+  these transitions are required by HMI commissioning and startup recovery.
+- A deferred pause request is one-shot: once `pauseRequested` is set, do not
+  regenerate a higher-priority `PAUSE_AUTO` event every tick or action completion
+  will be starved. At an action boundary, `pausedFromState` is the next unexecuted
+  state (`MEASURE...`, `START_DETECTION`, `CLEAN_CUP`, `RETURN_CUP`, or
+  `COMPLETE_CYCLE`), never the action that already succeeded.
+- Cold controller discovery can take 10-15 seconds. Keep
+  `gripper.action_server_wait_sec` at 20 seconds or longer so INIT cannot race the
+  sequential controller spawners. Hardware reconnect attempts must retain a 5-second
+  cooldown; reconnecting immediately after disable produced a transient SDK `999`
+  encoder frame during real testing.
 
 ## Configuration conventions
 

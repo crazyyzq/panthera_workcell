@@ -41,7 +41,7 @@ struct LoopConfig
 struct MotionConfig
 {
   std::string backend{"fixed_cache"};
-  std::string fixedStartPoint{"safe_joint_center"};
+  std::string fixedStartPoint{"home_near"};
   double motionServerWaitSec{5.0};
   int transientRetryCount{2};
   double transientRetryDelaySec{0.25};

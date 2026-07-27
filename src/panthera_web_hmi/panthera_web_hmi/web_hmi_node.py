@@ -1,4 +1,6 @@
 import json
+import hashlib
+import hmac
 import mimetypes
 import os
 import math
@@ -22,6 +24,7 @@ except ImportError:
 import rclpy
 from rclpy.duration import Duration
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -34,8 +37,15 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 import tf2_ros
 
+from panthera_interfaces.action import ExecuteMotion
 from panthera_interfaces.msg import ExternalSignal, LaserDistance, WorkflowStatus
-from panthera_interfaces.srv import RunWorkflow, SetSpeedScale
+from panthera_interfaces.srv import RunWorkflow, SetBrush, SetSpeedScale, StageJog
+
+
+DEBUG_PASSWORD_SALT = bytes.fromhex('1c52910fa7e65aeae68b7ee9106e8aa3')
+DEBUG_PASSWORD_HASH = bytes.fromhex(
+    'f5355db155d9206dabd74f757e22bee79e70364ca2953c2960be1d7fb0704bd9'
+    '9b87d5e29614f4aaa5b25fc0bc72e1ced43ce57a49a100c8177ae68affc88305')
 
 
 POINT_CONFIG_MOTION_KEYS = {
@@ -289,6 +299,25 @@ def _validate_motion_catalog_document(catalog):
                 raise ValueError(
                     f'linear target points.{target} must contain a pose')
             references[target].append(f'routes.{name}.segments[{index}].to')
+
+    commissioning = catalog.get('commissioning', {})
+    if commissioning is not None and not isinstance(commissioning, dict):
+        raise ValueError('commissioning must be an object')
+    safe_point = str((commissioning or {}).get('safe_point', '')).strip()
+    if safe_point and safe_point not in points:
+        raise ValueError(f'commissioning.safe_point references missing point: {safe_point}')
+    followers = (commissioning or {}).get('translation_followers', {})
+    if not isinstance(followers, dict):
+        raise ValueError('commissioning.translation_followers must be an object')
+    for target, entries in followers.items():
+        if target not in points or not isinstance(entries, list):
+            raise ValueError(f'invalid commissioning followers for {target}')
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get('point') not in points:
+                raise ValueError(f'invalid commissioning follower for {target}: {entry}')
+            axes = str(entry.get('axes', ''))
+            if not axes or any(axis not in 'xyz' for axis in axes) or len(set(axes)) != len(axes):
+                raise ValueError(f'invalid commissioning follower axes for {target}: {axes}')
     return references
 
 
@@ -381,11 +410,6 @@ class HmiStateStore:
             'motion': {
                 'speed_scale': 1.0,
                 'speed_percent': 100,
-            },
-            'pose_tuner': {
-                'targets': [],
-                'last_result': None,
-                'log': [],
             },
         }
         self._timestamps = {}
@@ -630,17 +654,6 @@ class HmiStateStore:
             self._data['motion']['speed_scale'] = scale
             self._data['motion']['speed_percent'] = int(round(scale * 100.0))
 
-    def set_pose_tuner_targets(self, targets):
-        with self._lock:
-            self._data['pose_tuner']['targets'] = list(targets)
-
-    def append_pose_tuner_log(self, entry):
-        with self._lock:
-            log = self._data['pose_tuner'].setdefault('log', [])
-            log.insert(0, dict(entry))
-            del log[80:]
-            self._data['pose_tuner']['last_result'] = dict(entry)
-
     def snapshot(self):
         with self._lock:
             data = json.loads(json.dumps(self._data))
@@ -683,6 +696,25 @@ def quaternion_to_rpy(x, y, z, w):
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     yaw = math.atan2(siny_cosp, cosy_cosp)
     return roll, pitch, yaw
+
+
+def rpy_orientation_error(first, second):
+    def quaternion(rpy):
+        roll, pitch, yaw = rpy
+        cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+        cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+        cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+        return (
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy,
+        )
+
+    first_quaternion = quaternion(first)
+    second_quaternion = quaternion(second)
+    dot = abs(sum(a * b for a, b in zip(first_quaternion, second_quaternion)))
+    return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
 
 class CameraImageStore:
@@ -1174,7 +1206,6 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
@@ -1189,9 +1220,6 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == '/api/motion_catalog':
             self._send_json(self.server.bridge_node.get_motion_catalog())
-            return
-        if parsed.path == '/api/pose_tuner/list':
-            self._send_json(self.server.bridge_node.call_pose_tuner_list())
             return
         if parsed.path == '/api/events':
             self._send_events()
@@ -1213,30 +1241,42 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path not in (
             '/api/command',
-            '/api/state_request',
             '/api/speed_scale',
             '/api/camera/restart',
             '/api/point_config',
             '/api/point_config/reload',
             '/api/motion_catalog',
             '/api/motion_catalog/reload',
-            '/api/pose_tuner/run',
-            '/api/pose_tuner/stop',
+            '/api/debug/enter',
+            '/api/debug/jog',
+            '/api/debug/save',
+            '/api/debug/exit',
+            '/api/debug/gripper',
+            '/api/debug/brush',
+            '/api/debug/reference_zero',
         ):
             self._send_json({'success': False, 'message': 'unknown endpoint'}, status=404)
             return
 
-        length = int(self.headers.get('Content-Length', '0'))
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except (TypeError, ValueError):
+            self._send_json({'success': False, 'message': 'invalid content length'}, status=400)
+            return
+        if length < 0 or length > 1024 * 1024:
+            self._send_json({'success': False, 'message': 'request body is too large'}, status=413)
+            return
         raw = self.rfile.read(length).decode('utf-8') if length > 0 else '{}'
         try:
             body = json.loads(raw)
         except json.JSONDecodeError:
             self._send_json({'success': False, 'message': 'invalid json'}, status=400)
             return
+        if not isinstance(body, dict):
+            self._send_json({'success': False, 'message': 'json body must be an object'}, status=400)
+            return
 
-        if parsed.path == '/api/state_request':
-            result = self.server.bridge_node.call_state_request(body)
-        elif parsed.path == '/api/speed_scale':
+        if parsed.path == '/api/speed_scale':
             result = self.server.bridge_node.call_speed_scale(body)
         elif parsed.path == '/api/camera/restart':
             result = self.server.bridge_node.restart_camera()
@@ -1248,10 +1288,20 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.save_motion_catalog(body)
         elif parsed.path == '/api/motion_catalog/reload':
             result = self.server.bridge_node.reload_motion_catalog()
-        elif parsed.path == '/api/pose_tuner/run':
-            result = self.server.bridge_node.call_pose_tuner_run(body)
-        elif parsed.path == '/api/pose_tuner/stop':
-            result = self.server.bridge_node.call_pose_tuner_stop(body)
+        elif parsed.path == '/api/debug/enter':
+            result = self.server.bridge_node.enter_debug(body)
+        elif parsed.path == '/api/debug/jog':
+            result = self.server.bridge_node.debug_jog(body)
+        elif parsed.path == '/api/debug/save':
+            result = self.server.bridge_node.save_debug_point()
+        elif parsed.path == '/api/debug/exit':
+            result = self.server.bridge_node.exit_debug()
+        elif parsed.path == '/api/debug/gripper':
+            result = self.server.bridge_node.debug_gripper(body)
+        elif parsed.path == '/api/debug/brush':
+            result = self.server.bridge_node.debug_brush(body)
+        elif parsed.path == '/api/debug/reference_zero':
+            result = self.server.bridge_node.set_debug_reference_zero(body)
         else:
             command = body.get('command', '')
             result = self.server.bridge_node.call_command(command)
@@ -1464,9 +1514,6 @@ class WebHmiNode(Node):
             'auto_mode': self.declare_parameter(
                 'service_auto_mode',
                 '/spectrometer_cell/auto_mode').value,
-            'step_once': self.declare_parameter(
-                'service_step_once',
-                '/spectrometer_cell/step_once').value,
             'detection_done': self.declare_parameter(
                 'service_detection_done',
                 '/spectrometer_cell/simulate_detection_done').value,
@@ -1489,24 +1536,18 @@ class WebHmiNode(Node):
             'workflow_gripper_open': 'gripper_open',
             'workflow_gripper_close': 'gripper_close',
         }
-        self.pose_tuner_list_service_name = self.declare_parameter(
-            'pose_tuner_list_service',
-            '/pose_tuner/list_targets').value
-        self.pose_tuner_run_service_name = self.declare_parameter(
-            'pose_tuner_run_service',
-            '/pose_tuner/run_target').value
-        self.pose_tuner_stop_service_name = self.declare_parameter(
-            'pose_tuner_stop_service',
-            '/pose_tuner/stop').value
-        self.pose_tuner_list_client = self.create_client(Trigger, self.pose_tuner_list_service_name)
-        self.pose_tuner_run_client = self.create_client(RunWorkflow, self.pose_tuner_run_service_name)
-        self.pose_tuner_stop_client = self.create_client(Trigger, self.pose_tuner_stop_service_name)
         self.spectrometer_stop_motion_service_name = self.declare_parameter(
             'spectrometer_stop_motion_service',
             '/spectrometer_cell/stop_motion').value
         self.spectrometer_stop_motion_client = self.create_client(
             Trigger,
             self.spectrometer_stop_motion_service_name)
+        self.spectrometer_recover_home_service_name = self.declare_parameter(
+            'spectrometer_recover_home_service',
+            '/spectrometer_cell/recover_home').value
+        self.spectrometer_recover_home_client = self.create_client(
+            Trigger,
+            self.spectrometer_recover_home_service_name)
         self.workflow_stop_service_name = self.declare_parameter(
             'workflow_stop_service',
             '/stop_workflow').value
@@ -1525,6 +1566,42 @@ class WebHmiNode(Node):
         self.motion_reload_client = self.create_client(
             Trigger,
             self.motion_reload_service_name)
+        self.debug_callback_group = ReentrantCallbackGroup()
+        self.motion_execute_client = ActionClient(
+            self,
+            ExecuteMotion,
+            '/motion/execute',
+            callback_group=self.debug_callback_group)
+        self.stage_jog_client = self.create_client(
+            StageJog,
+            '/motion/stage_jog',
+            callback_group=self.debug_callback_group)
+        self.debug_gripper_open_client = self.create_client(
+            Trigger,
+            '/spectrometer_cell/debug/gripper_open',
+            callback_group=self.debug_callback_group)
+        self.debug_gripper_close_client = self.create_client(
+            Trigger,
+            '/spectrometer_cell/debug/gripper_close',
+            callback_group=self.debug_callback_group)
+        self.debug_brush_client = self.create_client(
+            SetBrush,
+            '/spectrometer_cell/debug/set_brush',
+            callback_group=self.debug_callback_group)
+        self._debug_lock = threading.RLock()
+        self._debug_operation_lock = threading.Lock()
+        self._debug_auth_failures = []
+        self._debug = {
+            'active': False,
+            'phase': 'inactive',
+            'selected_point': '',
+            'dirty': False,
+            'history': [],
+            'reference_pose': None,
+            'last_message': '',
+            'brush_enabled': False,
+            'brush_speed_percent': 50.0,
+        }
         default_camera_restart_script = os.path.join(
             os.path.expanduser('~'),
             'panthera_workcell_ws',
@@ -1666,21 +1743,13 @@ class WebHmiNode(Node):
                 'workflow': workflow_name,
                 'ready': workflow_ready,
             }
-        services['pose_tuner_list'] = {
-            'service': self.pose_tuner_list_service_name,
-            'ready': bool(self.pose_tuner_list_client.service_is_ready()),
-        }
-        services['pose_tuner_run'] = {
-            'service': self.pose_tuner_run_service_name,
-            'ready': bool(self.pose_tuner_run_client.service_is_ready()),
-        }
-        services['pose_tuner_stop'] = {
-            'service': self.pose_tuner_stop_service_name,
-            'ready': bool(self.pose_tuner_stop_client.service_is_ready()),
-        }
         services['spectrometer_stop_motion'] = {
             'service': self.spectrometer_stop_motion_service_name,
             'ready': bool(self.spectrometer_stop_motion_client.service_is_ready()),
+        }
+        services['spectrometer_recover_home'] = {
+            'service': self.spectrometer_recover_home_service_name,
+            'ready': bool(self.spectrometer_recover_home_client.service_is_ready()),
         }
         services['workflow_stop'] = {
             'service': self.workflow_stop_service_name,
@@ -1713,13 +1782,638 @@ class WebHmiNode(Node):
                 os.access(self.motion_catalog_path, os.W_OK)),
             'reload_ready': bool(self.motion_reload_client.service_is_ready()),
         }
+        services['debug_motion'] = {
+            'execute_ready': bool(self.motion_execute_client.server_is_ready()),
+            'jog_ready': bool(self.stage_jog_client.service_is_ready()),
+            'gripper_ready': bool(
+                self.debug_gripper_open_client.service_is_ready() and
+                self.debug_gripper_close_client.service_is_ready()),
+            'brush_ready': bool(self.debug_brush_client.service_is_ready()),
+        }
         self.state_store.set_services(services)
 
     def snapshot(self):
         self._update_service_status()
         data = self.state_store.snapshot()
         data['camera']['debug'] = self.camera_store.stats()
+        data['debug'] = self.debug_snapshot(data)
         return data
+
+    def debug_snapshot(self, state=None):
+        state = state or self.state_store.snapshot()
+        with self._debug_lock:
+            result = {key: value for key, value in self._debug.items() if key != 'history'}
+            result['jog_count'] = len(self._debug['history'])
+        result['reference_delta'] = None
+        tool = state.get('tool_pose', {})
+        reference = result.get('reference_pose')
+        if reference and tool.get('available') and (tool.get('age_sec') or 0.0) <= 0.5:
+            position = tool.get('position_m', {})
+            rpy = tool.get('rpy_rad', {})
+            result['reference_delta'] = {
+                'x_mm': (position.get('x', 0.0) - reference['xyz'][0]) * 1000.0,
+                'y_mm': (position.get('y', 0.0) - reference['xyz'][1]) * 1000.0,
+                'z_mm': (position.get('z', 0.0) - reference['xyz'][2]) * 1000.0,
+                'roll_deg': math.degrees(rpy.get('roll', 0.0) - reference['rpy'][0]),
+                'pitch_deg': math.degrees(rpy.get('pitch', 0.0) - reference['rpy'][1]),
+                'yaw_deg': math.degrees(rpy.get('yaw', 0.0) - reference['rpy'][2]),
+            }
+        return result
+
+    @staticmethod
+    def _wait_future(future, timeout_sec):
+        event = threading.Event()
+        future.add_done_callback(lambda _future: event.set())
+        if not event.wait(timeout=timeout_sec):
+            raise TimeoutError('ROS request timed out')
+        return future.result()
+
+    def _call_service_request(self, client, request, service_name, timeout_sec=10.0):
+        if not client.wait_for_service(timeout_sec=2.0):
+            return None, f'ROS service not ready: {service_name}'
+        try:
+            return self._wait_future(client.call_async(request), timeout_sec), ''
+        except Exception as exc:
+            return None, f'ROS service call failed: {service_name}: {exc}'
+
+    def _execute_motion_route(self, route_name, speed_scale=1.0, timeout_sec=90.0):
+        if not self.motion_execute_client.wait_for_server(timeout_sec=3.0):
+            return {'success': False, 'message': 'motion action server is unavailable'}
+        goal = ExecuteMotion.Goal()
+        goal.route_name = route_name
+        goal.speed_scale = float(speed_scale)
+        goal.dry_run = False
+        try:
+            handle = self._wait_future(
+                self.motion_execute_client.send_goal_async(goal), 5.0)
+            if not handle or not handle.accepted:
+                return {'success': False, 'message': f'motion route rejected: {route_name}'}
+            wrapped = self._wait_future(handle.get_result_async(), timeout_sec)
+            result = wrapped.result
+            return {
+                'success': bool(result.success),
+                'message': result.message,
+                'error_code': int(result.error_code),
+                'route_name': route_name,
+            }
+        except Exception as exc:
+            return {'success': False, 'message': f'motion route failed: {route_name}: {exc}'}
+
+    @staticmethod
+    def _debug_point_routes(point_name):
+        return f'debug_safe_to_{point_name}', f'debug_{point_name}_to_safe'
+
+    def _debug_catalog_target(self, point_name):
+        catalog, references = self._load_motion_catalog()
+        point = catalog.get('points', {}).get(point_name)
+        if not point or 'tunable' not in point.get('tags', []) or 'pose' not in point:
+            raise ValueError(f'point is not a tunable Cartesian target: {point_name}')
+        entry_route, exit_route = self._debug_point_routes(point_name)
+        routes = catalog.get('routes', {})
+        if entry_route not in routes or exit_route not in routes:
+            raise ValueError(f'point has no validated debug route: {point_name}')
+        return catalog, references, point, entry_route, exit_route
+
+    def _debug_verify_home(self, catalog):
+        snapshot = self.state_store.snapshot()
+        joint_state = snapshot.get('joint_state', {})
+        if joint_state.get('age_sec') is None or joint_state.get('age_sec') > 0.5:
+            return False, 'joint state is stale'
+        names = joint_state.get('names', [])
+        positions = joint_state.get('positions', [])
+        home = catalog.get('points', {}).get('home_near', {}).get('joints', [])
+        robot_names = catalog.get('robot', {}).get('joint_names', [])
+        if len(home) != len(robot_names):
+            return False, 'home_near joints are invalid'
+        errors = []
+        for name, target in zip(robot_names, home):
+            if name not in names:
+                return False, f'joint state is missing {name}'
+            index = names.index(name)
+            if index >= len(positions):
+                return False, f'joint state position is missing {name}'
+            errors.append(abs(float(positions[index]) - float(target)))
+        maximum = max(errors, default=float('inf'))
+        return maximum <= 0.05, f'Home max joint error={maximum:.4f}rad'
+
+    def _debug_require_paused(self):
+        snapshot = self.state_store.snapshot()
+        cell = snapshot.get('spectrometer_cell', {})
+        context = cell.get('context', {}) if isinstance(cell.get('context'), dict) else {}
+        state = cell.get('state') or context.get('state') or 'UNKNOWN'
+        if state != 'PAUSED':
+            return False, f'debug command requires PAUSED state, current={state}'
+        if context.get('active_command_id') or context.get('active_action_name'):
+            return False, 'robot action is active'
+        return True, 'debug interlock ready'
+
+    def enter_debug(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+
+        def fail(result):
+            message = result.get('message', 'debug entry failed')
+            with self._debug_lock:
+                self._debug.update(
+                    active=False, phase='error', selected_point='', dirty=False,
+                    history=[], reference_pose=None, last_message=message)
+            return result
+
+        try:
+            point_name = str(body.get('point_name', '')).strip()
+            catalog, _, _, entry_route, _ = self._debug_catalog_target(point_name)
+            snapshot = self.state_store.snapshot()
+            cell = snapshot.get('spectrometer_cell', {})
+            context = cell.get('context', {}) if isinstance(cell.get('context'), dict) else {}
+            state = cell.get('state') or context.get('state') or 'UNKNOWN'
+            if context.get('has_active_task') or context.get('cup_in_gripper') or context.get('spectrometer_occupied'):
+                return {'success': False, 'message': 'debug entry rejected: active task/cup exists'}
+            if state not in ('IDLE', 'WAIT_DISCHARGE', 'PAUSED'):
+                return {'success': False, 'message': f'debug entry rejected from state {state}'}
+            with self._debug_lock:
+                if self._debug['active']:
+                    return {'success': False, 'message': 'exit the current debug point first'}
+                self._debug.update(phase='pausing', last_message='正在暂停自动流程')
+
+            if state != 'PAUSED':
+                paused = self.call_command('manual_mode')
+                if not paused.get('success'):
+                    return fail(paused)
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline:
+                    current = self.state_store.snapshot().get('spectrometer_cell', {}).get('state')
+                    if current == 'PAUSED':
+                        break
+                    time.sleep(0.05)
+                else:
+                    return fail({'success': False, 'message': 'state machine did not enter PAUSED'})
+
+            at_home, home_message = self._debug_verify_home(catalog)
+            if not at_home:
+                with self._debug_lock:
+                    self._debug.update(phase='recovering_home', last_message=home_message)
+                recovery = self._call_trigger_client(
+                    self.spectrometer_recover_home_client,
+                    self.spectrometer_recover_home_service_name,
+                    timeout_sec=45.0)
+                if not recovery.get('success'):
+                    return fail(recovery)
+                at_home, home_message = self._debug_verify_home(catalog)
+                if not at_home:
+                    return fail({
+                        'success': False,
+                        'message': f'Home verification failed: {home_message}',
+                    })
+
+            with self._debug_lock:
+                self._debug.update(phase='moving_safe', last_message='正在前往安全调试点')
+            result = self._execute_motion_route('home_to_safe_center')
+            if not result.get('success'):
+                return fail(result)
+            with self._debug_lock:
+                self._debug.update(phase='moving_target', last_message=f'正在前往 {point_name}')
+            result = self._execute_motion_route(entry_route)
+            if not result.get('success'):
+                return fail(result)
+            with self._debug_lock:
+                self._debug.update(
+                    active=True,
+                    phase='ready',
+                    selected_point=point_name,
+                    dirty=False,
+                    history=[],
+                    reference_pose=None,
+                    last_message='点位已到达，可以点动')
+            return {'success': True, 'message': 'debug point reached', 'point_name': point_name}
+        except Exception as exc:
+            return fail({'success': False, 'message': str(exc)})
+        finally:
+            self._debug_operation_lock.release()
+
+    def _stage_and_execute_jog(self, deltas):
+        request = StageJog.Request()
+        request.delta_x_m, request.delta_y_m, request.delta_z_m = deltas[:3]
+        request.delta_roll_rad, request.delta_pitch_rad, request.delta_yaw_rad = deltas[3:]
+        response, error = self._call_service_request(
+            self.stage_jog_client, request, '/motion/stage_jog', timeout_sec=20.0)
+        if not response or not response.success:
+            return {'success': False, 'message': error or response.message}
+        result = self._execute_motion_route(response.route_name, speed_scale=1.0, timeout_sec=30.0)
+        result['target_xyz_m'] = list(response.target_xyz_m)
+        result['target_rpy_rad'] = list(response.target_rpy_rad)
+        return result
+
+    def debug_jog(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'previous jog is still running'}
+        try:
+            ready, message = self._debug_require_paused()
+            with self._debug_lock:
+                active = self._debug['active'] and self._debug['phase'] == 'ready'
+            if not ready or not active:
+                return {'success': False, 'message': message if not ready else 'debug point is not ready'}
+            translation = [float(value) for value in body.get('translation_m', [0, 0, 0])]
+            rotation = [float(value) for value in body.get('rotation_rad', [0, 0, 0])]
+            if len(translation) != 3 or len(rotation) != 3:
+                return {'success': False, 'message': 'jog vectors must contain three values'}
+            if not all(math.isfinite(value) for value in translation + rotation):
+                return {'success': False, 'message': 'jog values must be finite'}
+            deltas = translation + rotation
+            active_deltas = [value for value in deltas if abs(value) > 1e-9]
+            if len(active_deltas) != 1:
+                return {'success': False, 'message': 'jog must move exactly one axis'}
+            if any(
+                    abs(value) > 1e-9 and not 0.0005 <= abs(value) <= 0.020
+                    for value in translation):
+                return {
+                    'success': False,
+                    'message': 'MIT Cartesian translation step must be between 0.5mm and 20mm',
+                }
+            min_rotation = math.radians(0.1)
+            max_rotation = math.radians(10.0)
+            if any(
+                    abs(value) > 1e-9 and not min_rotation <= abs(value) <= max_rotation
+                    for value in rotation):
+                return {
+                    'success': False,
+                    'message': 'rotation step must be between 0.1 and 10 degrees',
+                }
+            translation_axis = next(
+                (index for index, value in enumerate(translation) if abs(value) > 1e-9),
+                None)
+            start_xyz, _ = self._fresh_tool_pose()
+            with self._debug_lock:
+                self._debug.update(phase='jogging', last_message='正在执行点动')
+            result = self._stage_and_execute_jog(deltas)
+            settled_tolerance = (
+                not result.get('success') and
+                'goal_time_tolerance' in result.get('message', ''))
+            if result.get('success') or settled_tolerance:
+                time.sleep(0.3)
+                measured_xyz, measured_rpy = self._fresh_tool_pose()
+                target_xyz = result['target_xyz_m']
+                target_rpy = result['target_rpy_rad']
+                position_error = max(
+                    abs(actual - target)
+                    for actual, target in zip(measured_xyz, target_xyz))
+                orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
+                correction_count = 0
+                correction_failed = False
+                while (
+                        correction_count < 2 and
+                        (position_error > 0.002 or
+                         orientation_error > math.radians(1.5))):
+                    correction = [0.0] * 6
+                    position_residuals = [
+                        target - actual
+                        for actual, target in zip(measured_xyz, target_xyz)]
+                    correction_axis = max(
+                        range(3), key=lambda index: abs(position_residuals[index]))
+                    residual = position_residuals[correction_axis]
+                    if position_error > 0.002:
+                        if 0.002 <= abs(residual) <= 0.020:
+                            correction[correction_axis] = residual
+                    else:
+                        rotation_residuals = [
+                            (target - actual + math.pi) % (2.0 * math.pi) - math.pi
+                            for actual, target in zip(measured_rpy, target_rpy)]
+                        correction_axis = max(
+                            range(3), key=lambda index: abs(rotation_residuals[index]))
+                        residual = rotation_residuals[correction_axis]
+                        if min_rotation <= abs(residual) <= max_rotation:
+                            correction[3 + correction_axis] = residual
+                    if not any(abs(value) > 1e-9 for value in correction):
+                        break
+                    correction_result = self._stage_and_execute_jog(correction)
+                    correction_settled = (
+                        not correction_result.get('success') and
+                        'goal_time_tolerance' in correction_result.get('message', ''))
+                    if not correction_result.get('success') and not correction_settled:
+                        result = correction_result
+                        correction_failed = True
+                        break
+                    correction_count += 1
+                    time.sleep(0.3)
+                    measured_xyz, measured_rpy = self._fresh_tool_pose()
+                    position_error = max(
+                        abs(actual - target)
+                        for actual, target in zip(measured_xyz, target_xyz))
+                    orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
+                    result = {
+                        **correction_result,
+                        'target_xyz_m': target_xyz,
+                        'target_rpy_rad': target_rpy,
+                        'servo_correction_applied': True,
+                        'servo_correction_count': correction_count,
+                    }
+                result['pose_error_mm'] = position_error * 1000.0
+                result['orientation_error_deg'] = math.degrees(orientation_error)
+                if translation_axis is not None:
+                    result['measured_delta_m'] = (
+                        measured_xyz[translation_axis] - start_xyz[translation_axis])
+                if correction_failed:
+                    result = {
+                        **result,
+                        'success': False,
+                        'message': (
+                            f'微调闭环校正失败：{result.get("message", "unknown error")}；'
+                            '请点击“安全退出”回 Home 后重试，本次点位不会保存'
+                        ),
+                    }
+                elif position_error > 0.002 or orientation_error > math.radians(1.5):
+                    result = {
+                        **result,
+                        'success': False,
+                        'message': (
+                            '微调实际未准确到位，本次点位不会保存；请点击“安全退出”回 Home 后重试'
+                            f'（位置误差 {position_error * 1000.0:.1f} mm，'
+                            f'姿态误差 {math.degrees(orientation_error):.1f}°）'
+                        ),
+                    }
+                elif translation_axis is not None:
+                    result['success'] = True
+                    axis = 'XYZ'[translation_axis]
+                    result['message'] = (
+                        f'{axis} 轴点动完成：实测位移 '
+                        f'{result["measured_delta_m"] * 1000.0:+.1f} mm，'
+                        f'终点误差 {position_error * 1000.0:.1f} mm'
+                    )
+                else:
+                    result['success'] = True
+                    result['message'] = (
+                        f'旋转点动完成：终点位置误差 {position_error * 1000.0:.1f} mm，'
+                        f'姿态误差 {math.degrees(orientation_error):.1f}°'
+                    )
+            elif result.get('message'):
+                result['message'] = (
+                    f'微调执行失败：{result["message"]}；'
+                    '请点击“安全退出”回 Home 后重试，本次点位不会保存'
+                )
+            with self._debug_lock:
+                if result.get('success'):
+                    self._debug['history'].append(deltas)
+                    self._debug['dirty'] = True
+                    self._debug.update(phase='ready', last_message='点动完成')
+                else:
+                    self._debug.update(
+                        phase='error',
+                        last_message=result.get('message', '点动失败，请安全退出后重试'))
+            return result
+        except Exception as exc:
+            with self._debug_lock:
+                self._debug.update(phase='ready', last_message=f'点动失败: {exc}')
+            return {'success': False, 'message': f'jog failed: {exc}'}
+        finally:
+            self._debug_operation_lock.release()
+
+    def _fresh_tool_pose(self):
+        tool = self.state_store.snapshot().get('tool_pose', {})
+        if not tool.get('available') or tool.get('age_sec') is None or tool.get('age_sec') > 0.5:
+            raise ValueError('fresh measured tool pose is unavailable')
+        position = tool.get('position_m', {})
+        rpy = tool.get('rpy_rad', {})
+        xyz = [float(position[axis]) for axis in ('x', 'y', 'z')]
+        angles = [float(rpy[axis]) for axis in ('roll', 'pitch', 'yaw')]
+        if not all(math.isfinite(value) for value in xyz + angles):
+            raise ValueError('measured tool pose contains a non-finite value')
+        return xyz, angles
+
+    def save_debug_point(self):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+        try:
+            with self._debug_lock:
+                if not self._debug['active'] or self._debug['phase'] != 'ready':
+                    return {'success': False, 'message': 'debug point is not ready'}
+                point_name = self._debug['selected_point']
+                self._debug.update(phase='saving', last_message='正在校验并热重载')
+            catalog, _, point, _, _ = self._debug_catalog_target(point_name)
+            xyz, rpy = self._fresh_tool_pose()
+            old_xyz = [float(value) for value in point['pose']['xyz']]
+            delta = [new - old for new, old in zip(xyz, old_xyz)]
+            point['pose']['xyz'] = xyz
+            point['pose']['rpy'] = rpy
+            followers = catalog.get('commissioning', {}).get(
+                'translation_followers', {}).get(point_name, [])
+            for follower in followers:
+                follower_point = catalog.get('points', {}).get(follower.get('point', ''))
+                if not follower_point or 'pose' not in follower_point:
+                    raise ValueError(f'invalid calibration follower: {follower}')
+                axes = str(follower.get('axes', ''))
+                follower_xyz = [float(value) for value in follower_point['pose']['xyz']]
+                for index, axis in enumerate('xyz'):
+                    if axis in axes:
+                        follower_xyz[index] += delta[index]
+                follower_point['pose']['xyz'] = follower_xyz
+                follower_point['pose']['rpy'] = list(rpy)
+            result = self.save_motion_catalog({'catalog': catalog}, allow_debug=True)
+            with self._debug_lock:
+                if result.get('success'):
+                    self._debug.update(
+                        phase='ready', dirty=False, history=[],
+                        last_message='点位已保存并热重载')
+                else:
+                    self._debug.update(phase='ready', last_message=result.get('message', '保存失败'))
+            result['point_name'] = point_name
+            result['delta_xyz_mm'] = [value * 1000.0 for value in delta]
+            return result
+        except Exception as exc:
+            with self._debug_lock:
+                self._debug.update(phase='ready', last_message=str(exc))
+            return {'success': False, 'message': str(exc)}
+        finally:
+            self._debug_operation_lock.release()
+
+    def exit_debug(self):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+
+        def recover_home(failure):
+            recovery = self._call_trigger_client(
+                self.spectrometer_recover_home_client,
+                self.spectrometer_recover_home_service_name,
+                timeout_sec=45.0)
+            if recovery.get('success'):
+                catalog, _ = self._load_motion_catalog()
+                at_home, home_message = self._debug_verify_home(catalog)
+                if at_home:
+                    with self._debug_lock:
+                        self._debug.update(
+                            active=False, phase='inactive', selected_point='', dirty=False,
+                            history=[], reference_pose=None, brush_enabled=False,
+                            last_message='安全退出轨迹失败，已自动恢复到 Home')
+                    return {
+                        'success': True,
+                        'message': (
+                            f"safe exit route failed ({failure.get('message')}); "
+                            f'recovered Home: {home_message}'
+                        ),
+                        'recovered_home': True,
+                    }
+            message = (
+                f"{failure.get('message', 'safe exit failed')}; "
+                f"Home recovery failed: {recovery.get('message', 'unknown error')}"
+            )
+            with self._debug_lock:
+                self._debug.update(phase='error', last_message=message)
+            return {'success': False, 'message': message}
+
+        try:
+            with self._debug_lock:
+                if not self._debug['active']:
+                    return {'success': True, 'message': 'debug mode is already inactive'}
+                point_name = self._debug['selected_point']
+                self._debug.update(phase='returning', last_message='正在安全退出调试')
+            stop = SetBrush.Request()
+            stop.enabled = False
+            stop.speed_percent = 0.0
+            self._call_service_request(
+                self.debug_brush_client, stop, '/spectrometer_cell/debug/set_brush', 5.0)
+            _, _, _, _, exit_route = self._debug_catalog_target(point_name)
+            result = self._execute_motion_route(exit_route)
+            if not result.get('success'):
+                return recover_home(result)
+            result = self._execute_motion_route('safe_center_to_home')
+            if not result.get('success'):
+                return recover_home(result)
+            with self._debug_lock:
+                self._debug.update(
+                    active=False, phase='inactive', selected_point='', dirty=False,
+                    history=[], reference_pose=None, brush_enabled=False,
+                    last_message='已安全回到 Home，自动流程仍暂停')
+            return {'success': True, 'message': 'debug mode exited at Home; automatic mode remains paused'}
+        except Exception as exc:
+            with self._debug_lock:
+                self._debug.update(phase='error', last_message=f'安全退出失败: {exc}')
+            return {'success': False, 'message': f'debug exit failed: {exc}'}
+        finally:
+            self._debug_operation_lock.release()
+
+    def debug_gripper(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+        try:
+            return self._debug_gripper_locked(body)
+        finally:
+            self._debug_operation_lock.release()
+
+    def _debug_gripper_locked(self, body):
+        with self._debug_lock:
+            if not self._debug['active'] or self._debug['phase'] != 'ready':
+                return {'success': False, 'message': 'debug point is not ready'}
+        command = str(body.get('command', '')).strip().lower()
+        client = self.debug_gripper_open_client if command == 'open' else self.debug_gripper_close_client
+        if command not in ('open', 'close'):
+            return {'success': False, 'message': 'gripper command must be open or close'}
+        return self._call_trigger_client(
+            client,
+            f'/spectrometer_cell/debug/gripper_{command}',
+            timeout_sec=15.0)
+
+    def debug_brush(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+        try:
+            return self._debug_brush_locked(body)
+        finally:
+            self._debug_operation_lock.release()
+
+    def _debug_brush_locked(self, body):
+        with self._debug_lock:
+            if not self._debug['active']:
+                return {'success': False, 'message': 'debug mode is not active'}
+        enabled = body.get('enabled', False)
+        if not isinstance(enabled, bool):
+            return {'success': False, 'message': 'brush enabled must be true or false'}
+        try:
+            speed = float(body.get('speed_percent', 0.0))
+        except (TypeError, ValueError):
+            return {'success': False, 'message': 'brush speed is invalid'}
+        if not math.isfinite(speed) or speed < 0.0 or speed > 100.0:
+            return {'success': False, 'message': 'brush speed must be between 0% and 100%'}
+        if enabled and speed < 1.0:
+            return {'success': False, 'message': 'brush speed must be at least 1% when enabled'}
+        request = SetBrush.Request()
+        request.enabled = enabled
+        request.speed_percent = speed
+        response, error = self._call_service_request(
+            self.debug_brush_client,
+            request,
+            '/spectrometer_cell/debug/set_brush',
+            timeout_sec=8.0)
+        if not response:
+            return {'success': False, 'message': error}
+        result = {
+            'success': bool(response.success),
+            'message': response.message,
+            'enabled': bool(response.enabled),
+            'applied_speed_percent': float(response.applied_speed_percent),
+        }
+        if result['success']:
+            with self._debug_lock:
+                self._debug['brush_enabled'] = result['enabled']
+                self._debug['brush_speed_percent'] = speed
+            if body.get('persist_default') and speed >= 1.0:
+                _, config = self._load_point_config()
+                old_duty = int(config.get('cleaning', {}).get('motor_rs485_duty_permille', 500))
+                duty = (-1 if old_duty < 0 else 1) * int(round(speed * 10.0))
+                saved = self.save_point_config(
+                    {'config': {'cleaning': {'motor_rs485_duty_permille': duty}}},
+                    allow_debug=True)
+                result['persist_result'] = saved
+                if not saved.get('success'):
+                    result['message'] += f"; default save failed: {saved.get('message')}"
+        return result
+
+    def _check_debug_password(self, password):
+        now = time.monotonic()
+        with self._debug_lock:
+            self._debug_auth_failures = [
+                stamp for stamp in self._debug_auth_failures if now - stamp < 60.0]
+            if len(self._debug_auth_failures) >= 5:
+                return False, 'too many password failures; retry after 60 seconds'
+        try:
+            candidate = hashlib.scrypt(
+                str(password).encode('utf-8'),
+                salt=DEBUG_PASSWORD_SALT,
+                n=2 ** 14,
+                r=8,
+                p=1)
+        except Exception:
+            candidate = b''
+        if not hmac.compare_digest(candidate, DEBUG_PASSWORD_HASH):
+            with self._debug_lock:
+                self._debug_auth_failures.append(now)
+            return False, 'password is incorrect'
+        with self._debug_lock:
+            self._debug_auth_failures.clear()
+        return True, 'password accepted'
+
+    def set_debug_reference_zero(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+        try:
+            return self._set_debug_reference_zero_locked(body)
+        finally:
+            self._debug_operation_lock.release()
+
+    def _set_debug_reference_zero_locked(self, body):
+        valid, message = self._check_debug_password(body.get('password', ''))
+        if not valid:
+            self.get_logger().warn('debug reference-zero authentication failed')
+            return {'success': False, 'message': message}
+        with self._debug_lock:
+            if not self._debug['active'] or self._debug['phase'] != 'ready':
+                return {'success': False, 'message': 'debug point is not ready'}
+        try:
+            xyz, rpy = self._fresh_tool_pose()
+        except Exception as exc:
+            return {'success': False, 'message': str(exc)}
+        with self._debug_lock:
+            self._debug['reference_pose'] = {'xyz': xyz, 'rpy': rpy}
+            self._debug['last_message'] = '调试参考零点已设置'
+        self.get_logger().warn('password-authorized debug reference zero set from measured TCP')
+        return {'success': True, 'message': 'debug reference zero set'}
 
     def _load_motion_catalog(self):
         if not os.path.isfile(self.motion_catalog_path):
@@ -1773,7 +2467,16 @@ class WebHmiNode(Node):
                 'references': {},
             }
 
-    def save_motion_catalog(self, body):
+    def _debug_session_active(self):
+        with self._debug_lock:
+            return bool(self._debug['active'])
+
+    def save_motion_catalog(self, body, allow_debug=False):
+        if self._debug_session_active() and not allow_debug:
+            return {
+                'success': False,
+                'message': 'point catalog changes are locked during an active debug session',
+            }
         catalog = body.get('catalog', body)
         try:
             references = _validate_motion_catalog_document(catalog)
@@ -1844,6 +2547,11 @@ class WebHmiNode(Node):
             }
 
     def reload_motion_catalog(self):
+        if self._debug_session_active():
+            return {
+                'success': False,
+                'message': 'point catalog reload is locked during an active debug session',
+            }
         return self._call_trigger_client(
             self.motion_reload_client,
             self.motion_reload_service_name,
@@ -1891,7 +2599,12 @@ class WebHmiNode(Node):
                 'config': {},
             }
 
-    def save_point_config(self, body):
+    def save_point_config(self, body, allow_debug=False):
+        if self._debug_session_active() and not allow_debug:
+            return {
+                'success': False,
+                'message': 'process config changes are locked during an active debug session',
+            }
         try:
             updates = body.get('config', body)
             if not isinstance(updates, dict):
@@ -2034,20 +2747,30 @@ class WebHmiNode(Node):
 
             backup_path = f'{self.point_config_path}.bak_{time.strftime("%Y%m%d_%H%M%S")}'
             shutil.copy2(self.point_config_path, backup_path)
-            with open(self.point_config_path, 'w', encoding='utf-8', newline='\n') as file:
-                file.write(updated_text)
+            self._atomic_write_text(self.point_config_path, updated_text)
 
             self.get_logger().warn(
                 f'point config saved by HMI path={self.point_config_path} backup={backup_path} '
                 f'changed={",".join(changed)}')
-            reload_result = self.reload_point_config()
+            reload_result = self.reload_point_config(allow_debug=allow_debug)
             reload_success = bool(reload_result.get('success'))
             if reload_success:
                 message = f'saved {len(changed)} fields and reloaded runtime config'
             else:
-                message = (
-                    f'saved {len(changed)} fields, but runtime reload failed: '
-                    f"{reload_result.get('message', 'unknown error')}")
+                self._atomic_write_text(self.point_config_path, text)
+                rollback_reload = self.reload_point_config(allow_debug=allow_debug)
+                return {
+                    'success': False,
+                    'message': (
+                        'runtime reload failed; restored previous config: '
+                        f"{reload_result.get('message', 'unknown error')}"),
+                    'path': self.point_config_path,
+                    'backup_path': backup_path,
+                    'changed': changed,
+                    'reload_result': reload_result,
+                    'rollback_reload_result': rollback_reload,
+                    'runtime_reloaded': False,
+                }
             return {
                 'success': True,
                 'message': message,
@@ -2065,7 +2788,12 @@ class WebHmiNode(Node):
                 'path': self.point_config_path,
             }
 
-    def reload_point_config(self):
+    def reload_point_config(self, allow_debug=False):
+        if self._debug_session_active() and not allow_debug:
+            return {
+                'success': False,
+                'message': 'process config reload is locked during an active debug session',
+            }
         result = self._call_trigger_client(
             self.reload_config_client,
             self.reload_config_service_name,
@@ -2078,6 +2806,17 @@ class WebHmiNode(Node):
     def call_command(self, command):
         if command == 'simulate_estop':
             return self.call_emergency_stop()
+
+        if self._debug_session_active() and command not in (
+                'manual_mode', 'clear_estop', 'request_reset'):
+            return {
+                'success': False,
+                'message': 'production commands are locked during an active point-debug session',
+            }
+
+        state_error = self._production_command_state_error(command)
+        if state_error:
+            return {'success': False, 'message': state_error}
 
         if command in self.workflow_commands:
             return self.call_workflow(self.workflow_commands[command])
@@ -2123,12 +2862,46 @@ class WebHmiNode(Node):
 
         return result_holder['result']
 
+    def _production_command_state_error(self, command):
+        cycle_commands = {
+            'outlet_1_done',
+            'outlet_2_done',
+            'actual_cycle_outlet_1',
+            'actual_cycle_outlet_2',
+        }
+        if command not in cycle_commands and command != 'detection_done':
+            return ''
+
+        cell = self.state_store.snapshot().get('spectrometer_cell', {})
+        state = cell.get('state', 'UNKNOWN')
+        context = cell.get('context') or {}
+        active_task = bool(context.get('has_active_task'))
+        paused_from = context.get('paused_from_state', 'UNKNOWN')
+
+        if command in cycle_commands:
+            allowed = state in ('IDLE', 'WAIT_DISCHARGE') or (
+                state == 'PAUSED' and not active_task and
+                paused_from in ('IDLE', 'WAIT_DISCHARGE'))
+            if not allowed:
+                return (
+                    f'{command} rejected in {state}: '
+                    'a new cycle may only start while waiting for discharge')
+            return ''
+
+        allowed = state == 'WAIT_DETECTION_DONE' or (
+            state == 'PAUSED' and active_task and
+            paused_from == 'WAIT_DETECTION_DONE')
+        if not allowed:
+            return (
+                f'detection_done rejected in {state}: '
+                'the cell is not waiting for detection completion')
+        return ''
+
     def call_emergency_stop(self):
         calls = [
             ('state_estop', self.command_clients.get('simulate_estop'), self.command_service_names.get('simulate_estop')),
             ('spectrometer_stop_motion', self.spectrometer_stop_motion_client, self.spectrometer_stop_motion_service_name),
             ('workflow_stop', self.workflow_stop_client, self.workflow_stop_service_name),
-            ('pose_tuner_stop', self.pose_tuner_stop_client, self.pose_tuner_stop_service_name),
         ]
         pending = []
         results = {}
@@ -2170,139 +2943,6 @@ class WebHmiNode(Node):
             'service': 'multi_stop',
             'results': results,
         }
-
-    def call_state_request(self, body):
-        target_state = str(body.get('target_state', '')).strip().upper()
-        reason = str(body.get('reason', '')).strip()
-        force = bool(body.get('force', False))
-        source = str(body.get('source', 'web_hmi')).strip() or 'web_hmi'
-
-        known_states = {
-            'INIT',
-            'IDLE',
-            'WAIT_DISCHARGE',
-            'SELECT_TASK',
-            'PICK_FROM_OUTLET',
-            'MEASURE_SPECTROMETER_BEFORE_PLACE',
-            'PLACE_TO_SPECTROMETER',
-            'START_DETECTION',
-            'WAIT_DETECTION_DONE',
-            'MEASURE_SPECTROMETER_BEFORE_PICK',
-            'PICK_FROM_SPECTROMETER',
-            'CLEAN_CUP',
-            'RETURN_CUP',
-            'COMPLETE_CYCLE',
-            'PAUSED',
-            'ESTOP',
-            'ERROR',
-            'RESET',
-        }
-        action_states = {
-            'PICK_FROM_OUTLET',
-            'MEASURE_SPECTROMETER_BEFORE_PLACE',
-            'PLACE_TO_SPECTROMETER',
-            'START_DETECTION',
-            'MEASURE_SPECTROMETER_BEFORE_PICK',
-            'PICK_FROM_SPECTROMETER',
-            'CLEAN_CUP',
-            'RETURN_CUP',
-        }
-
-        if target_state not in known_states:
-            return {
-                'success': False,
-                'accepted': False,
-                'message': f'unknown target_state: {target_state}',
-            }
-        if not reason:
-            return {
-                'success': False,
-                'accepted': False,
-                'message': 'state request rejected: reason is required',
-            }
-
-        snapshot = self.snapshot()
-        cell = snapshot.get('spectrometer_cell', {})
-        context = cell.get('context', {}) if isinstance(cell.get('context', {}), dict) else {}
-        current_state = cell.get('state') or context.get('state') or 'UNKNOWN'
-        has_active_task = bool(context.get('has_active_task', False))
-
-        self.get_logger().warn(
-            f'state request from={source} current={current_state} target={target_state} '
-            f'force={force} reason={reason}')
-
-        if target_state in action_states:
-            return {
-                'success': False,
-                'accepted': False,
-                'from_state': current_state,
-                'target_state': target_state,
-                'message': (
-                    'state request rejected: action states must be reached by the state machine; '
-                    'the HMI cannot jump directly into a robot action'
-                ),
-            }
-
-        if current_state == 'ESTOP' and target_state not in ('RESET', 'ESTOP'):
-            return {
-                'success': False,
-                'accepted': False,
-                'from_state': current_state,
-                'target_state': target_state,
-                'message': 'state request rejected: ESTOP requires clear_estop then RESET first',
-            }
-
-        command = None
-        if target_state == 'ESTOP':
-            command = 'simulate_estop'
-        elif target_state == 'RESET':
-            command = 'request_reset'
-        elif target_state == 'PAUSED':
-            command = 'manual_mode'
-        elif target_state == 'WAIT_DISCHARGE':
-            command = 'auto_mode'
-        elif target_state == 'IDLE':
-            if current_state in ('ERROR', 'ESTOP', 'RESET'):
-                command = 'request_reset'
-            elif has_active_task and not force:
-                return {
-                    'success': False,
-                    'accepted': False,
-                    'from_state': current_state,
-                    'target_state': target_state,
-                    'message': 'state request rejected: active task exists; use force only after manual safety check',
-                }
-            else:
-                command = 'manual_mode'
-        elif target_state in ('INIT', 'ERROR', 'COMPLETE_CYCLE', 'SELECT_TASK', 'WAIT_DETECTION_DONE'):
-            return {
-                'success': False,
-                'accepted': False,
-                'from_state': current_state,
-                'target_state': target_state,
-                'message': f'state request rejected: {target_state} is not exposed as a manual HMI transition',
-            }
-
-        if not command:
-            return {
-                'success': False,
-                'accepted': False,
-                'from_state': current_state,
-                'target_state': target_state,
-                'message': f'state request rejected: no command mapping for {target_state}',
-            }
-
-        result = self.call_command(command)
-        result.update({
-            'accepted': bool(result.get('success')),
-            'from_state': current_state,
-            'target_state': target_state,
-            'mapped_command': command,
-            'source': source,
-            'reason': reason,
-            'force': force,
-        })
-        return result
 
     def call_workflow(self, workflow_name):
         if not self.workflow_client.wait_for_service(timeout_sec=3.0):
@@ -2354,7 +2994,13 @@ class WebHmiNode(Node):
         except (TypeError, ValueError):
             return {'success': False, 'message': 'invalid speed scale'}
 
-        scale = max(0.20, min(1.20, scale))
+        if not math.isfinite(scale) or scale < 0.20 or scale > 1.00:
+            return {'success': False, 'message': 'speed scale must be between 20% and 100%'}
+        if self._debug_session_active():
+            return {
+                'success': False,
+                'message': 'speed changes are locked during an active point-debug session',
+            }
         if not self.speed_scale_client.wait_for_service(timeout_sec=2.0):
             return {
                 'success': False,
@@ -2418,130 +3064,6 @@ class WebHmiNode(Node):
         except Exception as exc:
             return {'success': False, 'message': f'camera restart failed: {exc}', 'log': log_path}
 
-    def call_pose_tuner_list(self):
-        if not self.pose_tuner_list_client.wait_for_service(timeout_sec=2.0):
-            result = {
-                'success': False,
-                'message': f'ROS service not ready: {self.pose_tuner_list_service_name}',
-                'targets': [],
-            }
-            self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-            return result
-
-        call_result = self._call_trigger_client(
-            self.pose_tuner_list_client,
-            self.pose_tuner_list_service_name,
-            timeout_sec=5.0)
-        if not call_result.get('success'):
-            result = {**call_result, 'targets': []}
-            self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-            return result
-
-        targets = self._parse_pose_tuner_targets(call_result.get('message', ''))
-        self.state_store.set_pose_tuner_targets(targets)
-        result = {
-            'success': True,
-            'message': f'loaded {len(targets)} pose tuner targets',
-            'targets': targets,
-            'service': self.pose_tuner_list_service_name,
-        }
-        self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-        return result
-
-    def call_pose_tuner_run(self, body):
-        target_name = str(body.get('target_name') or body.get('target') or '').strip()
-        dry_run = bool(body.get('dry_run', True))
-        debug_mode = bool(body.get('debug_mode', False))
-        source = str(body.get('source', 'web_hmi')).strip() or 'web_hmi'
-
-        validation = self._validate_pose_tuner_request(target_name, dry_run, debug_mode)
-        if not validation.get('success'):
-            result = {
-                **validation,
-                'target_name': target_name,
-                'dry_run': dry_run,
-                'debug_mode': debug_mode,
-                'source': source,
-            }
-            self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-            return result
-
-        if not self.pose_tuner_run_client.wait_for_service(timeout_sec=2.0):
-            result = {
-                'success': False,
-                'message': f'ROS service not ready: {self.pose_tuner_run_service_name}',
-                'target_name': target_name,
-                'dry_run': dry_run,
-                'debug_mode': debug_mode,
-                'source': source,
-            }
-            self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-            return result
-
-        event = threading.Event()
-        result_holder = {}
-        request = RunWorkflow.Request()
-        request.workflow_name = target_name
-        request.dry_run = dry_run
-        future = self.pose_tuner_run_client.call_async(request)
-
-        def _done(done_future):
-            try:
-                response = done_future.result()
-                result_holder['result'] = {
-                    'success': bool(response.success),
-                    'message': response.message,
-                    'service': self.pose_tuner_run_service_name,
-                    'target_name': target_name,
-                    'dry_run': dry_run,
-                    'debug_mode': debug_mode,
-                    'source': source,
-                }
-            except Exception as exc:
-                result_holder['result'] = {
-                    'success': False,
-                    'message': f'ROS pose tuner call failed: {exc}',
-                    'service': self.pose_tuner_run_service_name,
-                    'target_name': target_name,
-                    'dry_run': dry_run,
-                    'debug_mode': debug_mode,
-                    'source': source,
-                }
-            event.set()
-
-        future.add_done_callback(_done)
-        if not event.wait(timeout=8.0 if dry_run else 60.0):
-            result = {
-                'success': False,
-                'message': f'ROS pose tuner call timeout: {target_name}',
-                'service': self.pose_tuner_run_service_name,
-                'target_name': target_name,
-                'dry_run': dry_run,
-                'debug_mode': debug_mode,
-                'source': source,
-            }
-        else:
-            result = result_holder['result']
-
-        self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-        self.get_logger().warn(
-            f"pose_tuner_run source={source} debug_mode={debug_mode} target={target_name} "
-            f"dry_run={dry_run} success={result.get('success')} message={result.get('message')}")
-        return result
-
-    def call_pose_tuner_stop(self, body):
-        source = str(body.get('source', 'web_hmi')).strip() or 'web_hmi'
-        result = self._call_trigger_client(
-            self.pose_tuner_stop_client,
-            self.pose_tuner_stop_service_name,
-            timeout_sec=3.0)
-        result.update({'source': source, 'target_name': 'STOP', 'dry_run': False})
-        self.state_store.append_pose_tuner_log(self._pose_tuner_log_entry(result))
-        self.get_logger().warn(
-            f"pose_tuner_stop source={source} success={result.get('success')} "
-            f"message={result.get('message')}")
-        return result
-
     def _call_trigger_client(self, client, service_name, timeout_sec=5.0):
         if not client.wait_for_service(timeout_sec=timeout_sec):
             return {
@@ -2579,116 +3101,6 @@ class WebHmiNode(Node):
             }
         return result_holder['result']
 
-    def _validate_pose_tuner_request(self, target_name, dry_run, debug_mode):
-        if not debug_mode:
-            return {
-                'success': False,
-                'accepted': False,
-                'message': 'pose tuner rejected: debug mode is off',
-            }
-        if not target_name:
-            return {
-                'success': False,
-                'accepted': False,
-                'message': 'pose tuner rejected: target_name is required',
-            }
-
-        snapshot = self.snapshot()
-        cell = snapshot.get('spectrometer_cell', {})
-        context = cell.get('context', {}) if isinstance(cell.get('context', {}), dict) else {}
-        state = cell.get('state') or context.get('state') or 'UNKNOWN'
-        workflow = snapshot.get('workflow', {})
-        active_action = str(context.get('active_action_name') or '')
-        active_command_id = int(context.get('active_command_id') or 0)
-        has_active_task = bool(context.get('has_active_task', False))
-        auto_mode = bool(context.get('auto_mode', False))
-        workflow_state = int(workflow.get('state') or 0)
-        workflow_busy = workflow_state in (1, 2)
-
-        if state in ('ESTOP', 'ERROR'):
-            return {
-                'success': False,
-                'accepted': False,
-                'message': f'pose tuner rejected: state={state}',
-                'state': state,
-            }
-        if active_action or active_command_id:
-            return {
-                'success': False,
-                'accepted': False,
-                'message': f'pose tuner rejected: active action {active_action or active_command_id}',
-                'state': state,
-            }
-        if not dry_run and (auto_mode or has_active_task or workflow_busy or state not in ('IDLE', 'PAUSED', 'WAIT_DISCHARGE')):
-            return {
-                'success': False,
-                'accepted': False,
-                'message': (
-                    'pose tuner real execution rejected: robot is not idle/manual-safe '
-                    f'(state={state}, auto_mode={auto_mode}, has_active_task={has_active_task})'
-                ),
-                'state': state,
-            }
-        return {'success': True, 'accepted': True, 'message': 'pose tuner request accepted'}
-
-    def _parse_pose_tuner_targets(self, text):
-        targets = []
-        pattern = re.compile(
-            r'^(?P<name>[^|]+)\|\s*(?P<kind>pose|joint)\s+'
-            r'(?P<body>.*?)\s*\|\s*(?P<description>.*)$')
-        number = r'[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?'
-        xyz_re = re.compile(r'xyz_mm=\[(?P<xyz>[^\]]+)\]')
-        rpy_re = re.compile(r'rpy_deg=\[(?P<rpy>[^\]]+)\]')
-        joint_re = re.compile(r'rad=\[(?P<joints>[^\]]+)\]')
-
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            match = pattern.match(line)
-            if not match:
-                targets.append({
-                    'name': line.split('|', 1)[0].strip(),
-                    'kind': 'unknown',
-                    'description': line,
-                })
-                continue
-            body = match.group('body')
-            target = {
-                'name': match.group('name').strip(),
-                'kind': match.group('kind').strip(),
-                'description': match.group('description').strip(),
-            }
-            xyz_match = xyz_re.search(body)
-            rpy_match = rpy_re.search(body)
-            joint_match = joint_re.search(body)
-            if xyz_match:
-                values = [float(v) for v in re.findall(number, xyz_match.group('xyz'))]
-                target['xyz_mm'] = values[:3]
-            if rpy_match:
-                values = [float(v) for v in re.findall(number, rpy_match.group('rpy'))]
-                target['rpy_deg'] = values[:3]
-            if joint_match:
-                target['joints_rad'] = [float(v) for v in re.findall(number, joint_match.group('joints'))]
-            targets.append(target)
-        return targets
-
-    def _pose_tuner_log_entry(self, result):
-        snapshot = self.state_store.snapshot()
-        cell = snapshot.get('spectrometer_cell', {})
-        context = cell.get('context', {}) if isinstance(cell.get('context', {}), dict) else {}
-        return {
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'source': result.get('source', 'web_hmi'),
-            'debug_mode': bool(result.get('debug_mode', False)),
-            'target_name': result.get('target_name', ''),
-            'dry_run': bool(result.get('dry_run', False)),
-            'success': bool(result.get('success', False)),
-            'message': result.get('message', ''),
-            'robot_state': cell.get('state') or context.get('state') or 'UNKNOWN',
-            'active_action': context.get('active_action_name', ''),
-        }
-
     def get_camera_payload(self, channel):
         payload, content_type, error = self.camera_store.get_payload(channel)
         if payload is None:
@@ -2717,7 +3129,8 @@ def main(args=None):
         node.shutdown_http()
         executor.remove_node(node)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

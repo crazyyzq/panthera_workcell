@@ -44,6 +44,9 @@ public:
   ActionResult moveToOutletWait();
   ActionResult setSpeedScale(double scale);
   double speedScale() const;
+  ActionResult setBrush(bool enabled, double speed_percent);
+  ActionResult openGripper();
+  ActionResult closeGripper();
 
 private:
   ActionResult moveToNamedPose(const std::string & pose_name, const std::string & label);
@@ -83,8 +86,8 @@ private:
     bool & grasp_contact,
     std::string & error) const;
   ActionResult setCleaningMotor(bool enabled, const std::string & label);
-  ActionResult openGripper();
-  ActionResult closeGripper();
+  ActionResult setCleaningMotorDuty(
+    bool enabled, int duty_permille, const std::string & label);
   ActionResult simulateDelay(const std::string & label);
   ActionResult maybeSimulatedFailure(const std::string & action_name);
   ActionResult computeSpectrometerTarget(

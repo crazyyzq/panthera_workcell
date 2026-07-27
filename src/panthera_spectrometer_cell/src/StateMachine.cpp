@@ -298,7 +298,8 @@ std::vector<Event> StateMachine::collectEvents()
       stamp));
   }
 
-  if (manual_mode_enabled_.load() && state_ != State::PAUSED && state_ != State::ERROR &&
+  if (manual_mode_enabled_.load() && !context_.pauseRequested &&
+    state_ != State::PAUSED && state_ != State::ERROR &&
     state_ != State::ESTOP && state_ != State::RESET)
   {
     events.push_back(makeEvent(
@@ -615,6 +616,7 @@ void StateMachine::updatePickFromOutlet(const Event &)
   clearActiveAction();
 
   if (context_.pauseRequested) {
+    context_.pausedFromState = State::MEASURE_SPECTROMETER_BEFORE_PLACE;
     transitionTo(State::PAUSED, "pause requested after pick_from_outlet");
   } else {
     transitionTo(State::MEASURE_SPECTROMETER_BEFORE_PLACE, "cup picked from outlet");
@@ -651,6 +653,7 @@ void StateMachine::updatePlaceToSpectrometer(const Event &)
   clearActiveAction();
 
   if (context_.pauseRequested) {
+    context_.pausedFromState = State::START_DETECTION;
     transitionTo(State::PAUSED, "pause requested after place_to_spectrometer");
   } else {
     transitionTo(State::START_DETECTION, "cup placed to spectrometer");
@@ -723,6 +726,7 @@ void StateMachine::updatePickFromSpectrometer(const Event &)
   clearActiveAction();
 
   if (context_.pauseRequested) {
+    context_.pausedFromState = State::CLEAN_CUP;
     transitionTo(State::PAUSED, "pause requested after pick_from_spectrometer");
   } else {
     transitionTo(State::CLEAN_CUP, "cup picked from spectrometer");
@@ -744,6 +748,7 @@ void StateMachine::updateCleanCup(const Event &)
   clearActiveAction();
 
   if (context_.pauseRequested) {
+    context_.pausedFromState = State::RETURN_CUP;
     transitionTo(State::PAUSED, "pause requested after clean_cup");
   } else {
     transitionTo(State::RETURN_CUP, "cup cleaned");
@@ -766,6 +771,7 @@ void StateMachine::updateReturnCup(const Event &)
   clearActiveAction();
 
   if (context_.pauseRequested) {
+    context_.pausedFromState = State::COMPLETE_CYCLE;
     transitionTo(State::PAUSED, "pause requested after return_cup");
   } else {
     transitionTo(State::COMPLETE_CYCLE, "cup returned to original outlet");
@@ -932,15 +938,15 @@ bool StateMachine::transitionTo(State next, const std::string & reason)
 
 bool StateMachine::isTransitionAllowed(State from, State to, const CycleContext & ctx) const
 {
-  if (to == State::ESTOP) {
+  if (to == State::ESTOP || to == State::RESET) {
     return true;
   }
   switch (from) {
     case State::INIT:
       return to == State::IDLE || to == State::ERROR || to == State::ESTOP;
     case State::IDLE:
-      return to == State::WAIT_DISCHARGE || to == State::RESET || to == State::ERROR ||
-             to == State::ESTOP;
+      return to == State::WAIT_DISCHARGE || to == State::PAUSED || to == State::RESET ||
+             to == State::ERROR || to == State::ESTOP;
     case State::WAIT_DISCHARGE:
       return to == State::SELECT_TASK || to == State::PAUSED || to == State::ERROR ||
              to == State::ESTOP;
@@ -1138,8 +1144,6 @@ void StateMachine::onEnter(State state)
     auto_mode_enabled_ = false;
   }
   if (state == State::PAUSED) {
-    context_.pausedFromState =
-      context_.pausedFromState == State::INIT ? context_.previousState : context_.pausedFromState;
     auto_mode_enabled_ = false;
   }
 }
@@ -1149,7 +1153,9 @@ void StateMachine::fail(const std::string & message)
   std::string final_message = message;
   const bool estop_active = estop_pressed_ || state_ == State::ESTOP ||
     (sensors_ && sensors_->isEmergencyStopActive());
-  if (!estop_active && robot_) {
+  // INIT may start from an unknown physical pose. Never invent a collision-free
+  // recovery path before the encoders have confirmed the commissioned Home.
+  if (!estop_active && robot_ && state_ != State::INIT) {
     const auto recovery = robot_->recoverHomeAfterError();
     if (recovery.success) {
       RCLCPP_ERROR(logger_, "SAFETY_RECOVERY_OK %s", recovery.message.c_str());
@@ -1303,6 +1309,7 @@ bool StateMachine::startDetectionWithFeedback()
 bool StateMachine::pauseCurrentStateOrDefer()
 {
   switch (state_) {
+    case State::IDLE:
     case State::WAIT_DISCHARGE:
     case State::MEASURE_SPECTROMETER_BEFORE_PLACE:
     case State::WAIT_DETECTION_DONE:

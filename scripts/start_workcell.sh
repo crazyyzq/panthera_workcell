@@ -1,116 +1,298 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -Eeuo pipefail
 
-WS="${WS:-$HOME/panthera_workcell_ws}"
-LOG_ROOT="$WS/validation_logs"
+WS="${WS:-/home/b1/panthera_workcell_ws}"
 RUNTIME_DIR="$WS/.runtime"
+LOG_ROOT="$WS/validation_logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="$LOG_ROOT/${STAMP}_start_workcell"
+PID_FILE="$RUNTIME_DIR/workcell.pid"
+START_TIMEOUT_SEC="${START_TIMEOUT_SEC:-45}"
+START_ATTEMPTS="${START_ATTEMPTS:-2}"
+START_RETRY_DELAY_SEC="${START_RETRY_DELAY_SEC:-5}"
+SPEED_SCALE="${SPEED_SCALE:-1.0}"
+HMI_PORT="${HMI_PORT:-8080}"
+ROBOT_CONFIG="${ROBOT_CONFIG:-$WS/install/panthera_ht_config/share/panthera_ht_config/robot_param/Follower_absolute.yaml}"
+CELL_CONFIG="${CELL_CONFIG:-$WS/install/panthera_spectrometer_cell/share/panthera_spectrometer_cell/config/spectrometer_cell.yaml}"
+KEEP_RUNNING_ON_FAILURE=0
 
 mkdir -p "$LOG_DIR" "$RUNTIME_DIR"
 cd "$WS"
+exec 9>"$RUNTIME_DIR/workcell.lock"
+if ! flock -n 9; then
+  echo "[start] ERROR: another start/stop operation is running"
+  exit 10
+fi
+
+exec > >(tee -a "$LOG_DIR/start.log") 2>&1
 
 source_workspace()
 {
+  set +u
+  # shellcheck disable=SC1091
   source /opt/ros/humble/setup.bash
-  if [ -f "$WS/install/setup.bash" ]; then
-    source "$WS/install/setup.bash"
-  fi
-}
-
-ensure_required_packages()
-{
-  local required_packages=(
-    hightorque_robot
-    panthera_hardware
-    panthera_ht_config
-    panthera_ht_ros_description
-    panthera_interfaces
-    panthera_rs485
-    panthera_task_framework
-    panthera_spectrometer_cell
-    panthera_pose_tuner
-    panthera_web_hmi
-  )
-  local missing=()
-
-  source_workspace
-  for package_name in "${required_packages[@]}"; do
-    if ! ros2 pkg prefix "$package_name" >/dev/null 2>&1; then
-      missing+=("$package_name")
-    fi
-  done
-
-  if [ "${#missing[@]}" -eq 0 ]; then
-    return 0
-  fi
-
-  echo "[start] workspace install is incomplete; missing packages: ${missing[*]}"
-  echo "[start] running colcon build --symlink-install before launch..."
-  colcon build --symlink-install > "$LOG_DIR/prestart_build.log" 2>&1
-  source_workspace
-
-  missing=()
-  for package_name in "${required_packages[@]}"; do
-    if ! ros2 pkg prefix "$package_name" >/dev/null 2>&1; then
-      missing+=("$package_name")
-    fi
-  done
-  if [ "${#missing[@]}" -ne 0 ]; then
-    echo "[start] ERROR: packages still missing after build: ${missing[*]}"
-    echo "[start] build log: $LOG_DIR/prestart_build.log"
-    exit 2
-  fi
-}
-
-source /opt/ros/humble/setup.bash
-if [ -f "$WS/install/setup.bash" ]; then
+  # shellcheck disable=SC1091
   source "$WS/install/setup.bash"
+  set -u
+  export RCUTILS_COLORIZED_OUTPUT=0
+  # Every ROS control node runs on this IPC; remote operators use HTTP/SSH.
+  # Pin DDS to UDP loopback so unplugging or changing an external NIC cannot
+  # split the control graph, and stale Fast DDS SHM locks cannot block startup.
+  export ROS_LOCALHOST_ONLY=1
+  export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+}
+
+reset_ros2_daemon()
+{
+  timeout 3 ros2 daemon stop >/dev/null 2>&1 || true
+  pkill -TERM -f '[f]rom ros2cli.daemon.daemonize import main' 2>/dev/null || true
+  local cli_pattern='/opt/ros/humble/bin/ros2 (action|bag|control|doctor|interface|node|param|pkg|run|service|topic)( |$)'
+  pkill -TERM -f "$cli_pattern" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    pgrep -f "$cli_pattern" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  pkill -KILL -f "$cli_pattern" 2>/dev/null || true
+}
+
+fail()
+{
+  echo "[start] ERROR: $*"
+  exit 1
+}
+
+require_fresh_artifact()
+{
+  local source_dir="$1" artifact="$2" label="$3"
+  [[ -e "$artifact" ]] || fail "installed artifact missing: $artifact"
+  local build_stamp="$WS/build/$label/colcon_build.rc"
+  [[ -e "$build_stamp" ]] || fail "build stamp missing for $label; rebuild before production start"
+  if find "$source_dir" -type f \
+    \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name 'CMakeLists.txt' -o -name 'package.xml' \) \
+    -newer "$build_stamp" -print -quit | grep -q .; then
+    fail "$label source is newer than its installed binary; rebuild before production start"
+  fi
+}
+
+launcher_alive()
+{
+  [[ -s "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(cat "$PID_FILE")"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+related_processes()
+{
+  pgrep -f 'fixed_spectrometer_cell\.launch\.py|motion_server_node|spectrometer_cell_node|web_hmi_node|ros2_control_node|laser_distance_node|panthera_task_framework.*application_bringup|workflow_executor_node|pose_tuner_node|move_group' || true
+}
+
+controllers_ready()
+{
+  local state
+  state="$(timeout 5 ros2 control list_controllers 2>/dev/null | sed -r $'s/\\x1B\\[[0-9;]*[mK]//g')" || return 1
+  grep -Eq '^arm_controller[[:space:]].*active' <<<"$state" &&
+    grep -Eq '^gripper_controller[[:space:]].*active' <<<"$state" &&
+    grep -Eq '^joint_state_broadcaster[[:space:]].*active' <<<"$state"
+}
+
+motion_ready()
+{
+  local reply
+  reply="$(timeout 5 ros2 service call /motion/health std_srvs/srv/Trigger '{}' 2>/dev/null)" || return 1
+  grep -q 'success=True' <<<"$reply" && grep -q 'controller=ready' <<<"$reply" && grep -q 'state=settled' <<<"$reply"
+}
+
+hmi_ready()
+{
+  curl -fsS --max-time 2 "http://127.0.0.1:${HMI_PORT}/api/status" | python3 -c '
+import json, sys
+d=json.load(sys.stdin)
+cell=d.get("spectrometer_cell", {})
+state=cell.get("state", "")
+age=cell.get("state_age_sec", 999)
+laser=d.get("laser", {})
+laser_age=laser.get("age_sec")
+laser_distance=laser.get("distance_mm")
+services=d.get("services", {})
+required=("auto_mode", "actual_cycle_outlet_1", "detection_done", "speed_scale")
+ok=state in {"IDLE", "WAIT_DISCHARGE", "PAUSED"} and age is not None and age < 5
+ok=ok and all(services.get(name, {}).get("ready", False) for name in required)
+ok=ok and laser.get("valid", False) and isinstance(laser_age, (int, float)) and laser_age < 2
+print(f"state={state} age={age} laser={laser_distance} laser_age={laser_age}")
+raise SystemExit(0 if ok else 1)
+'
+}
+
+actuators_holding()
+{
+  curl -fsS --max-time 2 "http://127.0.0.1:${HMI_PORT}/api/status" | python3 -c '
+import json, sys
+d=json.load(sys.stdin)
+joint=d.get("joint_state", {})
+names=joint.get("names", [])
+efforts=joint.get("efforts", [])
+age=joint.get("age_sec")
+by_name=dict(zip(names, efforts))
+# At the commissioned Home pose these gravity-loaded joints are well above
+# 6 Nm combined. A braked-but-readable SDK connection reports approximately
+# zero while every ROS controller still appears active.
+gravity_effort=sum(abs(float(by_name.get(name, 0.0))) for name in ("joint2", "joint3", "joint4"))
+ok=isinstance(age, (int, float)) and age < 1.0 and gravity_effort > 0.5
+print(f"joint_age={age} gravity_effort={gravity_effort:.3f}")
+raise SystemExit(0 if ok else 1)
+'
+}
+
+cleanup_failed_attempt()
+{
+  if [[ "$KEEP_RUNNING_ON_FAILURE" -eq 1 ]]; then
+    echo "[start] hardware remains enabled and holding position; inspect before shutdown"
+    return
+  fi
+  WORKCELL_LOCK_HELD=1 STOP_WAIT_SEC=0 "$WS/scripts/stop_workcell.sh" --for-restart || true
+}
+
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then ln -sfn "$LOG_DIR" "$RUNTIME_DIR/latest_log"; cleanup_failed_attempt; echo "[start] failed; logs: $LOG_DIR"; fi' EXIT
+trap 'echo "[start] interrupted; performing guarded cleanup"; exit 130' INT
+trap 'echo "[start] terminated; performing guarded cleanup"; exit 143' HUP TERM
+
+echo "[start] preflight workspace=$WS speed=${SPEED_SCALE} hmi_port=${HMI_PORT}"
+[[ -r /opt/ros/humble/setup.bash ]] || fail "ROS 2 Humble is not installed"
+[[ -r "$WS/install/setup.bash" ]] || fail "workspace is not built; run colcon build first"
+[[ -r "$ROBOT_CONFIG" ]] || fail "robot hardware config is missing: $ROBOT_CONFIG"
+[[ -r "$CELL_CONFIG" ]] || fail "workcell process config is missing: $CELL_CONFIG"
+source_workspace
+# ros2controlcli uses the ROS 2 daemon even for local service calls. A daemon
+# left behind by a previous DDS/NIC configuration can remain in !rclpy.ok().
+reset_ros2_daemon
+for command in ros2 curl python3 flock setsid pgrep pkill chrt; do
+  command -v "$command" >/dev/null || fail "required command missing: $command"
+done
+rt_priority_limit="$(ulimit -r)"
+[[ "$rt_priority_limit" =~ ^[0-9]+$ && "$rt_priority_limit" -ge 50 ]] ||
+  fail "realtime priority is unavailable (ulimit -r=$rt_priority_limit); log in again after installing config/system/99-panthera-realtime.conf"
+[[ "$(ulimit -l)" == "unlimited" ]] ||
+  fail "locked memory is limited; install config/system/99-panthera-realtime.conf and log in again"
+chrt -f 50 true >/dev/null 2>&1 ||
+  fail "SCHED_FIFO 50 is unavailable for user $(id -un)"
+[[ -c /dev/ttyS8 && -r /dev/ttyS8 && -w /dev/ttyS8 ]] || fail "/dev/ttyS8 is missing or inaccessible"
+[[ -c /dev/ttyS4 && -r /dev/ttyS4 && -w /dev/ttyS4 ]] || fail "/dev/ttyS4 is missing or inaccessible"
+[[ "$SPEED_SCALE" =~ ^(0\.[0-9]+|1(\.0+)?)$ ]] || fail "SPEED_SCALE must be in (0,1]"
+[[ "$HMI_PORT" =~ ^[0-9]+$ ]] || fail "HMI_PORT must be numeric"
+
+for package in panthera_hardware panthera_motion panthera_spectrometer_cell panthera_web_hmi; do
+  ros2 pkg prefix "$package" >/dev/null 2>&1 || fail "installed package missing: $package"
+done
+require_fresh_artifact \
+  "$WS/src/panthera_hardware" \
+  "$WS/install/panthera_hardware/lib/libpanthera_hardware.so" \
+  panthera_hardware
+require_fresh_artifact \
+  "$WS/src/panthera_motion" \
+  "$WS/install/panthera_motion/lib/panthera_motion/motion_server_node" \
+  panthera_motion
+require_fresh_artifact \
+  "$WS/src/panthera_spectrometer_cell" \
+  "$WS/install/panthera_spectrometer_cell/lib/panthera_spectrometer_cell/spectrometer_cell_node" \
+  panthera_spectrometer_cell
+python3 "$WS/scripts/check_home.py" --self-test >/dev/null
+
+if launcher_alive && hmi_ready >/dev/null && motion_ready &&
+  python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 >/dev/null 2>&1 &&
+  actuators_holding >/dev/null; then
+  [[ -L "$RUNTIME_DIR/active_log" ]] && ln -sfn "$(readlink -f "$RUNTIME_DIR/active_log")" "$RUNTIME_DIR/latest_log"
+  echo "[start] workcell is already healthy (pid=$(cat "$PID_FILE"))"
+  echo "[start] HMI: http://$(hostname -I | awk '{print $1}'):${HMI_PORT}"
+  exit 0
 fi
 
-echo "[start] log directory: $LOG_DIR"
-ensure_required_packages
-
-if pgrep -f "ros2 launch .*panthera_" >/dev/null 2>&1 || pgrep -f "spectrometer_cell_node|web_hmi_node|workflow_executor_node" >/dev/null 2>&1; then
-  echo "[start] existing workcell ROS processes detected."
-  echo "[start] run scripts/stop_workcell.sh first if you want a clean restart."
+if [[ -n "$(related_processes)" ]]; then
+  echo "[start] stale/conflicting workcell processes found; performing guarded cleanup"
+  WORKCELL_LOCK_HELD=1 "$WS/scripts/stop_workcell.sh" --for-restart || fail "existing process cleanup was not safe/successful"
 fi
+rm -f "$PID_FILE"
 
-nohup ros2 launch panthera_task_framework application_bringup.launch.py \
-  start_hardware:=true \
-  start_workflow:=true \
-  start_laser:=true \
-  start_state_signal:=false \
-  start_io:=false \
-  execute_motion:=true \
-  rviz:=false \
-  laser_port:=/dev/ttyS4 \
-  > "$LOG_DIR/base_bringup.log" 2>&1 &
-echo $! > "$RUNTIME_DIR/base_bringup.pid"
-echo "[start] base bringup pid=$(cat "$RUNTIME_DIR/base_bringup.pid")"
+for attempt in $(seq 1 "$START_ATTEMPTS"); do
+  if (( attempt > 1 )); then
+    echo "[start] waiting ${START_RETRY_DELAY_SEC}s before hardware reconnect"
+    sleep "$START_RETRY_DELAY_SEC"
+  fi
+  echo "[start] launch attempt $attempt/$START_ATTEMPTS"
+  setsid ros2 launch panthera_motion fixed_spectrometer_cell.launch.py \
+    default_speed_scale:="$SPEED_SCALE" \
+    hardware_config_file:="$ROBOT_CONFIG" \
+    cell_config_file:="$CELL_CONFIG" \
+    start_hardware:=true simulation:=false start_hmi:=true hmi_port:="$HMI_PORT" \
+    >"$LOG_DIR/launch_attempt_${attempt}.log" 2>&1 < /dev/null 9>&- &
+  launch_pid=$!
+  printf '%s\n' "$launch_pid" >"$PID_FILE.tmp"
+  mv "$PID_FILE.tmp" "$PID_FILE"
 
-sleep 6
+  home_checked=0
+  attempt_deadline=$((SECONDS + START_TIMEOUT_SEC))
+  second=0
+  while (( SECONDS < attempt_deadline )); do
+    second=$((second + 1))
+    if ! kill -0 "$launch_pid" 2>/dev/null; then
+      echo "[start] launcher exited during startup"
+      break
+    fi
+    if (( second >= 5 )) &&
+      ! pgrep -f 'controller_manager/ros2_control_node' >/dev/null 2>&1 &&
+      grep -q 'Failed to initialize Panthera robot' "$LOG_DIR/launch_attempt_${attempt}.log"; then
+      echo "[start] hardware initialization failed; check controller power/network"
+      break
+    fi
+    if controllers_ready && motion_ready; then
+      if python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 >>"$LOG_DIR/home_check.log" 2>&1; then
+        home_checked=1
+      else
+        home_rc=$?
+        if [[ "$home_rc" -eq 2 ]]; then
+          if timeout 45 ros2 service call /spectrometer_cell/recover_home std_srvs/srv/Trigger '{}' \
+              >"$LOG_DIR/startup_home_recovery.log" 2>&1 &&
+            grep -q 'success=True' "$LOG_DIR/startup_home_recovery.log" &&
+            python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 \
+              >>"$LOG_DIR/home_check.log" 2>&1 &&
+            timeout 8 ros2 service call /spectrometer_cell/request_reset std_srvs/srv/Trigger '{}' \
+              >"$LOG_DIR/startup_state_reset.log" 2>&1 &&
+            grep -q 'success=True' "$LOG_DIR/startup_state_reset.log"; then
+            echo "[start] recovered startup pose and state to commissioned Home"
+            home_checked=1
+          else
+            KEEP_RUNNING_ON_FAILURE=1
+            fail "robot is not safely recoverable to commissioned Home; system left powered and holding"
+          fi
+        fi
+      fi
+    fi
+    if [[ "$home_checked" -eq 1 ]] &&
+      hmi_ready >>"$LOG_DIR/health_wait.log" 2>&1 &&
+      actuators_holding >>"$LOG_DIR/health_wait.log" 2>&1; then
+      echo "[start] READY pid=$launch_pid state=settled controllers=active Home=verified"
+      echo "[start] HMI: http://$(hostname -I | awk '{print $1}'):${HMI_PORT}"
+      echo "[start] logs: $LOG_DIR"
+      ln -sfn "$LOG_DIR" "$RUNTIME_DIR/active_log"
+      ln -sfn "$LOG_DIR" "$RUNTIME_DIR/latest_log"
+      trap - EXIT
+      exit 0
+    fi
+    sleep 1
+  done
 
-nohup ros2 launch panthera_web_hmi spectrometer_cell_hmi.launch.py \
-  simulation:=false \
-  start_cell:=true \
-  start_camera:=true \
-  start_workflow:=false \
-  start_laser:=false \
-  start_pose_tuner:=true \
-  camera_color_width:=1280 \
-  camera_color_height:=800 \
-  camera_depth_width:=1280 \
-  camera_depth_height:=800 \
-  camera_color_fps:=30 \
-  camera_depth_fps:=30 \
-  camera_max_width:=640 \
-  camera_target_fps:=30.0 \
-  camera_worker_threads:=4 \
-  > "$LOG_DIR/hmi_cell_camera.log" 2>&1 &
-echo $! > "$RUNTIME_DIR/hmi_cell_camera.pid"
-echo "[start] hmi/cell/camera pid=$(cat "$RUNTIME_DIR/hmi_cell_camera.pid")"
+  if [[ "$home_checked" -eq 1 ]]; then
+    echo "[start] attempt $attempt failed health checks; safe cleanup before retry"
+    WORKCELL_LOCK_HELD=1 STOP_WAIT_SEC=0 "$WS/scripts/stop_workcell.sh" --for-restart || fail "failed attempt could not be cleaned safely"
+    rm -f "$PID_FILE"
+  elif pgrep -f 'controller_manager/ros2_control_node' >/dev/null 2>&1; then
+    KEEP_RUNNING_ON_FAILURE=1
+    fail "startup health unavailable; system left powered to avoid an unsafe disable"
+  else
+    echo "[start] hardware process is not active; cleaning failed launch before retry"
+    WORKCELL_LOCK_HELD=1 STOP_WAIT_SEC=0 "$WS/scripts/stop_workcell.sh" --for-restart || true
+    rm -f "$PID_FILE"
+  fi
+done
 
-ln -sfn "$LOG_DIR" "$RUNTIME_DIR/latest_log"
-echo "[start] HMI: http://$(hostname -I | awk '{print $1}'):8080"
-echo "[start] logs: $LOG_DIR"
+fail "workcell did not become ready after $START_ATTEMPTS attempts"

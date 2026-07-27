@@ -128,6 +128,7 @@ TEST(TrajectoryStart, UsesMeasuredStationaryStateWithoutChangingLaterPoints)
   trajectory.points.push_back(start);
   trajectory_msgs::msg::JointTrajectoryPoint end;
   end.positions = {3.0, 4.0};
+  end.time_from_start.nanosec = 50'000'000;
   trajectory.points.push_back(end);
 
   const double correction = panthera_motion::alignTrajectoryStart(
@@ -138,6 +139,7 @@ TEST(TrajectoryStart, UsesMeasuredStationaryStateWithoutChangingLaterPoints)
   EXPECT_EQ(trajectory.points.front().velocities, (std::vector<double>{0.0, 0.0}));
   EXPECT_EQ(trajectory.points.front().accelerations, (std::vector<double>{0.0, 0.0}));
   EXPECT_EQ(trajectory.points.back().positions, (std::vector<double>{3.0, 4.0}));
+  EXPECT_EQ(trajectory.points.back().time_from_start.nanosec, 250'000'000u);
 }
 
 TEST(TrajectoryStart, RejectsDimensionMismatch)
@@ -149,6 +151,28 @@ TEST(TrajectoryStart, RejectsDimensionMismatch)
   EXPECT_THROW(
     panthera_motion::alignTrajectoryStart(trajectory, {1.0, 2.0}),
     std::invalid_argument);
+}
+
+TEST(TrajectoryResume, StartsSettledAtNearestRemainingPoint)
+{
+  trajectory_msgs::msg::JointTrajectory source;
+  source.joint_names = {"joint1"};
+  for (int index = 0; index < 4; ++index) {
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions = {static_cast<double>(index)};
+    point.velocities = {1.0};
+    point.accelerations = {0.0};
+    point.time_from_start.sec = index;
+    source.points.push_back(point);
+  }
+
+  const auto resumed = panthera_motion::makeResumeTrajectory(source, {1.1}, 0.2);
+
+  ASSERT_EQ(resumed.points.size(), 3u);
+  EXPECT_EQ(resumed.points.front().positions, (std::vector<double>{1.1}));
+  EXPECT_EQ(resumed.points.front().velocities, (std::vector<double>{0.0}));
+  EXPECT_DOUBLE_EQ(panthera_motion::trajectoryDurationSec(resumed), 2.0);
+  EXPECT_EQ(resumed.points.back().positions, (std::vector<double>{3.0}));
 }
 
 TEST(MotionState, PositionSlopeIgnoresStationaryEncoderJitter)
@@ -265,7 +289,21 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
     ASSERT_NE(point, nullptr) << name;
     EXPECT_TRUE(point->pose.has_value()) << name;
     EXPECT_NE(std::find(point->tags.begin(), point->tags.end(), "tunable"), point->tags.end());
+
+    const auto * entry = catalog.findRoute("debug_safe_to_" + name);
+    const auto * exit = catalog.findRoute("debug_" + name + "_to_safe");
+    ASSERT_NE(entry, nullptr) << name;
+    ASSERT_NE(exit, nullptr) << name;
+    ASSERT_FALSE(entry->segments.empty()) << name;
+    ASSERT_FALSE(exit->segments.empty()) << name;
+    EXPECT_EQ(entry->start, "safe_joint_center") << name;
+    EXPECT_EQ(entry->segments.back().to, name) << name;
+    EXPECT_EQ(exit->start, name) << name;
+    EXPECT_EQ(exit->segments.back().to, "safe_joint_center") << name;
   }
+
+  EXPECT_NE(catalog.findRoute("home_to_safe_center"), nullptr);
+  EXPECT_NE(catalog.findRoute("safe_center_to_home"), nullptr);
 
   const std::set<std::string> required_routes{
     "outlet_wait_to_outlet_1_grasp",

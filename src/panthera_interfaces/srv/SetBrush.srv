@@ -1,0 +1,8 @@
+# Set the RS485 brush state. Duty is absolute percent; configured direction is retained.
+bool enabled
+float64 speed_percent
+---
+bool success
+string message
+bool enabled
+float64 applied_speed_percent

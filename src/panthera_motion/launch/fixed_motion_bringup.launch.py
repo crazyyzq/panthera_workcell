@@ -12,6 +12,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     start_hardware = LaunchConfiguration('start_hardware')
+    hardware_config_file = LaunchConfiguration('hardware_config_file')
     control_mode = LaunchConfiguration('control_mode')
     mit_kp = LaunchConfiguration('mit_kp')
     mit_kd = LaunchConfiguration('mit_kd')
@@ -24,6 +25,11 @@ def generate_launch_description():
         'config',
         'motion_catalog.yaml',
     ])
+    default_hardware_config = PathJoinSubstitution([
+        FindPackageShare('panthera_ht_config'),
+        'robot_param',
+        'Follower_absolute.yaml',
+    ])
 
     hardware_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -33,7 +39,10 @@ def generate_launch_description():
                 'hardware.launch.py',
             ])
         ]),
-        launch_arguments={'control_mode': control_mode}.items(),
+        launch_arguments={
+            'config_file': hardware_config_file,
+            'control_mode': control_mode,
+        }.items(),
         condition=IfCondition(start_hardware),
     )
 
@@ -64,6 +73,9 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('start_hardware', default_value='true'),
         DeclareLaunchArgument(
+            'hardware_config_file',
+            default_value=default_hardware_config),
+        DeclareLaunchArgument(
             'control_mode',
             default_value='mit_gravity_compensation'),
         DeclareLaunchArgument(
@@ -74,9 +86,13 @@ def generate_launch_description():
             default_value='5.5,5.5,5.5,5.5,5.5,5.5'),
         DeclareLaunchArgument(
             'mit_gravity_scale',
-            default_value='0.0,1.0,1.5,0.0,0.0,0.0'),
+            default_value='0.0,1.0,1.5,1.0,0.0,0.0'),
         DeclareLaunchArgument('catalog_file', default_value=default_catalog),
         DeclareLaunchArgument('default_speed_scale', default_value='0.20'),
+        SetEnvironmentVariable(name='ROS_LOCALHOST_ONLY', value='1'),
+        SetEnvironmentVariable(
+            name='FASTDDS_BUILTIN_TRANSPORTS',
+            value='UDPv4'),
         SetEnvironmentVariable(name='PANTHERA_MIT_KP', value=mit_kp),
         SetEnvironmentVariable(name='PANTHERA_MIT_KD', value=mit_kd),
         SetEnvironmentVariable(

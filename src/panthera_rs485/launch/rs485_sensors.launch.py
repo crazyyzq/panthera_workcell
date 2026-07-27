@@ -75,6 +75,8 @@ def generate_launch_description():
                     'publish_pose': ParameterValue(laser_publish_pose, value_type=bool),
                 },
             ],
+            respawn=True,
+            respawn_delay=2.0,
             condition=IfCondition(start_laser),
         ),
         Node(

@@ -12,6 +12,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 #include <Eigen/Geometry>
@@ -253,77 +254,125 @@ ValidationResult enforceQuinticDynamicsLimits(
     }
   }
 
-  // Use one uniform scale for the whole compiled route. This keeps every
-  // waypoint derivative proportional and avoids the reference-speed ripple
-  // produced by independently stretching adjacent Cartesian intervals.
-  double global_stretch = 1.0;
+  const double initial_duration = durationToSeconds(trajectory.points.back().time_from_start);
   std::size_t limiting_index = 0;
   std::size_t limiting_joint = 0;
   double limiting_peak = 0.0;
   double limiting_limit = 0.0;
   const char * limiting_kind = "none";
-  for (std::size_t index = 1; index < trajectory.points.size(); ++index) {
-    const auto & previous = trajectory.points[index - 1];
-    const auto & current = trajectory.points[index];
-    const double interval =
-      durationToSeconds(current.time_from_start) -
-      durationToSeconds(previous.time_from_start);
-    if (interval <= 1e-9 || previous.positions.size() != joint_count ||
-      current.positions.size() != joint_count || previous.velocities.size() != joint_count ||
-      current.velocities.size() != joint_count ||
-      previous.accelerations.size() != joint_count ||
-      current.accelerations.size() != joint_count)
-    {
-      return ValidationResult::fail(
-        "trajectory points must contain increasing time and complete "
-        "position/velocity/acceleration dynamics");
-    }
-    for (std::size_t joint = 0; joint < joint_count; ++joint) {
-      const auto bounds = quinticDynamicBounds(
-        previous.positions[joint], previous.velocities[joint],
-        previous.accelerations[joint], current.positions[joint],
-        current.velocities[joint], current.accelerations[joint], interval);
-      if (!std::isfinite(bounds.velocity) || !std::isfinite(bounds.acceleration) ||
-        !std::isfinite(bounds.jerk))
+  bool limits_satisfied = false;
+  double residual_stretch = 1.0;
+  for (int pass = 0; pass < 20; ++pass) {
+    std::vector<double> interval_stretch(trajectory.points.size(), 1.0);
+    double maximum_stretch = 1.0;
+    for (std::size_t index = 1; index < trajectory.points.size(); ++index) {
+      const auto & previous = trajectory.points[index - 1];
+      const auto & current = trajectory.points[index];
+      const double interval =
+        durationToSeconds(current.time_from_start) -
+        durationToSeconds(previous.time_from_start);
+      if (interval <= 1e-9 || previous.positions.size() != joint_count ||
+        current.positions.size() != joint_count || previous.velocities.size() != joint_count ||
+        current.velocities.size() != joint_count ||
+        previous.accelerations.size() != joint_count ||
+        current.accelerations.size() != joint_count)
       {
-        return ValidationResult::fail("trajectory contains non-finite quintic dynamics");
+        return ValidationResult::fail(
+          "trajectory points must contain increasing time and complete "
+          "position/velocity/acceleration dynamics");
       }
-      const auto retain_limiter =
-        [&](double candidate, const char * kind, double peak, double limit) {
-          if (candidate > global_stretch) {
-            global_stretch = candidate;
+      for (std::size_t joint = 0; joint < joint_count; ++joint) {
+        const auto bounds = quinticDynamicBounds(
+          previous.positions[joint], previous.velocities[joint],
+          previous.accelerations[joint], current.positions[joint],
+          current.velocities[joint], current.accelerations[joint], interval);
+        if (!std::isfinite(bounds.velocity) || !std::isfinite(bounds.acceleration) ||
+          !std::isfinite(bounds.jerk))
+        {
+          return ValidationResult::fail("trajectory contains non-finite quintic dynamics");
+        }
+        const std::array<std::tuple<double, const char *, double, double>, 3> candidates{{
+          {bounds.velocity / max_velocities_rad_sec[joint], "velocity",
+            bounds.velocity, max_velocities_rad_sec[joint]},
+          {std::sqrt(bounds.acceleration / max_accelerations_rad_sec2[joint]), "acceleration",
+            bounds.acceleration, max_accelerations_rad_sec2[joint]},
+          {std::cbrt(bounds.jerk / max_jerk_rad_sec3), "jerk",
+            bounds.jerk, max_jerk_rad_sec3}}};
+        for (const auto & candidate : candidates) {
+          if (std::get<0>(candidate) > interval_stretch[index]) {
+            interval_stretch[index] = std::get<0>(candidate);
+          }
+          if (std::get<0>(candidate) > maximum_stretch) {
+            maximum_stretch = std::get<0>(candidate);
             limiting_index = index;
             limiting_joint = joint;
-            limiting_peak = peak;
-            limiting_limit = limit;
-            limiting_kind = kind;
+            limiting_peak = std::get<2>(candidate);
+            limiting_limit = std::get<3>(candidate);
+            limiting_kind = std::get<1>(candidate);
           }
-        };
-      retain_limiter(
-        bounds.velocity / max_velocities_rad_sec[joint], "velocity",
-        bounds.velocity, max_velocities_rad_sec[joint]);
-      retain_limiter(
-        std::sqrt(bounds.acceleration / max_accelerations_rad_sec2[joint]),
-        "acceleration", bounds.acceleration, max_accelerations_rad_sec2[joint]);
-      retain_limiter(
-        std::cbrt(bounds.jerk / max_jerk_rad_sec3), "jerk",
-        bounds.jerk, max_jerk_rad_sec3);
+        }
+      }
+    }
+    residual_stretch = maximum_stretch;
+    if (maximum_stretch <= 1.001) {
+      limits_satisfied = true;
+      break;
+    }
+
+    for (auto & stretch : interval_stretch) {
+      stretch = std::max(1.0, stretch * 1.001);
+    }
+    constexpr double maximum_neighbor_ratio = 1.25;
+    for (std::size_t index = 2; index < interval_stretch.size(); ++index) {
+      interval_stretch[index] = std::max(
+        interval_stretch[index], interval_stretch[index - 1] / maximum_neighbor_ratio);
+    }
+    for (std::size_t index = interval_stretch.size() - 1; index > 1; --index) {
+      interval_stretch[index - 1] = std::max(
+        interval_stretch[index - 1], interval_stretch[index] / maximum_neighbor_ratio);
+    }
+
+    std::vector<double> old_times;
+    old_times.reserve(trajectory.points.size());
+    for (const auto & point : trajectory.points) {
+      old_times.push_back(durationToSeconds(point.time_from_start));
+    }
+    double new_time = 0.0;
+    for (std::size_t index = 0; index < trajectory.points.size(); ++index) {
+      if (index > 0) {
+        new_time += (old_times[index] - old_times[index - 1]) * interval_stretch[index];
+      }
+      auto & point = trajectory.points[index];
+      point.time_from_start = secondsToDuration(new_time);
+      const double incoming = index == 0 ? interval_stretch[1] : interval_stretch[index];
+      const double outgoing = index + 1 < interval_stretch.size() ?
+        interval_stretch[index + 1] : incoming;
+      const double waypoint_stretch = std::max(incoming, outgoing);
+      for (auto & velocity : point.velocities) {
+        velocity /= waypoint_stretch;
+      }
+      for (auto & acceleration : point.accelerations) {
+        acceleration /= waypoint_stretch * waypoint_stretch;
+      }
     }
   }
-  global_stretch *= 1.001;
-  for (auto & point : trajectory.points) {
-    point.time_from_start = secondsToDuration(
-      durationToSeconds(point.time_from_start) * global_stretch);
-    for (auto & velocity : point.velocities) {
-      velocity /= global_stretch;
-    }
-    for (auto & acceleration : point.accelerations) {
-      acceleration /= global_stretch * global_stretch;
+  if (!limits_satisfied) {
+    residual_stretch *= 1.001;
+    for (auto & point : trajectory.points) {
+      point.time_from_start = secondsToDuration(
+        durationToSeconds(point.time_from_start) * residual_stretch);
+      for (auto & velocity : point.velocities) {
+        velocity /= residual_stretch;
+      }
+      for (auto & acceleration : point.accelerations) {
+        acceleration /= residual_stretch * residual_stretch;
+      }
     }
   }
+  const double final_duration = durationToSeconds(trajectory.points.back().time_from_start);
   std::ostringstream summary;
   summary << std::fixed << std::setprecision(3)
-          << "uniform_stretch=" << global_stretch
+          << "local_stretch=" << final_duration / initial_duration
           << " limiter=" << limiting_kind
           << " interval=" << limiting_index
           << " joint=" << trajectory.joint_names[limiting_joint]
@@ -948,6 +997,48 @@ TrajectoryCompiler::TrajectoryCompiler(const rclcpp::Node::SharedPtr & node)
 
 TrajectoryCompiler::~TrajectoryCompiler() = default;
 
+ValidationResult TrajectoryCompiler::compileRoute(
+  const MotionCatalog & catalog,
+  const RouteDefinition & route,
+  CompiledRoute & output)
+{
+  auto result = impl_->configure(catalog);
+  if (!result.success) {
+    return result;
+  }
+  return impl_->compileRoute(catalog, route, output);
+}
+
+ValidationResult TrajectoryCompiler::forwardKinematics(
+  const MotionCatalog & catalog,
+  const std::vector<double> & joints,
+  PoseDefinition & output)
+{
+  auto result = impl_->configure(catalog);
+  if (!result.success) {
+    return result;
+  }
+  if (joints.size() != catalog.joint_names.size() ||
+    !std::all_of(joints.begin(), joints.end(), [](double value) {return std::isfinite(value);}))
+  {
+    return ValidationResult::fail("forward kinematics joints must match catalog and be finite");
+  }
+
+  moveit::core::RobotState state(impl_->model);
+  state.setToDefaultValues();
+  state.setJointGroupPositions(impl_->joint_group, joints);
+  result = impl_->checkState(state, catalog, "forward kinematics state");
+  if (!result.success) {
+    return result;
+  }
+  const auto transform = state.getGlobalLinkTransform(catalog.tool_frame);
+  const auto yaw_pitch_roll = transform.rotation().eulerAngles(2, 1, 0);
+  output.xyz = {
+    transform.translation().x(), transform.translation().y(), transform.translation().z()};
+  output.rpy = {yaw_pitch_roll[2], yaw_pitch_roll[1], yaw_pitch_roll[0]};
+  return ValidationResult::ok();
+}
+
 ValidationResult TrajectoryCompiler::compileAll(
   const MotionCatalog & catalog,
   std::map<std::string, CompiledRoute> & output)
@@ -1030,7 +1121,73 @@ double alignTrajectoryStart(
   start.positions = current_positions;
   start.velocities.assign(current_positions.size(), 0.0);
   start.accelerations.assign(current_positions.size(), 0.0);
+  if (trajectory.points.size() > 1) {
+    constexpr double minimum_start_interval_sec = 0.25;
+    const double first_interval =
+      durationToSeconds(trajectory.points[1].time_from_start) -
+      durationToSeconds(start.time_from_start);
+    const double extension = std::max(0.0, minimum_start_interval_sec - first_interval);
+    for (std::size_t index = 1; index < trajectory.points.size(); ++index) {
+      trajectory.points[index].time_from_start = secondsToDuration(
+        durationToSeconds(trajectory.points[index].time_from_start) + extension);
+    }
+  }
   return maximum_correction;
+}
+
+trajectory_msgs::msg::JointTrajectory makeResumeTrajectory(
+  const trajectory_msgs::msg::JointTrajectory & source,
+  const std::vector<double> & current_positions,
+  double maximum_deviation_rad)
+{
+  if (source.points.size() < 2 || source.joint_names.size() != current_positions.size() ||
+    !std::isfinite(maximum_deviation_rad) || maximum_deviation_rad <= 0.0)
+  {
+    throw std::invalid_argument("resume trajectory input is invalid");
+  }
+  std::size_t nearest_index = 0;
+  double nearest_deviation = std::numeric_limits<double>::infinity();
+  for (std::size_t point_index = 0; point_index < source.points.size(); ++point_index) {
+    const auto & positions = source.points[point_index].positions;
+    if (positions.size() != current_positions.size()) {
+      throw std::invalid_argument("resume trajectory point dimensions differ");
+    }
+    double deviation = 0.0;
+    for (std::size_t joint = 0; joint < positions.size(); ++joint) {
+      if (!std::isfinite(positions[joint]) || !std::isfinite(current_positions[joint])) {
+        throw std::invalid_argument("resume trajectory contains non-finite positions");
+      }
+      deviation = std::max(deviation, std::abs(positions[joint] - current_positions[joint]));
+    }
+    if (deviation <= nearest_deviation) {
+      nearest_deviation = deviation;
+      nearest_index = point_index;
+    }
+  }
+  if (nearest_deviation > maximum_deviation_rad || nearest_index + 1 >= source.points.size()) {
+    throw std::invalid_argument("measured state is not resumable on the remaining trajectory");
+  }
+
+  auto output = source;
+  output.points.clear();
+  auto start = source.points[nearest_index];
+  start.positions = current_positions;
+  start.velocities.assign(current_positions.size(), 0.0);
+  start.accelerations.assign(current_positions.size(), 0.0);
+  start.time_from_start = secondsToDuration(0.0);
+  output.points.push_back(std::move(start));
+
+  const double base_time = durationToSeconds(source.points[nearest_index].time_from_start);
+  const double first_interval =
+    durationToSeconds(source.points[nearest_index + 1].time_from_start) - base_time;
+  const double time_offset = std::max(0.0, 0.25 - first_interval);
+  for (std::size_t index = nearest_index + 1; index < source.points.size(); ++index) {
+    auto point = source.points[index];
+    point.time_from_start = secondsToDuration(
+      durationToSeconds(point.time_from_start) - base_time + time_offset);
+    output.points.push_back(std::move(point));
+  }
+  return output;
 }
 
 double maxAbsPositionSlope(

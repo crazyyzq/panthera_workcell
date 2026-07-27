@@ -18,10 +18,12 @@
 #include <utility>
 #include <vector>
 
+#include <Eigen/Geometry>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <control_msgs/action/follow_joint_trajectory.hpp>
 #include <control_msgs/msg/joint_tolerance.hpp>
 #include <panthera_interfaces/action/execute_motion.hpp>
+#include <panthera_interfaces/srv/stage_jog.hpp>
 #include <panthera_interfaces/srv/set_speed_scale.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -44,6 +46,9 @@ using FollowTrajectory = control_msgs::action::FollowJointTrajectory;
 using GoalHandleController = rclcpp_action::ClientGoalHandle<FollowTrajectory>;
 using Trigger = std_srvs::srv::Trigger;
 using SetSpeedScale = panthera_interfaces::srv::SetSpeedScale;
+using StageJog = panthera_interfaces::srv::StageJog;
+
+constexpr char kStagedJogPrefix[] = "__debug_jog_";
 
 std::string defaultCatalogPath()
 {
@@ -85,88 +90,20 @@ double maxAbsVelocity(
   return maximum;
 }
 
-builtin_interfaces::msg::Duration durationFromNanoseconds(std::int64_t nanoseconds)
-{
-  builtin_interfaces::msg::Duration duration;
-  duration.sec = static_cast<std::int32_t>(nanoseconds / 1000000000LL);
-  duration.nanosec = static_cast<std::uint32_t>(nanoseconds % 1000000000LL);
-  return duration;
-}
-
-std::int64_t durationNanoseconds(const builtin_interfaces::msg::Duration & duration)
-{
-  return static_cast<std::int64_t>(duration.sec) * 1000000000LL + duration.nanosec;
-}
-
-bool addContinuousRoute(
+bool aliasContinuousRoute(
   std::map<std::string, CompiledRoute> & routes,
   const std::string & name,
-  const std::vector<std::string> & part_names,
+  const std::string & source_name,
   std::string & error)
 {
-  CompiledRoute combined;
-  combined.name = name;
-  std::int64_t offset_ns = 0;
-  for (const auto & part_name : part_names) {
-    const auto part_it = routes.find(part_name);
-    if (part_it == routes.end()) {
-      error = "continuous route '" + name + "' is missing part '" + part_name + "'";
-      return false;
-    }
-    const auto & part = part_it->second;
-    if (part.trajectory.points.size() < 2) {
-      error = "continuous route part '" + part_name + "' has fewer than 2 points";
-      return false;
-    }
-    if (combined.trajectory.points.empty()) {
-      combined.trajectory = part.trajectory;
-      combined.start_joints = part.start_joints;
-      offset_ns = durationNanoseconds(combined.trajectory.points.back().time_from_start);
-    } else {
-      if (combined.trajectory.joint_names != part.trajectory.joint_names ||
-        combined.end_joints.size() != part.start_joints.size())
-      {
-        error = "continuous route part '" + part_name + "' has incompatible joints";
-        return false;
-      }
-      double maximum_difference = 0.0;
-      std::size_t maximum_joint = 0;
-      for (std::size_t joint = 0; joint < combined.end_joints.size(); ++joint) {
-        const double difference =
-          std::abs(combined.end_joints[joint] - part.start_joints[joint]);
-        if (difference > maximum_difference) {
-          maximum_difference = difference;
-          maximum_joint = joint;
-        }
-      }
-      if (maximum_difference > 1e-3) {
-        std::ostringstream out;
-        out << "continuous route part '" << part_name
-            << "' start mismatch at " << combined.trajectory.joint_names[maximum_joint]
-            << "=" << maximum_difference << "rad";
-        error = out.str();
-        return false;
-      }
-      combined.trajectory.points.back().positions = part.start_joints;
-      combined.end_joints = part.start_joints;
-      // Skip the duplicate zero-time start point. The preceding route's final
-      // point is identical and becomes the next spline's start, eliminating
-      // controller-goal round-trip dwell without changing either phase profile.
-      for (std::size_t index = 1; index < part.trajectory.points.size(); ++index) {
-        auto point = part.trajectory.points[index];
-        point.time_from_start = durationFromNanoseconds(
-          offset_ns + durationNanoseconds(point.time_from_start));
-        combined.trajectory.points.push_back(std::move(point));
-      }
-      offset_ns = durationNanoseconds(combined.trajectory.points.back().time_from_start);
-    }
-    combined.end_joints = part.end_joints;
-    combined.segment_names.insert(
-      combined.segment_names.end(), part.segment_names.begin(), part.segment_names.end());
-    combined.content_hash += part.content_hash;
+  const auto source = routes.find(source_name);
+  if (source == routes.end()) {
+    error = "continuous route '" + name + "' is missing source '" + source_name + "'";
+    return false;
   }
-  combined.duration_sec = static_cast<double>(offset_ns) * 1e-9;
-  routes.emplace(name, std::move(combined));
+  auto route = source->second;
+  route.name = name;
+  routes.emplace(name, std::move(route));
   return true;
 }
 
@@ -257,11 +194,11 @@ public:
     goal_position_tolerance_rad_(getOrDeclareParameter<double>(
         node_, "goal_position_tolerance_rad", 0.03)),
     path_position_tolerance_rad_(getOrDeclareParameter<double>(
-        node_, "path_position_tolerance_rad", 0.10)),
+        node_, "path_position_tolerance_rad", 0.15)),
     pour_path_position_tolerance_rad_(getOrDeclareParameter<double>(
         node_, "pour_path_position_tolerance_rad", 0.20)),
     wrist_path_position_tolerance_rad_(getOrDeclareParameter<double>(
-        node_, "wrist_path_position_tolerance_rad", 0.35)),
+        node_, "wrist_path_position_tolerance_rad", 0.45)),
     goal_velocity_tolerance_rad_sec_(getOrDeclareParameter<double>(
         node_, "goal_velocity_tolerance_rad_sec", 0.05)),
     default_speed_scale_(getOrDeclareParameter<double>(
@@ -378,6 +315,15 @@ public:
         response->message = "motion speed scale set; applies to the next route goal";
       });
 
+    stage_jog_service_ = node_->create_service<StageJog>(
+      "/motion/stage_jog",
+      [this](
+        const std::shared_ptr<StageJog::Request> request,
+        std::shared_ptr<StageJog::Response> response)
+      {
+        stageJog(*request, *response);
+      });
+
     health_service_ = node_->create_service<Trigger>(
       "/motion/health",
       [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> response) {
@@ -453,34 +399,31 @@ private:
     try {
       MotionCatalog candidate_catalog = MotionCatalog::loadFromFile(catalog_file_);
       std::map<std::string, CompiledRoute> candidate_routes;
-      const auto result = compiler_->compileAll(candidate_catalog, candidate_routes);
+      ValidationResult result;
+      {
+        std::lock_guard<std::mutex> lock(compiler_mutex_);
+        result = compiler_->compileAll(candidate_catalog, candidate_routes);
+      }
       if (!result.success) {
         message = "motion catalog compile rejected; previous cache retained: " + result.message;
         RCLCPP_ERROR(logger_, "%s", message.c_str());
         return false;
       }
       std::string continuous_error;
-      if (!addContinuousRoute(
+      if (!aliasContinuousRoute(
           candidate_routes,
           "outlet_1_grasp_to_spectrometer_place_continuous",
-          {"outlet_1_grasp_to_hover_fast", "outlet_1_hover_to_spectrometer_place"},
+          "outlet_1_grasp_to_spectrometer_place",
           continuous_error) ||
-        !addContinuousRoute(
+        !aliasContinuousRoute(
           candidate_routes,
           "spectrometer_pick_to_brush_entry_continuous",
-          {"spectrometer_pick_to_pick_hover_fast",
-            "spectrometer_pick_hover_to_clean_dump",
-            "clean_dump_to_pour",
-            "clean_dump_pour_shake_once",
-            "clean_dump_pour_to_brush_entry"},
+          "spectrometer_pick_to_brush_entry_smooth",
           continuous_error) ||
-        !addContinuousRoute(
+        !aliasContinuousRoute(
           candidate_routes,
           "brush_entry_to_outlet_1_return_continuous",
-          {"brush_entry_to_clean_dump_pour",
-            "clean_dump_pour_to_clean_dump",
-            "clean_dump_to_clean_hover",
-            "clean_hover_to_outlet_1_return"},
+          "brush_entry_to_outlet_1_return_smooth",
           continuous_error))
       {
         message = "continuous route composition rejected: " + continuous_error;
@@ -501,6 +444,206 @@ private:
       RCLCPP_ERROR(logger_, "%s", message.c_str());
       return false;
     }
+  }
+
+  void stageJog(const StageJog::Request & request, StageJog::Response & response)
+  {
+    constexpr double max_translation_m = 0.020;
+    constexpr double max_rotation_rad = 0.17453292519943295;
+    const std::array<double, 6> deltas{
+      request.delta_x_m, request.delta_y_m, request.delta_z_m,
+      request.delta_roll_rad, request.delta_pitch_rad, request.delta_yaw_rad};
+    if (busy_.load() ||
+      !std::all_of(deltas.begin(), deltas.end(), [](double value) {return std::isfinite(value);}))
+    {
+      response.success = false;
+      response.message = busy_.load() ? "motion server is busy" : "jog delta must be finite";
+      return;
+    }
+    const auto nonzero = std::count_if(
+      deltas.begin(), deltas.end(), [](double value) {return std::abs(value) > 1e-9;});
+    if (nonzero != 1) {
+      response.success = false;
+      response.message = "exactly one Cartesian jog axis must be non-zero";
+      return;
+    }
+    if (std::max(
+        {std::abs(request.delta_x_m), std::abs(request.delta_y_m),
+          std::abs(request.delta_z_m)}) > max_translation_m + 1e-12 ||
+      std::max(
+        {std::abs(request.delta_roll_rad), std::abs(request.delta_pitch_rad),
+          std::abs(request.delta_yaw_rad)}) > max_rotation_rad + 1e-12)
+    {
+      response.success = false;
+      response.message = "jog exceeds 20mm or 10deg per-command limit";
+      return;
+    }
+
+    MotionCatalog candidate;
+    {
+      std::lock_guard<std::mutex> lock(catalog_mutex_);
+      candidate = catalog_;
+    }
+    std::vector<double> current;
+    std::string state_error;
+    if (!currentJointState(candidate.joint_names, current, state_error)) {
+      response.success = false;
+      response.message = "cannot stage jog: " + state_error;
+      return;
+    }
+
+    std::vector<double> command_start = current;
+    double command_bias = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(commanded_state_mutex_);
+      if (last_commanded_joints_.size() == current.size()) {
+        for (std::size_t index = 0; index < current.size(); ++index) {
+          command_bias = std::max(
+            command_bias,
+            std::abs(last_commanded_joints_[index] - current[index]));
+        }
+        if (command_bias <= start_tolerance_rad_) {
+          command_start = last_commanded_joints_;
+        } else {
+          command_bias = 0.0;
+        }
+      }
+    }
+
+    PoseDefinition measured_pose;
+    ValidationResult result;
+    {
+      std::lock_guard<std::mutex> lock(compiler_mutex_);
+      result = compiler_->forwardKinematics(candidate, current, measured_pose);
+    }
+    if (!result.success) {
+      response.success = false;
+      response.message = "cannot stage jog FK: " + result.message;
+      return;
+    }
+
+    const Eigen::Matrix3d base_delta =
+      (Eigen::AngleAxisd(request.delta_yaw_rad, Eigen::Vector3d::UnitZ()) *
+      Eigen::AngleAxisd(request.delta_pitch_rad, Eigen::Vector3d::UnitY()) *
+      Eigen::AngleAxisd(request.delta_roll_rad, Eigen::Vector3d::UnitX())).toRotationMatrix();
+    Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
+    target.translation() = Eigen::Vector3d(
+      measured_pose.xyz[0] + request.delta_x_m,
+      measured_pose.xyz[1] + request.delta_y_m,
+      measured_pose.xyz[2] + request.delta_z_m);
+    target.linear() =
+      base_delta *
+      (Eigen::AngleAxisd(measured_pose.rpy[2], Eigen::Vector3d::UnitZ()) *
+      Eigen::AngleAxisd(measured_pose.rpy[1], Eigen::Vector3d::UnitY()) *
+      Eigen::AngleAxisd(measured_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+    const auto yaw_pitch_roll = target.rotation().eulerAngles(2, 1, 0);
+
+    const auto route_id = jog_sequence_.fetch_add(1);
+    const std::string route_name = kStagedJogPrefix + std::to_string(route_id);
+    PointDefinition ik_start;
+    ik_start.name = route_name + "_ik_start";
+    ik_start.joints = current;
+    PointDefinition ik_goal;
+    ik_goal.name = route_name + "_ik_goal";
+    ik_goal.ik_seed = ik_start.name;
+    ik_goal.pose = PoseDefinition{
+      {target.translation().x(), target.translation().y(), target.translation().z()},
+      {yaw_pitch_roll[2], yaw_pitch_roll[1], yaw_pitch_roll[0]}};
+    candidate.points[ik_start.name] = ik_start;
+    candidate.points[ik_goal.name] = ik_goal;
+
+    RouteDefinition ik_route;
+    ik_route.name = route_name + "_ik";
+    ik_route.start = ik_start.name;
+    ik_route.velocity_scale = 0.45;
+    ik_route.acceleration_scale = 0.30;
+    SegmentDefinition ik_segment;
+    ik_segment.name = "solve_cartesian_jog_target";
+    ik_segment.type = SegmentType::LINEAR;
+    ik_segment.to = ik_goal.name;
+    ik_segment.cartesian_step_m = 0.002;
+    ik_segment.max_joint_jump_rad = 0.15;
+    ik_segment.constraints.keep_orientation = false;
+    ik_route.segments.push_back(ik_segment);
+
+    CompiledRoute ik_compiled;
+    {
+      std::lock_guard<std::mutex> lock(compiler_mutex_);
+      result = compiler_->compileRoute(candidate, ik_route, ik_compiled);
+    }
+    if (!result.success) {
+      response.success = false;
+      response.message = "jog IK validation failed: " + result.message;
+      return;
+    }
+
+    PointDefinition start;
+    start.name = route_name + "_start";
+    start.joints = command_start;
+    PointDefinition goal;
+    goal.name = route_name + "_goal";
+    goal.joints = ik_compiled.end_joints;
+    for (std::size_t index = 0; index < goal.joints.size(); ++index) {
+      goal.joints[index] += command_start[index] - current[index];
+    }
+    candidate.points[start.name] = start;
+    candidate.points[goal.name] = goal;
+
+    RouteDefinition route;
+    route.name = route_name;
+    route.start = start.name;
+    // Tiny moves at very low speed can sit inside the MIT controller deadband.
+    route.velocity_scale = 0.45;
+    route.acceleration_scale = 0.30;
+    SegmentDefinition segment;
+    segment.name = "servo_error_compensated_jog";
+    segment.type = SegmentType::JOINT;
+    segment.to = goal.name;
+    segment.joint_step_rad = 0.01;
+    segment.max_joint_jump_rad = 0.15;
+    route.segments.push_back(segment);
+
+    CompiledRoute compiled;
+    {
+      std::lock_guard<std::mutex> lock(compiler_mutex_);
+      result = compiler_->compileRoute(candidate, route, compiled);
+    }
+    if (!result.success) {
+      response.success = false;
+      response.message = "jog validation failed: " + result.message;
+      return;
+    }
+    double max_joint_delta = 0.0;
+    for (std::size_t index = 0; index < compiled.start_joints.size(); ++index) {
+      max_joint_delta = std::max(
+        max_joint_delta,
+        std::abs(compiled.end_joints[index] - compiled.start_joints[index]));
+    }
+    RCLCPP_INFO(
+      logger_,
+      "staged Cartesian jog route=%s delta=[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f] "
+      "duration=%.3fs max_joint_delta=%.4frad preserved_command_bias=%.4frad",
+      route_name.c_str(), deltas[0], deltas[1], deltas[2], deltas[3], deltas[4], deltas[5],
+      compiled.duration_sec, max_joint_delta, command_bias);
+    {
+      std::lock_guard<std::mutex> lock(catalog_mutex_);
+      for (auto it = compiled_routes_.begin(); it != compiled_routes_.end(); ) {
+        if (it->first.rfind(kStagedJogPrefix, 0) == 0) {
+          it = compiled_routes_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      compiled_routes_[route_name] = std::move(compiled);
+    }
+    response.success = true;
+    response.message = "Cartesian jog validated and staged";
+    response.route_name = route_name;
+    response.target_xyz_m = ik_goal.pose->xyz;
+    response.target_rpy_rad = {
+      yaw_pitch_roll[2],
+      yaw_pitch_roll[1],
+      yaw_pitch_roll[0]};
   }
 
   rclcpp_action::GoalResponse handleGoal(
@@ -673,10 +816,20 @@ private:
         maximum_index = index;
       }
     }
-    if (maximum > start_tolerance_rad_) {
+    constexpr char debug_exit_suffix[] = "_to_safe";
+    const bool debug_exit =
+      route.name.rfind("debug_", 0) == 0 &&
+      route.name.size() >= sizeof(debug_exit_suffix) - 1 &&
+      route.name.compare(
+      route.name.size() - (sizeof(debug_exit_suffix) - 1),
+      sizeof(debug_exit_suffix) - 1,
+      debug_exit_suffix) == 0;
+    const double tolerance = debug_exit ? std::max(start_tolerance_rad_, 0.50) :
+      start_tolerance_rad_;
+    if (maximum > tolerance) {
       std::ostringstream out;
       out << "route start mismatch at " << route.trajectory.joint_names[maximum_index]
-          << ": error=" << maximum << "rad limit=" << start_tolerance_rad_ << "rad";
+          << ": error=" << maximum << "rad limit=" << tolerance << "rad";
       error = out.str();
       return false;
     }
@@ -843,6 +996,9 @@ private:
         return;
       }
       route = it->second;
+      if (it->first.rfind(kStagedJogPrefix, 0) == 0) {
+        compiled_routes_.erase(it);
+      }
     }
 
     const double requested_scale = goal->speed_scale > 0.0 ?
@@ -888,11 +1044,14 @@ private:
       return;
     }
 
+    const bool is_staged_jog = route.name.rfind(kStagedJogPrefix, 0) == 0;
+    const double final_position_tolerance = is_staged_jog ?
+      std::min(goal_position_tolerance_rad_, 0.02) : goal_position_tolerance_rad_;
     FollowTrajectory::Goal controller_request;
     try {
       controller_request.trajectory = scaleTrajectory(route.trajectory, requested_scale);
-      const double start_correction = alignTrajectoryStart(
-        controller_request.trajectory, current);
+      const double start_correction = is_staged_jog ? 0.0 :
+        alignTrajectoryStart(controller_request.trajectory, current);
       if (start_correction > 1e-3) {
         RCLCPP_INFO(
           logger_, "route '%s' starts from measured state; max correction=%.4frad",
@@ -930,111 +1089,154 @@ private:
 
       control_msgs::msg::JointTolerance tolerance;
       tolerance.name = joint_name;
-      tolerance.position = goal_position_tolerance_rad_;
+      tolerance.position = final_position_tolerance;
       tolerance.velocity = goal_velocity_tolerance_rad_sec_;
       controller_request.goal_tolerance.push_back(tolerance);
     }
 
-    const double expected_duration = trajectoryDurationSec(controller_request.trajectory);
-    const auto send_future = controller_client_->async_send_goal(controller_request);
-    if (send_future.wait_for(std::chrono::duration<double>(controller_wait_timeout_sec_)) !=
-      std::future_status::ready)
-    {
-      finish(
-        goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_UNAVAILABLE,
-        "timed out sending trajectory to controller", started);
-      return;
-    }
-    auto controller_goal = send_future.get();
-    if (!controller_goal) {
-      finish(
-        goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_REJECTED,
-        "arm trajectory controller rejected the goal", started);
-      return;
-    }
-    {
-      std::lock_guard<std::mutex> lock(controller_goal_mutex_);
-      controller_goal_ = controller_goal;
-    }
-
-    const auto result_future = controller_client_->async_get_result(controller_goal);
-    const auto deadline = std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(expected_duration + execution_margin_sec_);
-    while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
-      if (cancel_requested_.load() || goal_handle->is_canceling()) {
-        std::string settle_error;
-        const bool settled = cancelControllerGoalAndWait(
-          controller_goal, route.trajectory.joint_names, settle_error);
+    for (int controller_attempt = 0; controller_attempt < 2; ++controller_attempt) {
+      controller_request.trajectory.header.stamp =
+        node_->now() + rclcpp::Duration::from_seconds(trajectory_start_delay_sec_);
+      const double expected_duration = trajectoryDurationSec(controller_request.trajectory);
+      const auto send_future = controller_client_->async_send_goal(controller_request);
+      if (send_future.wait_for(std::chrono::duration<double>(controller_wait_timeout_sec_)) !=
+        std::future_status::ready)
+      {
         finish(
-          goal_handle, false, ExecuteMotion::Result::ERROR_CANCELLED,
-          settled ? "motion route cancelled and arm settled" :
-          "motion route cancelled; arm settle not confirmed: " + settle_error,
-          started);
+          goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_UNAVAILABLE,
+          "timed out sending trajectory to controller", started);
         return;
       }
-      if (result_future.wait_for(50ms) == std::future_status::ready) {
-        const auto wrapped = result_future.get();
-        if (wrapped.code == rclcpp_action::ResultCode::SUCCEEDED &&
-          wrapped.result &&
-          wrapped.result->error_code == FollowTrajectory::Result::SUCCESSFUL)
-        {
-          std::string final_error;
-          if (!waitForJointTarget(
-              route.trajectory.joint_names,
-              route.end_joints,
-              goal_position_tolerance_rad_,
-              final_state_timeout_sec_,
-              final_error))
-          {
-            finish(
-              goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
-              "controller reported success but final state was not confirmed: " + final_error,
-              started);
-            return;
-          }
-          publishFeedback(goal_handle, route, 1.0);
-          finish(
-            goal_handle, true, ExecuteMotion::Result::ERROR_NONE,
-            "motion route completed: " + route.name, started);
-          return;
-        }
-        if (wrapped.code == rclcpp_action::ResultCode::CANCELED) {
+      auto controller_goal = send_future.get();
+      if (!controller_goal) {
+        finish(
+          goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_REJECTED,
+          "arm trajectory controller rejected the goal", started);
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> lock(controller_goal_mutex_);
+        controller_goal_ = controller_goal;
+      }
+
+      const auto result_future = controller_client_->async_get_result(controller_goal);
+      const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(expected_duration + execution_margin_sec_ + 1.0);
+      bool resume_requested = false;
+      while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
+        if (cancel_requested_.load() || goal_handle->is_canceling()) {
           std::string settle_error;
-          const bool settled = waitForArmSettled(route.trajectory.joint_names, settle_error);
+          const bool settled = cancelControllerGoalAndWait(
+            controller_goal, route.trajectory.joint_names, settle_error);
           finish(
             goal_handle, false, ExecuteMotion::Result::ERROR_CANCELLED,
-            settled ? "arm trajectory controller cancelled the route and arm settled" :
-            "arm trajectory controller cancelled the route; settle not confirmed: " +
-            settle_error,
+            settled ? "motion route cancelled and arm settled" :
+            "motion route cancelled; arm settle not confirmed: " + settle_error,
             started);
           return;
         }
-        std::string controller_message = wrapped.result ?
-          wrapped.result->error_string : "no controller result";
-        std::string settle_error;
-        if (!waitForArmSettled(route.trajectory.joint_names, settle_error)) {
-          controller_message += "; arm settle not confirmed: " + settle_error;
+        if (result_future.wait_for(50ms) == std::future_status::ready) {
+          const auto wrapped = result_future.get();
+          if (wrapped.code == rclcpp_action::ResultCode::SUCCEEDED &&
+            wrapped.result &&
+            wrapped.result->error_code == FollowTrajectory::Result::SUCCESSFUL)
+          {
+            std::string final_error;
+            if (!waitForJointTarget(
+                route.trajectory.joint_names,
+                route.end_joints,
+                final_position_tolerance,
+                final_state_timeout_sec_,
+                final_error))
+            {
+              finish(
+                goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
+                "controller reported success but final state was not confirmed: " + final_error,
+                started);
+              return;
+            }
+            {
+              std::lock_guard<std::mutex> lock(commanded_state_mutex_);
+              last_commanded_joints_ = route.end_joints;
+            }
+            publishFeedback(goal_handle, route, 1.0);
+            finish(
+              goal_handle, true, ExecuteMotion::Result::ERROR_NONE,
+              "motion route completed: " + route.name, started);
+            return;
+          }
+          if (wrapped.code == rclcpp_action::ResultCode::CANCELED) {
+            std::string settle_error;
+            const bool settled = waitForArmSettled(route.trajectory.joint_names, settle_error);
+            finish(
+              goal_handle, false, ExecuteMotion::Result::ERROR_CANCELLED,
+              settled ? "arm trajectory controller cancelled the route and arm settled" :
+              "arm trajectory controller cancelled the route; settle not confirmed: " +
+              settle_error,
+              started);
+            return;
+          }
+
+          std::string controller_message = wrapped.result ?
+            wrapped.result->error_string : "no controller result";
+          std::string settle_error;
+          const bool settled = waitForArmSettled(route.trajectory.joint_names, settle_error);
+          if (controller_attempt == 0 && settled && wrapped.result &&
+            wrapped.result->error_code == FollowTrajectory::Result::PATH_TOLERANCE_VIOLATED)
+          {
+            std::vector<double> resume_state;
+            std::string state_error;
+            if (currentJointState(
+                route.trajectory.joint_names, resume_state, state_error))
+            {
+              try {
+                controller_request.trajectory = makeResumeTrajectory(
+                  controller_request.trajectory, resume_state, 0.50);
+                RCLCPP_WARN(
+                  logger_,
+                  "route '%s' transient path tracking fault; resuming once with %zu points",
+                  route.name.c_str(), controller_request.trajectory.points.size());
+                resume_requested = true;
+                break;
+              } catch (const std::exception & error) {
+                controller_message += "; automatic resume rejected: ";
+                controller_message += error.what();
+              }
+            } else {
+              controller_message += "; automatic resume state unavailable: " + state_error;
+            }
+          }
+          if (!settled) {
+            controller_message += "; arm settle not confirmed: " + settle_error;
+          }
+          finish(
+            goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
+            "arm trajectory controller failed: " + controller_message, started);
+          return;
         }
-        finish(
-          goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
-          "arm trajectory controller failed: " + controller_message, started);
-        return;
+
+        const double elapsed = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - started).count();
+        publishFeedback(
+          goal_handle,
+          route,
+          expected_duration > 0.0 ? std::min(0.99, elapsed / expected_duration) : 0.0);
+      }
+      if (resume_requested) {
+        continue;
       }
 
-      const double elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - started).count();
-      publishFeedback(
-        goal_handle,
-        route,
-        expected_duration > 0.0 ? std::min(0.99, elapsed / expected_duration) : 0.0);
+      std::string settle_error;
+      cancelControllerGoalAndWait(
+        controller_goal, route.trajectory.joint_names, settle_error);
+      finish(
+        goal_handle, false, ExecuteMotion::Result::ERROR_TIMEOUT,
+        "motion route exceeded controller execution timeout; settle=" + settle_error, started);
+      return;
     }
-
-    std::string settle_error;
-    cancelControllerGoalAndWait(
-      controller_goal, route.trajectory.joint_names, settle_error);
     finish(
-      goal_handle, false, ExecuteMotion::Result::ERROR_TIMEOUT,
-      "motion route exceeded controller execution timeout; settle=" + settle_error, started);
+      goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
+      "automatic trajectory resume was exhausted", started);
   }
 
   rclcpp::Node::SharedPtr node_;
@@ -1058,9 +1260,12 @@ private:
   double default_speed_scale_;
 
   std::unique_ptr<TrajectoryCompiler> compiler_;
+  std::mutex compiler_mutex_;
   MotionCatalog catalog_;
   std::map<std::string, CompiledRoute> compiled_routes_;
   std::mutex catalog_mutex_;
+  std::mutex commanded_state_mutex_;
+  std::vector<double> last_commanded_joints_;
 
   rclcpp_action::Client<FollowTrajectory>::SharedPtr controller_client_;
   rclcpp_action::Server<ExecuteMotion>::SharedPtr execute_server_;
@@ -1068,6 +1273,7 @@ private:
   rclcpp::Service<Trigger>::SharedPtr list_service_;
   rclcpp::Service<Trigger>::SharedPtr stop_service_;
   rclcpp::Service<SetSpeedScale>::SharedPtr speed_service_;
+  rclcpp::Service<StageJog>::SharedPtr stage_jog_service_;
   rclcpp::Service<Trigger>::SharedPtr health_service_;
 
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
@@ -1084,6 +1290,7 @@ private:
   std::atomic_bool busy_{false};
   std::atomic_bool cancel_requested_{false};
   std::atomic<double> speed_scale_{1.0};
+  std::atomic<std::uint64_t> jog_sequence_{1};
   std::thread worker_;
   std::mutex worker_mutex_;
 };
@@ -1105,11 +1312,16 @@ int main(int argc, char ** argv)
     executor.remove_node(node);
     motion_server.reset();
   } catch (const std::exception & error) {
+    if (!rclcpp::ok()) {
+      return 0;
+    }
     RCLCPP_FATAL(node->get_logger(), "motion server startup failed: %s", error.what());
     rclcpp::shutdown();
     return 1;
   }
 
-  rclcpp::shutdown();
+  if (rclcpp::ok()) {
+    rclcpp::shutdown();
+  }
   return 0;
 }

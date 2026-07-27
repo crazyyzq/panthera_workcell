@@ -37,6 +37,16 @@ public:
     const MotionCatalog & catalog,
     std::map<std::string, CompiledRoute> & output);
 
+  ValidationResult compileRoute(
+    const MotionCatalog & catalog,
+    const RouteDefinition & route,
+    CompiledRoute & output);
+
+  ValidationResult forwardKinematics(
+    const MotionCatalog & catalog,
+    const std::vector<double> & joints,
+    PoseDefinition & output);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -49,6 +59,11 @@ trajectory_msgs::msg::JointTrajectory scaleTrajectory(
 double alignTrajectoryStart(
   trajectory_msgs::msg::JointTrajectory & trajectory,
   const std::vector<double> & current_positions);
+
+trajectory_msgs::msg::JointTrajectory makeResumeTrajectory(
+  const trajectory_msgs::msg::JointTrajectory & source,
+  const std::vector<double> & current_positions,
+  double maximum_deviation_rad);
 
 double maxAbsPositionSlope(
   const std::vector<double> & sample_times_sec,

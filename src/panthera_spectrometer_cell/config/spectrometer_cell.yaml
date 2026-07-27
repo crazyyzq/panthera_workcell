@@ -226,7 +226,8 @@ gripper:
   close_duration_sec: 0.8
 
   # Closed-loop FollowJointTrajectory command and recovery settings.
-  action_server_wait_sec: 5.0
+  # Cold boots can take 10-15 seconds to spawn both trajectory controllers.
+  action_server_wait_sec: 20.0
   command_timeout_margin_sec: 2.0
   position_tolerance_m: 0.003
   # 抓到杯子后允许控制器正常结束轨迹，但最终命令仍保持 0mm，持续施加闭合力。

@@ -287,6 +287,17 @@ verified original Home, and no stale non-launch ROS CLI remained. A separate
 three-cycle telemetry run had a 30.5 ms maximum joint-state sample gap and no arm
 dropout.
 
+The subsequent 50-round hot stability test ran 100 full-speed cached arm routes
+(`home_to_outlet_wait_continuous` and its return) with 100 simultaneous gripper
+actions. All completed on the first attempt in 181.69 seconds; no abort, retry,
+recovery, path-tolerance error, stale joint state, or motor fault occurred. Across
+18,168 joint-state samples, the largest sample gap was 41.24 ms, maximum measured
+joint speed was 1.321 rad/s, minimum combined J2+J3+J4 effort was 3.479 Nm, and
+maximum final Home error was 0.02947 rad. Raw velocity-difference acceleration
+spikes remain encoder/SDK quantization artifacts; use position continuity, commanded
+trajectory limits, and sustained motion evidence before classifying one as a
+mechanical jerk.
+
 The commissioning-only fixed motion launch is:
 
 ```bash

@@ -392,6 +392,14 @@ Eigen::Isometry3d poseToEigen(const PoseDefinition & pose)
   return transform;
 }
 
+std::array<double, 3> matrixToRpy(const Eigen::Matrix3d & rotation)
+{
+  const double pitch = std::asin(std::clamp(-rotation(2, 0), -1.0, 1.0));
+  const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
+  const double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+  return {roll, pitch, yaw};
+}
+
 double rotationDistance(
   const Eigen::Matrix3d & first,
   const Eigen::Matrix3d & second)
@@ -1032,10 +1040,9 @@ ValidationResult TrajectoryCompiler::forwardKinematics(
     return result;
   }
   const auto transform = state.getGlobalLinkTransform(catalog.tool_frame);
-  const auto yaw_pitch_roll = transform.rotation().eulerAngles(2, 1, 0);
   output.xyz = {
     transform.translation().x(), transform.translation().y(), transform.translation().z()};
-  output.rpy = {yaw_pitch_roll[2], yaw_pitch_roll[1], yaw_pitch_roll[0]};
+  output.rpy = matrixToRpy(transform.rotation());
   return ValidationResult::ok();
 }
 

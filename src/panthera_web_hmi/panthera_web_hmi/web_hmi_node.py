@@ -199,7 +199,29 @@ def _replace_yaml_value(text, path, value):
 
     idx = indices[-1]
     indent = lines[idx][:len(lines[idx]) - len(lines[idx].lstrip(' '))]
-    lines[idx] = f'{indent}{path[-1]}: {_format_yaml_scalar(value)}'
+    original_inline_value = lines[idx].partition(':')[2].strip()
+    sequence_indent = indent
+    if idx + 1 < len(lines) and lines[idx + 1].lstrip(' ').startswith('- '):
+        sequence_indent = lines[idx + 1][
+            :len(lines[idx + 1]) - len(lines[idx + 1].lstrip(' '))]
+    end = idx + 1
+    while end < len(lines):
+        raw = lines[end]
+        if raw.strip():
+            child_indent = len(raw) - len(raw.lstrip(' '))
+            indentless_sequence = (
+                child_indent == len(indent) and raw.lstrip(' ').startswith('- '))
+            if child_indent <= len(indent) and not indentless_sequence:
+                break
+        end += 1
+    if isinstance(value, (list, tuple)) and not original_inline_value:
+        replacement = [f'{indent}{path[-1]}:']
+        replacement.extend(
+            f'{sequence_indent}- {_format_yaml_number(float(item))}'
+            for item in value)
+    else:
+        replacement = [f'{indent}{path[-1]}: {_format_yaml_scalar(value)}']
+    lines[idx:end] = replacement
     return '\n'.join(lines) + '\n'
 
 
@@ -1597,6 +1619,7 @@ class WebHmiNode(Node):
             'selected_point': '',
             'dirty': False,
             'history': [],
+            'commanded_pose': None,
             'reference_pose': None,
             'last_message': '',
             'brush_enabled': False,
@@ -1916,12 +1939,12 @@ class WebHmiNode(Node):
             with self._debug_lock:
                 self._debug.update(
                     active=False, phase='error', selected_point='', dirty=False,
-                    history=[], reference_pose=None, last_message=message)
+                    history=[], commanded_pose=None, reference_pose=None, last_message=message)
             return result
 
         try:
             point_name = str(body.get('point_name', '')).strip()
-            catalog, _, _, entry_route, _ = self._debug_catalog_target(point_name)
+            catalog, _, point, entry_route, _ = self._debug_catalog_target(point_name)
             snapshot = self.state_store.snapshot()
             cell = snapshot.get('spectrometer_cell', {})
             context = cell.get('context', {}) if isinstance(cell.get('context'), dict) else {}
@@ -1975,6 +1998,10 @@ class WebHmiNode(Node):
             result = self._execute_motion_route(entry_route)
             if not result.get('success'):
                 return fail(result)
+            # The trajectory controller can finish before MIT position error
+            # reaches its steady loaded value. Do not count that settling as
+            # the operator's first Cartesian jog.
+            time.sleep(1.0)
             with self._debug_lock:
                 self._debug.update(
                     active=True,
@@ -1982,6 +2009,10 @@ class WebHmiNode(Node):
                     selected_point=point_name,
                     dirty=False,
                     history=[],
+                    commanded_pose={
+                        'xyz': [float(value) for value in point['pose']['xyz']],
+                        'rpy': [float(value) for value in point['pose']['rpy']],
+                    },
                     reference_pose=None,
                     last_message='点位已到达，可以点动')
             return {'success': True, 'message': 'debug point reached', 'point_name': point_name}
@@ -2041,109 +2072,96 @@ class WebHmiNode(Node):
             translation_axis = next(
                 (index for index, value in enumerate(translation) if abs(value) > 1e-9),
                 None)
-            start_xyz, _ = self._fresh_tool_pose()
+            start_xyz, start_rpy = self._fresh_tool_pose()
+            desired_xyz = [
+                value + delta for value, delta in zip(start_xyz, translation)]
+            desired_rpy = [
+                value + delta for value, delta in zip(start_rpy, rotation)]
             with self._debug_lock:
                 self._debug.update(phase='jogging', last_message='正在执行点动')
             result = self._stage_and_execute_jog(deltas)
-            settled_tolerance = (
-                not result.get('success') and
-                'goal_time_tolerance' in result.get('message', ''))
-            if result.get('success') or settled_tolerance:
-                time.sleep(0.3)
-                measured_xyz, measured_rpy = self._fresh_tool_pose()
-                target_xyz = result['target_xyz_m']
-                target_rpy = result['target_rpy_rad']
-                position_error = max(
-                    abs(actual - target)
-                    for actual, target in zip(measured_xyz, target_xyz))
-                orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
+            if result.get('success'):
                 correction_count = 0
-                correction_failed = False
-                while (
-                        correction_count < 2 and
-                        (position_error > 0.002 or
-                         orientation_error > math.radians(1.5))):
-                    correction = [0.0] * 6
-                    position_residuals = [
-                        target - actual
-                        for actual, target in zip(measured_xyz, target_xyz)]
-                    correction_axis = max(
-                        range(3), key=lambda index: abs(position_residuals[index]))
-                    residual = position_residuals[correction_axis]
-                    if position_error > 0.002:
-                        if 0.002 <= abs(residual) <= 0.020:
-                            correction[correction_axis] = residual
+                while True:
+                    time.sleep(0.6)
+                    measured_xyz, measured_rpy = self._fresh_tool_pose()
+                    if translation_axis is not None:
+                        residual = (
+                            desired_xyz[translation_axis] -
+                            measured_xyz[translation_axis])
+                        tracking_error = abs(residual)
+                        tolerance = 0.00075
+                        correction = [0.0] * 6
+                        if tracking_error >= 0.0005:
+                            damped = math.copysign(
+                                max(0.0005, abs(residual) * 0.5), residual)
+                            correction[translation_axis] = max(
+                                -0.005, min(0.005, damped))
                     else:
-                        rotation_residuals = [
-                            (target - actual + math.pi) % (2.0 * math.pi) - math.pi
-                            for actual, target in zip(measured_rpy, target_rpy)]
-                        correction_axis = max(
-                            range(3), key=lambda index: abs(rotation_residuals[index]))
-                        residual = rotation_residuals[correction_axis]
-                        if min_rotation <= abs(residual) <= max_rotation:
-                            correction[3 + correction_axis] = residual
-                    if not any(abs(value) > 1e-9 for value in correction):
+                        rotation_axis = next(
+                            index for index, value in enumerate(rotation)
+                            if abs(value) > 1e-9)
+                        residual = (
+                            desired_rpy[rotation_axis] -
+                            measured_rpy[rotation_axis] + math.pi
+                        ) % (2.0 * math.pi) - math.pi
+                        tracking_error = abs(residual)
+                        tolerance = math.radians(0.2)
+                        correction = [0.0] * 6
+                        if tracking_error >= min_rotation:
+                            correction[3 + rotation_axis] = max(
+                                -max_rotation, min(max_rotation, residual))
+                    if tracking_error <= tolerance or correction_count >= 5:
                         break
                     correction_result = self._stage_and_execute_jog(correction)
-                    correction_settled = (
-                        not correction_result.get('success') and
-                        'goal_time_tolerance' in correction_result.get('message', ''))
-                    if not correction_result.get('success') and not correction_settled:
+                    if not correction_result.get('success'):
                         result = correction_result
-                        correction_failed = True
                         break
+                    result = correction_result
                     correction_count += 1
-                    time.sleep(0.3)
-                    measured_xyz, measured_rpy = self._fresh_tool_pose()
-                    position_error = max(
-                        abs(actual - target)
-                        for actual, target in zip(measured_xyz, target_xyz))
-                    orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
-                    result = {
-                        **correction_result,
-                        'target_xyz_m': target_xyz,
-                        'target_rpy_rad': target_rpy,
-                        'servo_correction_applied': True,
-                        'servo_correction_count': correction_count,
-                    }
-                result['pose_error_mm'] = position_error * 1000.0
-                result['orientation_error_deg'] = math.degrees(orientation_error)
-                if translation_axis is not None:
-                    result['measured_delta_m'] = (
-                        measured_xyz[translation_axis] - start_xyz[translation_axis])
-                if correction_failed:
-                    result = {
-                        **result,
-                        'success': False,
-                        'message': (
-                            f'微调闭环校正失败：{result.get("message", "unknown error")}；'
-                            '请点击“安全退出”回 Home 后重试，本次点位不会保存'
-                        ),
-                    }
-                elif position_error > 0.002 or orientation_error > math.radians(1.5):
-                    result = {
-                        **result,
-                        'success': False,
-                        'message': (
-                            '微调实际未准确到位，本次点位不会保存；请点击“安全退出”回 Home 后重试'
-                            f'（位置误差 {position_error * 1000.0:.1f} mm，'
-                            f'姿态误差 {math.degrees(orientation_error):.1f}°）'
-                        ),
-                    }
-                elif translation_axis is not None:
-                    result['success'] = True
-                    axis = 'XYZ'[translation_axis]
+
+                if not result.get('success'):
                     result['message'] = (
-                        f'{axis} 轴点动完成：实测位移 '
-                        f'{result["measured_delta_m"] * 1000.0:+.1f} mm，'
-                        f'终点误差 {position_error * 1000.0:.1f} mm'
+                        f'微调闭环执行失败：{result.get("message", "unknown error")}；'
+                        '请点击“安全退出”回 Home 后重试，本次点位不会保存'
                     )
                 else:
-                    result['success'] = True
-                    result['message'] = (
-                        f'旋转点动完成：终点位置误差 {position_error * 1000.0:.1f} mm，'
-                        f'姿态误差 {math.degrees(orientation_error):.1f}°'
-                    )
+                    result['correction_count'] = correction_count
+                    result['tracking_error'] = tracking_error
+                    if translation_axis is not None:
+                        measured_delta = (
+                            measured_xyz[translation_axis] - start_xyz[translation_axis])
+                        cross_delta = max(
+                            abs(measured_xyz[index] - start_xyz[index])
+                            for index in range(3) if index != translation_axis)
+                        result['measured_delta_m'] = measured_delta
+                        result['measured_cross_axis_m'] = cross_delta
+                        axis = 'XYZ'[translation_axis]
+                        result['message'] = (
+                            f'{axis} 轴指令 {translation[translation_axis] * 1000.0:+.1f} mm，'
+                            f'实测 {measured_delta * 1000.0:+.1f} mm，'
+                            f'串轴最大 {cross_delta * 1000.0:.1f} mm，'
+                            f'闭环 {correction_count} 次'
+                        )
+                    else:
+                        rotation_axis = next(
+                            index for index, value in enumerate(rotation)
+                            if abs(value) > 1e-9)
+                        measured_delta = (
+                            measured_rpy[rotation_axis] - start_rpy[rotation_axis] + math.pi
+                        ) % (2.0 * math.pi) - math.pi
+                        result['measured_rotation_delta_rad'] = measured_delta
+                        axis = ('Roll', 'Pitch', 'Yaw')[rotation_axis]
+                        result['message'] = (
+                            f'{axis} 指令 {math.degrees(rotation[rotation_axis]):+.1f}°，'
+                            f'实测 {math.degrees(measured_delta):+.1f}°，'
+                            f'闭环 {correction_count} 次'
+                        )
+                    with self._debug_lock:
+                        self._debug['commanded_pose'] = {
+                            'xyz': list(result['target_xyz_m']),
+                            'rpy': list(result['target_rpy_rad']),
+                        }
             elif result.get('message'):
                 result['message'] = (
                     f'微调执行失败：{result["message"]}；'
@@ -2161,7 +2179,7 @@ class WebHmiNode(Node):
             return result
         except Exception as exc:
             with self._debug_lock:
-                self._debug.update(phase='ready', last_message=f'点动失败: {exc}')
+                self._debug.update(phase='error', last_message=f'点动失败: {exc}')
             return {'success': False, 'message': f'jog failed: {exc}'}
         finally:
             self._debug_operation_lock.release()
@@ -2186,13 +2204,18 @@ class WebHmiNode(Node):
                 if not self._debug['active'] or self._debug['phase'] != 'ready':
                     return {'success': False, 'message': 'debug point is not ready'}
                 point_name = self._debug['selected_point']
+                commanded_pose = self._debug.get('commanded_pose')
                 self._debug.update(phase='saving', last_message='正在校验并热重载')
             catalog, _, point, _, _ = self._debug_catalog_target(point_name)
-            xyz, rpy = self._fresh_tool_pose()
+            if not commanded_pose:
+                raise ValueError('commanded debug pose is unavailable')
+            xyz = [float(value) for value in commanded_pose['xyz']]
+            rpy = [float(value) for value in commanded_pose['rpy']]
             old_xyz = [float(value) for value in point['pose']['xyz']]
             delta = [new - old for new, old in zip(xyz, old_xyz)]
             point['pose']['xyz'] = xyz
             point['pose']['rpy'] = rpy
+            pose_updates = {point_name: point['pose']}
             followers = catalog.get('commissioning', {}).get(
                 'translation_followers', {}).get(point_name, [])
             for follower in followers:
@@ -2206,7 +2229,11 @@ class WebHmiNode(Node):
                         follower_xyz[index] += delta[index]
                 follower_point['pose']['xyz'] = follower_xyz
                 follower_point['pose']['rpy'] = list(rpy)
-            result = self.save_motion_catalog({'catalog': catalog}, allow_debug=True)
+                pose_updates[follower['point']] = follower_point['pose']
+            result = self.save_motion_catalog(
+                {'catalog': catalog},
+                allow_debug=True,
+                pose_updates=pose_updates)
             with self._debug_lock:
                 if result.get('success'):
                     self._debug.update(
@@ -2240,7 +2267,7 @@ class WebHmiNode(Node):
                     with self._debug_lock:
                         self._debug.update(
                             active=False, phase='inactive', selected_point='', dirty=False,
-                            history=[], reference_pose=None, brush_enabled=False,
+                            history=[], commanded_pose=None, reference_pose=None, brush_enabled=False,
                             last_message='安全退出轨迹失败，已自动恢复到 Home')
                     return {
                         'success': True,
@@ -2279,7 +2306,7 @@ class WebHmiNode(Node):
             with self._debug_lock:
                 self._debug.update(
                     active=False, phase='inactive', selected_point='', dirty=False,
-                    history=[], reference_pose=None, brush_enabled=False,
+                    history=[], commanded_pose=None, reference_pose=None, brush_enabled=False,
                     last_message='已安全回到 Home，自动流程仍暂停')
             return {'success': True, 'message': 'debug mode exited at Home; automatic mode remains paused'}
         except Exception as exc:
@@ -2471,7 +2498,7 @@ class WebHmiNode(Node):
         with self._debug_lock:
             return bool(self._debug['active'])
 
-    def save_motion_catalog(self, body, allow_debug=False):
+    def save_motion_catalog(self, body, allow_debug=False, pose_updates=None):
         if self._debug_session_active() and not allow_debug:
             return {
                 'success': False,
@@ -2495,25 +2522,40 @@ class WebHmiNode(Node):
             }
 
         try:
-            with open(self.motion_catalog_path, 'r', encoding='utf-8') as file:
+            write_path = os.path.realpath(self.motion_catalog_path)
+            with open(write_path, 'r', encoding='utf-8') as file:
                 previous_text = file.read()
-            candidate_text = yaml.safe_dump(
-                catalog,
-                allow_unicode=True,
-                sort_keys=False,
-                default_flow_style=False)
+            if pose_updates:
+                candidate_text = previous_text
+                for point_name, pose in pose_updates.items():
+                    candidate_text = _replace_yaml_value(
+                        candidate_text,
+                        ['points', point_name, 'pose', 'xyz'],
+                        pose['xyz'])
+                    candidate_text = _replace_yaml_value(
+                        candidate_text,
+                        ['points', point_name, 'pose', 'rpy'],
+                        pose['rpy'])
+                catalog = yaml.safe_load(candidate_text)
+                references = _validate_motion_catalog_document(catalog)
+            else:
+                candidate_text = yaml.safe_dump(
+                    catalog,
+                    allow_unicode=True,
+                    sort_keys=False,
+                    default_flow_style=False)
             backup_path = (
-                f'{self.motion_catalog_path}.bak_'
+                f'{write_path}.bak_'
                 f'{time.strftime("%Y%m%d_%H%M%S")}')
-            shutil.copy2(self.motion_catalog_path, backup_path)
-            self._atomic_write_text(self.motion_catalog_path, candidate_text)
+            shutil.copy2(write_path, backup_path)
+            self._atomic_write_text(write_path, candidate_text)
 
             reload_result = self._call_trigger_client(
                 self.motion_reload_client,
                 self.motion_reload_service_name,
                 timeout_sec=30.0)
             if not reload_result.get('success'):
-                self._atomic_write_text(self.motion_catalog_path, previous_text)
+                self._atomic_write_text(write_path, previous_text)
                 rollback_result = self._call_trigger_client(
                     self.motion_reload_client,
                     self.motion_reload_service_name,
@@ -2523,18 +2565,18 @@ class WebHmiNode(Node):
                     'message': (
                         'candidate compile/reload failed; previous catalog restored: '
                         f"{reload_result.get('message', 'unknown error')}"),
-                    'path': self.motion_catalog_path,
+                    'path': write_path,
                     'backup_path': backup_path,
                     'rollback_result': rollback_result,
                 }
 
             self.get_logger().warn(
-                f'motion catalog saved and compiled path={self.motion_catalog_path} '
+                f'motion catalog saved and compiled path={write_path} '
                 f'backup={backup_path}')
             return {
                 'success': True,
                 'message': 'motion catalog saved, compiled, and atomically activated',
-                'path': self.motion_catalog_path,
+                'path': write_path,
                 'backup_path': backup_path,
                 'references': references,
                 'reload_result': reload_result,
@@ -2745,26 +2787,27 @@ class WebHmiNode(Node):
                     'reload_available': bool(self.reload_config_client.service_is_ready()),
                 }
 
-            backup_path = f'{self.point_config_path}.bak_{time.strftime("%Y%m%d_%H%M%S")}'
-            shutil.copy2(self.point_config_path, backup_path)
-            self._atomic_write_text(self.point_config_path, updated_text)
+            write_path = os.path.realpath(self.point_config_path)
+            backup_path = f'{write_path}.bak_{time.strftime("%Y%m%d_%H%M%S")}'
+            shutil.copy2(write_path, backup_path)
+            self._atomic_write_text(write_path, updated_text)
 
             self.get_logger().warn(
-                f'point config saved by HMI path={self.point_config_path} backup={backup_path} '
+                f'point config saved by HMI path={write_path} backup={backup_path} '
                 f'changed={",".join(changed)}')
             reload_result = self.reload_point_config(allow_debug=allow_debug)
             reload_success = bool(reload_result.get('success'))
             if reload_success:
                 message = f'saved {len(changed)} fields and reloaded runtime config'
             else:
-                self._atomic_write_text(self.point_config_path, text)
+                self._atomic_write_text(write_path, text)
                 rollback_reload = self.reload_point_config(allow_debug=allow_debug)
                 return {
                     'success': False,
                     'message': (
                         'runtime reload failed; restored previous config: '
                         f"{reload_result.get('message', 'unknown error')}"),
-                    'path': self.point_config_path,
+                    'path': write_path,
                     'backup_path': backup_path,
                     'changed': changed,
                     'reload_result': reload_result,
@@ -2774,7 +2817,7 @@ class WebHmiNode(Node):
             return {
                 'success': True,
                 'message': message,
-                'path': self.point_config_path,
+                'path': write_path,
                 'backup_path': backup_path,
                 'changed': changed,
                 'reload_result': reload_result,

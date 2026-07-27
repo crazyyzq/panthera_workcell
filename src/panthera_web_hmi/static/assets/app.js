@@ -947,6 +947,9 @@ function renderDebugPointOptions() {
   if (points.some(([name]) => name === previous)) {
     select.value = previous;
   }
+  if (latestSnapshot) {
+    renderDebug(latestSnapshot);
+  }
 }
 
 function setDebugResult(message, ok = true) {

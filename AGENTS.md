@@ -77,6 +77,10 @@ This file contains durable repository context and operating rules for future age
   Server therefore estimates settled motion from an 11-frame least-squares encoder
   position slope while retaining the `0.05 rad/s` limit; it does not trust one SDK
   velocity sample or loosen the safety threshold.
+- The ros2_control hardware velocity export uses a moving average after its existing
+  position-jump rejection. Do not restore the old median: at 100 Hz the quantized
+  encoder produces many zero deltas and occasional real steps, so the median falsely
+  reported long zero-velocity intervals during continuous physical motion.
 - `fixed_motion_bringup.launch.py` and `fixed_spectrometer_cell.launch.py` default
   to MIT mode. Explicit `control_mode:=position_velocity` remains the immediate
   rollback path. `hardware_moveit_rviz_mit.launch.py` is the MoveIt commissioning
@@ -171,6 +175,10 @@ This file contains durable repository context and operating rules for future age
 - Config reload is allowed only while idle/paused and with no active motion goal. New config becomes active only after complete validation/compilation succeeds.
 - Deleting a point referenced by any route must be rejected.
 - Preserve the state-machine business invariants: the cup returns to its source outlet; before-pick position is distinct from before-place position; ERROR/ESTOP retain recovery context; ESTOP has highest priority.
+- `WAIT_DETECTION_DONE` is an external-process wait, not an arm-action timeout.
+  Exceeding `detection_timeout_sec` must leave the cup safely on the spectrometer,
+  keep the state resumable, and publish a throttled warning. Never invent a
+  detection-complete signal and never attempt a blind Home recovery from that pose.
 - Do not enable real GPIO/DIDO output until the installed interface board, pinmux, permissions and electrical wiring are verified.
 - Brush motor commands must use verified Modbus replies, enable nonzero communication-loss
   braking through register `0x008e`, and fail closed during application initialization.
@@ -219,13 +227,13 @@ This file contains durable repository context and operating rules for future age
   and yaw jogs are also about base-frame axes. One request may change exactly one
   degree of freedom; the backend rejects translation above 20 mm or rotation above
   10 degrees per click.
-- MIT static joint tracking error can swallow small Cartesian commands near the
-  extended outlet pose. Translation requests are limited to `2..20 mm`, rotations to
-  `0.1..10 deg`, and exactly one axis per request. Never amplify or automatically
-  repeat a failed jog: that accumulated a 17.8 mm TCP error in real testing. Every
-  completed jog is checked against the measured TCP (`2 mm`, `1.5 deg`); an inaccurate
-  result locks the session in `error` and requires the encoder-confirmed safe exit.
-  Save the measured TCP, never the nominal command.
+- MIT static loaded deflection can make a small Cartesian command differ from the
+  measured TCP near the extended outlet pose. Translation requests are limited to
+  `0.5..20 mm`, rotations to `0.1..10 deg`, and exactly one axis per request. Point
+  jog compilation starts from the last nominal commanded joints and compiles one
+  Cartesian line. The HMI may apply at most five damped corrections on the requested
+  axis only (50% residual, clamped to `0.5..5 mm`); it must not chase cross-axis
+  elastic deflection or apply a full residual in one step.
 - Entering a tunable point pauses the state machine, verifies or recovers to original
   Home, then runs `home_to_safe_center` and the point's validated
   `debug_safe_to_<point>` route. Exiting must not replay inverse jogs: MIT endpoint
@@ -250,10 +258,13 @@ This file contains durable repository context and operating rules for future age
   accept 0.1-10 degrees. Keep the browser limits and backend validation identical.
 - The red HMI control is explicitly a software stop and must never be labelled or
   presented as a substitute for the wired hardware E-stop.
-- Save always samples a fresh measured `base_link -> gripper_center` transform,
-  updates the selected canonical point and its declared translation followers,
-  compiles every enabled route, atomically replaces the YAML, and reloads only on
-  complete success. A compile/reload failure must restore the previous catalog.
+- Save persists the final nominal commanded pose, not the gravity-loaded measured
+  TCP, so replaying the point does not double-count elastic deflection. It updates
+  the selected canonical point and declared translation followers, patches only
+  their `xyz`/`rpy` YAML values while preserving comments/layout, compiles every
+  enabled route, atomically replaces the real source path behind the install
+  symlink, and reloads only on complete success. A compile/reload failure must
+  restore the previous catalog.
 - The password-protected "zero" control sets only a temporary relative display
   reference for the current commissioning session. It does not reset motor encoders,
   alter the commissioned Home vector, or persist a hardware zero.
@@ -278,6 +289,22 @@ functional tests green. Hardware and state-machine compile/static checks pass; e
 still has one legacy whole-package `ament_uncrustify` failure. Do not mass-format
 vendor/legacy packages during a functional change; reduce that debt in a dedicated
 commit.
+
+The 2026-07-28 HMI/production acceptance used Edge through Playwright's browser
+protocol, not screen-coordinate automation. XYZ plus roll/pitch/yaw jogs, safe
+entry/exit and a real format-preserving hot reload were exercised. Representative
+2 mm translation results were `1.43..2.51 mm`; 0.5-degree rotations measured
+`0.4..0.7 deg`. Production then passed 10/10 independent stop/cold-start/full
+OUTLET_1 cycles at speed scale 1.0. Each stop verified Home, brush stop and clean
+process ownership; every start reached READY on attempt 1. Full-cycle times were
+`59.70..61.96 s`, final gripper open positions were about `49.84..50.12 mm`, laser
+data remained fresh, and the Edge page had no script/console errors.
+
+The camera is optional and must never be part of startup READY. A connected
+Gemini305 previously produced both 1280x800 RGB and depth frames while the arm and
+laser stayed healthy. In the 10-cycle acceptance, a later camera restart hit vendor
+`openUsbDevice failed`; its isolated retry process did not crash the HMI or interrupt
+the full production cycle, and the next one-key stop removed it cleanly.
 
 The 2026-07-28 physical regression after the CAN ordering fix completed three
 combined Home-to-outlet-wait round trips with simultaneous gripper commands, then
@@ -326,7 +353,8 @@ The production lifecycle entry points are `scripts/start_workcell.sh` and
 controllers, Motion Server, fresh Home encoders, and HMI services pass. Stop
 must verify an empty cycle, settled Motion Server, and original Home before
 disabling, then terminate the owned group and verify all related processes are
-gone. Never restore the legacy MoveIt/workflow/camera/laser startup chain to
+gone. Laser startup and fresh data are required; camera startup is optional and
+excluded from READY. Never restore the legacy MoveIt/workflow startup chain to
 these production scripts. `--force` is an explicit maintenance escape hatch,
 not a normal shutdown path.
 - Production ROS control is local to the IPC: `ROS_LOCALHOST_ONLY=1` and

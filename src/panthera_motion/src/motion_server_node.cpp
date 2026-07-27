@@ -90,6 +90,14 @@ double maxAbsVelocity(
   return maximum;
 }
 
+std::array<double, 3> matrixToRpy(const Eigen::Matrix3d & rotation)
+{
+  const double pitch = std::asin(std::clamp(-rotation(2, 0), -1.0, 1.0));
+  const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
+  const double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+  return {roll, pitch, yaw};
+}
+
 bool aliasContinuousRoute(
   std::map<std::string, CompiledRoute> & routes,
   const std::string & name,
@@ -510,11 +518,11 @@ private:
       }
     }
 
-    PoseDefinition measured_pose;
+    PoseDefinition command_pose;
     ValidationResult result;
     {
       std::lock_guard<std::mutex> lock(compiler_mutex_);
-      result = compiler_->forwardKinematics(candidate, current, measured_pose);
+      result = compiler_->forwardKinematics(candidate, command_start, command_pose);
     }
     if (!result.success) {
       response.success = false;
@@ -528,79 +536,42 @@ private:
       Eigen::AngleAxisd(request.delta_roll_rad, Eigen::Vector3d::UnitX())).toRotationMatrix();
     Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
     target.translation() = Eigen::Vector3d(
-      measured_pose.xyz[0] + request.delta_x_m,
-      measured_pose.xyz[1] + request.delta_y_m,
-      measured_pose.xyz[2] + request.delta_z_m);
+      command_pose.xyz[0] + request.delta_x_m,
+      command_pose.xyz[1] + request.delta_y_m,
+      command_pose.xyz[2] + request.delta_z_m);
     target.linear() =
       base_delta *
-      (Eigen::AngleAxisd(measured_pose.rpy[2], Eigen::Vector3d::UnitZ()) *
-      Eigen::AngleAxisd(measured_pose.rpy[1], Eigen::Vector3d::UnitY()) *
-      Eigen::AngleAxisd(measured_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
-    const auto yaw_pitch_roll = target.rotation().eulerAngles(2, 1, 0);
+      (Eigen::AngleAxisd(command_pose.rpy[2], Eigen::Vector3d::UnitZ()) *
+      Eigen::AngleAxisd(command_pose.rpy[1], Eigen::Vector3d::UnitY()) *
+      Eigen::AngleAxisd(command_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+    const auto target_rpy = matrixToRpy(target.rotation());
 
     const auto route_id = jog_sequence_.fetch_add(1);
     const std::string route_name = kStagedJogPrefix + std::to_string(route_id);
-    PointDefinition ik_start;
-    ik_start.name = route_name + "_ik_start";
-    ik_start.joints = current;
-    PointDefinition ik_goal;
-    ik_goal.name = route_name + "_ik_goal";
-    ik_goal.ik_seed = ik_start.name;
-    ik_goal.pose = PoseDefinition{
-      {target.translation().x(), target.translation().y(), target.translation().z()},
-      {yaw_pitch_roll[2], yaw_pitch_roll[1], yaw_pitch_roll[0]}};
-    candidate.points[ik_start.name] = ik_start;
-    candidate.points[ik_goal.name] = ik_goal;
-
-    RouteDefinition ik_route;
-    ik_route.name = route_name + "_ik";
-    ik_route.start = ik_start.name;
-    ik_route.velocity_scale = 0.45;
-    ik_route.acceleration_scale = 0.30;
-    SegmentDefinition ik_segment;
-    ik_segment.name = "solve_cartesian_jog_target";
-    ik_segment.type = SegmentType::LINEAR;
-    ik_segment.to = ik_goal.name;
-    ik_segment.cartesian_step_m = 0.002;
-    ik_segment.max_joint_jump_rad = 0.15;
-    ik_segment.constraints.keep_orientation = false;
-    ik_route.segments.push_back(ik_segment);
-
-    CompiledRoute ik_compiled;
-    {
-      std::lock_guard<std::mutex> lock(compiler_mutex_);
-      result = compiler_->compileRoute(candidate, ik_route, ik_compiled);
-    }
-    if (!result.success) {
-      response.success = false;
-      response.message = "jog IK validation failed: " + result.message;
-      return;
-    }
-
     PointDefinition start;
     start.name = route_name + "_start";
     start.joints = command_start;
     PointDefinition goal;
     goal.name = route_name + "_goal";
-    goal.joints = ik_compiled.end_joints;
-    for (std::size_t index = 0; index < goal.joints.size(); ++index) {
-      goal.joints[index] += command_start[index] - current[index];
-    }
+    goal.ik_seed = start.name;
+    goal.pose = PoseDefinition{
+      {target.translation().x(), target.translation().y(), target.translation().z()},
+      target_rpy};
     candidate.points[start.name] = start;
     candidate.points[goal.name] = goal;
 
     RouteDefinition route;
     route.name = route_name;
     route.start = start.name;
-    // Tiny moves at very low speed can sit inside the MIT controller deadband.
     route.velocity_scale = 0.45;
     route.acceleration_scale = 0.30;
     SegmentDefinition segment;
-    segment.name = "servo_error_compensated_jog";
-    segment.type = SegmentType::JOINT;
+    segment.name = "cartesian_teach_jog";
+    segment.type = SegmentType::LINEAR;
     segment.to = goal.name;
-    segment.joint_step_rad = 0.01;
+    segment.cartesian_step_m = 0.002;
     segment.max_joint_jump_rad = 0.15;
+    segment.constraints.keep_orientation = false;
     route.segments.push_back(segment);
 
     CompiledRoute compiled;
@@ -622,7 +593,7 @@ private:
     RCLCPP_INFO(
       logger_,
       "staged Cartesian jog route=%s delta=[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f] "
-      "duration=%.3fs max_joint_delta=%.4frad preserved_command_bias=%.4frad",
+      "duration=%.3fs max_joint_delta=%.4frad measured_command_offset=%.4frad",
       route_name.c_str(), deltas[0], deltas[1], deltas[2], deltas[3], deltas[4], deltas[5],
       compiled.duration_sec, max_joint_delta, command_bias);
     {
@@ -639,11 +610,8 @@ private:
     response.success = true;
     response.message = "Cartesian jog validated and staged";
     response.route_name = route_name;
-    response.target_xyz_m = ik_goal.pose->xyz;
-    response.target_rpy_rad = {
-      yaw_pitch_roll[2],
-      yaw_pitch_roll[1],
-      yaw_pitch_roll[0]};
+    response.target_xyz_m = goal.pose->xyz;
+    response.target_rpy_rad = goal.pose->rpy;
   }
 
   rclcpp_action::GoalResponse handleGoal(
@@ -1045,8 +1013,7 @@ private:
     }
 
     const bool is_staged_jog = route.name.rfind(kStagedJogPrefix, 0) == 0;
-    const double final_position_tolerance = is_staged_jog ?
-      std::min(goal_position_tolerance_rad_, 0.02) : goal_position_tolerance_rad_;
+    const double final_position_tolerance = goal_position_tolerance_rad_;
     FollowTrajectory::Goal controller_request;
     try {
       controller_request.trajectory = scaleTrajectory(route.trajectory, requested_scale);

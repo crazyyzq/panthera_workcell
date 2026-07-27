@@ -1480,6 +1480,16 @@ void StateMachine::checkTimeouts()
   }
 
   if (timeout_sec > 0.0 && elapsed > timeout_sec) {
+    if (state_ == State::WAIT_DETECTION_DONE) {
+      RCLCPP_WARN_THROTTLE(
+        logger_,
+        *node_->get_clock(),
+        30000,
+        "DETECTION_WAIT elapsed=%.1fs exceeds %.1fs; holding safely until completion signal",
+        elapsed,
+        timeout_sec);
+      return;
+    }
     fail("TIMEOUT " + message);
   }
 }

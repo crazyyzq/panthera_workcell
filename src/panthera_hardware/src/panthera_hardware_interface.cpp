@@ -325,7 +325,7 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
   RCLCPP_INFO(
     rclcpp::get_logger("PantheraHardwareInterface"),
     "State filter: enabled=%s arm_jump=%.4frad gripper_jump=%.4fm accept_after=%d "
-    "velocity_enabled=%s median_window=%d arm_deadband=%.4frad/s "
+    "velocity_enabled=%s window=%d arm_deadband=%.4frad/s "
     "gripper_deadband=%.4fm/s",
     state_filter_enabled_ ? "true" : "false",
     state_filter_max_arm_jump_rad_,
@@ -773,10 +773,15 @@ double PantheraHardwareInterface::filterVelocitySample(
     window.pop_front();
   }
 
-  std::vector<double> sorted(window.begin(), window.end());
-  const auto middle = sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2);
-  std::nth_element(sorted.begin(), middle, sorted.end());
-  const double filtered = *middle;
+  // Encoder positions are quantized, so most individual 100 Hz differences
+  // are exactly zero with occasional larger steps. A median therefore reports
+  // zero even during continuous motion. Position spikes are already rejected
+  // before this point; average the window to recover the physical velocity.
+  double filtered = 0.0;
+  for (const double sample : window) {
+    filtered += sample;
+  }
+  filtered /= static_cast<double>(window.size());
   return std::abs(filtered) < deadband ? 0.0 : filtered;
 }
 

@@ -159,10 +159,12 @@ This file contains durable repository context and operating rules for future age
   `brush_entry_to_outlet_1_return_continuous`); other main segments were about
   4.7-6.5 rad/s^2. Treat joint6 continuous retiming/blending as the next motion
   optimization; do not tune MIT Kp/Kd to mask this trajectory-level discontinuity.
-- Joints 1-5 use route path tolerance `0.15 rad` (or `0.20 rad` during
-  pouring). Joint6 alone uses `0.45 rad` path tolerance because a measured
-  `0.3536 rad` transient wrist lag caused a false abort at the former `0.35 rad`
-  boundary; final position/velocity tolerances remain strict.
+- Joints 1-4 use route path tolerance `0.15 rad` (or `0.20 rad` during
+  pouring). Wrist joints 5-6 use `0.45 rad`: vendor feedback is batch-updated,
+  and a measured joint5 `0.1645 rad` transient plus joint6 `0.3536 rad` transient
+  caused false aborts despite correct motion. Final position/velocity tolerances
+  remain strict. After this correction, 50 consecutive 100%-speed empty
+  full-flow cycles passed on 2026-07-28 with maximum Home error `0.007912 rad`.
 - Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
 - The cleaning brush motor driver is AQMD6030NS-A3 on `/dev/ttyS8`, Modbus RTU
   slave `0x02`, default `9600/8E1`. Its SW8 must be ON. The manual uses an
@@ -201,6 +203,10 @@ This file contains durable repository context and operating rules for future age
   unexecuted trajectory, restart from the nearest remaining point with measured
   zero velocity and at least a 0.25-second first interval. Never loop retries or
   resume an unknown/divergent pose.
+- Motion Server must claim `busy_` only in the action accepted callback, never
+  in the goal-validation callback. DDS may time out while sending a goal
+  response; claiming earlier leaves no execution worker to clear `busy_` and
+  permanently rejects every later route.
 - Fixed-motion startup requires fresh encoders within `0.05 rad` of commissioned
   Home. The dedicated recovery service may use the configured `0.50 rad` envelope
   and a 10-second smooth trajectory, followed by a fresh encoder confirmation.

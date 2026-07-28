@@ -678,12 +678,10 @@ private:
       }
     }
 
-    bool expected = false;
-    if (!busy_.compare_exchange_strong(expected, true)) {
+    if (busy_.load()) {
       RCLCPP_WARN(logger_, "reject route '%s': motion server busy", goal->route_name.c_str());
       return rclcpp_action::GoalResponse::REJECT;
     }
-    cancel_requested_.store(false);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
@@ -709,6 +707,17 @@ private:
 
   void handleAccepted(const std::shared_ptr<GoalHandleMotion> goal_handle)
   {
+    bool expected = false;
+    if (!busy_.compare_exchange_strong(expected, true)) {
+      auto result = std::make_shared<ExecuteMotion::Result>();
+      result->success = false;
+      result->error_code = ExecuteMotion::Result::ERROR_BUSY;
+      result->message = "motion server is busy";
+      result->elapsed_sec = 0.0;
+      goal_handle->abort(result);
+      return;
+    }
+    cancel_requested_.store(false);
     std::lock_guard<std::mutex> lock(worker_mutex_);
     if (worker_.joinable()) {
       worker_.join();
@@ -1091,9 +1100,9 @@ private:
         route.name == "clean_dump_pour_to_brush_entry" ||
         route.name == "spectrometer_pick_to_brush_entry_continuous" ?
         pour_path_position_tolerance_rad_ : path_position_tolerance_rad_;
-      // The process only requires the wrist to reach its final angle. Keep strict path
-      // protection on joints 1-5, while allowing joint6 to track through transient lag.
-      path_tolerance.position = joint_name == "joint6" ?
+      // Wrist feedback arrives in batches. Keep strict path protection on joints 1-4,
+      // while allowing joints 5-6 to track through transient lag; final tolerance stays strict.
+      path_tolerance.position = joint_name == "joint5" || joint_name == "joint6" ?
         std::max(route_path_tolerance, wrist_path_position_tolerance_rad_) :
         route_path_tolerance;
       controller_request.path_tolerance.push_back(path_tolerance);

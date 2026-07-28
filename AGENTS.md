@@ -48,9 +48,22 @@ This file contains durable repository context and operating rules for future age
   on 2026-07-24. The hardware mode is `mit_gravity_compensation`: trajectory
   position/velocity targets plus Pinocchio gravity feed-forward are sent through
   the SDK position/velocity/torque/Kp/Kd command.
-- Commissioned MIT arm gains are `Kp=[60,60,60,60,60,60]` and
+- Commissioned MIT arm gains are `Kp=[75,105,135,135,75,75]` and
   `Kd=[5.5,5.5,5.5,5.5,5.5,5.5]`. They are launch-configurable but malformed, non-finite, or
   negative vectors must fail closed. The gripper stays on retained position control.
+  These per-joint gains were physically commissioned on 2026-07-28 by increasing
+  one joint group at a time with Kd fixed. High-speed Home/process-point
+  round trips showed no stopping oscillation, so Kd was not increased. The
+  brush-roll joint3 steady error fell from about `0.0150 rad` at Kp 60 to
+  `0.0087 rad` at Kp 120; clean-dump joint2 error fell from about
+  `0.0073 rad` at Kp 60 to `0.0048 rad` at Kp 90; Home joint4 error fell
+  from about `0.0148 rad` at Kp 60 to about `0.0085 rad` at Kp 120.
+  A synchronized desired/actual refinement later that day increased only J2-J4
+  to `105/135/135`: J2/J3 full-speed dynamic RMS error improved by about
+  5.5%/4.4%, endpoint residuals improved, and stopping remained motionless.
+  Raising J2-J4 Kd to 6.0 increased J3/J4 velocity-step p95 by about 8%/9%,
+  so Kd remains 5.5. Reducing J2 gravity scale from 1.04 to 1.02 also worsened
+  dynamic tracking and was rejected; keep the four-pose gravity calibration.
 - The vendor CAN bridge has one packet mode per CAN port. The six arm motors use
   MIT, while motor 7 (the gripper) uses its proven pos/vel/max-torque mode. In every
   hardware write cycle send the gripper packet first and the six-axis MIT packet
@@ -62,11 +75,39 @@ This file contains durable repository context and operating rules for future age
   before latching encoder state and accepting controller commands. A controller can
   otherwise report `active` while the physical joints remain braked.
 - The 2026-07-24 physical acceptance found that the upstream all-axis gravity
-  scale `[1,1,1,1,1,1]` causes unsafe joint drift on this arm. The current
-  machine calibration is `[0,1,1.5,1,0,0]`: it held at startup and tracked the
-  `home_to_safe_center` joint target within 0.024 rad in a direct-controller test.
+  scale `[1,1,1,1,1,1]` causes unsafe joint drift on this arm. A four-pose
+  closed-loop calibration on 2026-07-28 replaced the initial
+  `[0,1,1.5,1,0,0]` calibration with `[0,1.04,1.10,1.52,0,0]`. At the two
+  outlet grasp poses it reduced joint3 steady error from about
+  `-0.026/-0.031 rad` to `-0.0053/-0.0036 rad`, and reduced joint4 error from
+  about `+0.0075/+0.0078 rad` to `+0.0006/+0.0015 rad`. It also held Home and
+  completed Home-to-point-to-Home routes without a controller or hardware fault.
   Keep the scale launch-configurable and do not restore the upstream default
   without a new staged physical acceptance.
+- The end effector has been mechanically modified and is heavier than the
+  factory assembly; its added mass and center of mass are not yet measured.
+  Runtime gravity compensation loads the generated
+  `panthera_ht_ros_description.urdf`, whose modeled link6, two fingers and
+  gripper-center mass total about 0.361 kg. On 2026-07-28, five safe static
+  poses proved that single-frame motor torque cannot reliably identify the
+  unknown payload (wrist torque estimates jump with transmission/friction).
+  The trustworthy signal is the settled controller desired-minus-actual joint
+  error: with Kp=60 it reproduced the observed equilibrium motor torque.
+  Four-pose joint2-4 fitting on 2026-07-28 could not be explained by one physical
+  payload: bounded fits drove the COM outside the tool, while unconstrained fits
+  produced negative mass. The repeatable brush-roll joint3 residual is therefore
+  also affected by robot-model error and static transmission friction. Keep added
+  payload disabled until a known reference mass or isolated end-effector
+  measurement makes the parameters observable. Never accept a fitted negative
+  mass or an implausible center of mass.
+- MIT gravity compensation supports an explicit added payload via
+  `PANTHERA_PAYLOAD_MASS_KG`, `PANTHERA_PAYLOAD_COM_XYZ_M` and
+  `PANTHERA_PAYLOAD_FRAME` (launch/start equivalents:
+  `PAYLOAD_MASS_KG`, `PAYLOAD_COM_XYZ_M`, `PAYLOAD_FRAME`). The COM is in the
+  named frame, normally `gripper_center`. Defaults are zero added payload and
+  therefore preserve the commissioned machine behavior. Measure the added
+  hardware mass and COM before enabling it; do not guess payload values from
+  the existing per-joint gravity multipliers.
 - Hardware configuration and activation must each latch the median of five valid
   encoder frames collected over up to ten SDK reads, never one frame. The SDK
   reports `999` while a serial motor is still coming online; treat that as a
@@ -229,20 +270,33 @@ This file contains durable repository context and operating rules for future age
   rejects a target more than 20 mm or 10 degrees from the settled measured TCP.
 - MIT static loaded deflection can make a small Cartesian command differ from the
   measured TCP near the extended outlet pose. Translation requests are limited to
-  `0.5..20 mm` and rotations to `0.1..10 deg`. Debug motion compilation starts from
+  `2..20 mm` and rotations to `0.1..10 deg`. The 0.5/1 mm options were removed after
+  physical testing showed a 0.385 mm maximum TCP repeatability spread, making a
+  sub-2 mm command direction-dependent at this tool extension. With the commissioned
+  gains, a 2 mm +Z/-Z test achieved 0.42/0.13 mm final error. Debug
+  motion compilation starts from
   the current measured joints/TCP, not the previous
   nominal endpoint, and compiles one Cartesian line. Before and after a jog, accept
   the TCP only after six samples at 0.2-second intervals stay within 0.5 mm and
-  0.25 degrees (maximum wait 8 seconds). The trajectory always starts from measured
+  0.25 degrees (maximum wait 8 seconds); use the six-sample mean XYZ rather than a
+  noisy final frame. The trajectory always starts from measured
   joints. Apply the operator's physical target delta to the last command target,
   preserving the learned `commanded - measured` MIT load bias instead of resetting
   the command to the gravity-deflected measured TCP. Precision compensation then
-  accumulates on that command target. After settling, it may make at most three
-  stable six-DOF corrections: 70% of position residual capped at 3 mm and 60% of
-  orientation residual capped at 0.75 degrees. Stop immediately at the 1 mm/0.5
-  degree acceptance threshold instead of chasing a tighter value, and stop if either
-  error worsens by more than 25%. Always show the requested target, measured TCP,
-  position/orientation error, load compensation and correction count.
+  accumulates on that command target. After settling, it may make at most eight
+  same-direction six-DOF corrections. Above 3 mm use 70% of position residual capped
+  at 3 mm; at or below 3 mm use 35%. Orientation uses 60% above one degree and 30%
+  below it, capped at 0.75 degrees. Stop at the 0.5 mm/0.5 degree acceptance
+  threshold. Encoder quantization may make one sample temporarily worse, so do not
+  abort on the first regression. Never reverse
+  back to an earlier command: physical validation proved the loaded MIT endpoint is
+  path-dependent and a nominal "best-command rollback" made accuracy worse. If the
+  bounded corrections still do not converge, reset only the internal load-bias
+  reference to the measured pose so a failed command cannot contaminate the next
+  jog. Always return the full XYZ residual trace for diagnosis. A rejected input limit must
+  leave the debug session ready. Direct-coordinate validation allows 0.5 mm numerical
+  tolerance around the advertised 20 mm limit because the displayed TCP and the
+  backend's settled sample are not simultaneous.
 - Entering a tunable point pauses the state machine, verifies or recovers to original
   Home, then runs `home_to_safe_center` and the point's validated
   `debug_safe_to_<point>` route. Exiting must not replay inverse jogs: MIT endpoint
@@ -266,7 +320,7 @@ This file contains durable repository context and operating rules for future age
 - `spectrometer_cell.state_age_sec` is telemetry freshness, not time spent in the
   current state. The HMI must label it as a state-data update age, never as state
   duration.
-- Commissioning translation jogs accept 0.5-20 mm per command; rotation jogs
+- Commissioning translation jogs accept 2-20 mm per command; rotation jogs
   accept 0.1-10 degrees. Keep the browser limits and backend validation identical.
 - The red HMI control is explicitly a software stop and must never be labelled or
   presented as a substitute for the wired hardware E-stop.
@@ -297,6 +351,24 @@ This file contains durable repository context and operating rules for future age
   0.41 mm/negligible orientation error. A real Edge coordinate-entry click of
   `+X 0.5 mm` finished at 0.81 mm/0.11 degree with no browser errors. No test
   point was saved; safe exit returned to encoder-confirmed Home.
+- With the final `75/105/135/135/75/75` gains, empty-tool debug-path
+  repeatability over three independent Home entries was 0.291 mm at
+  `outlet_1_grasp`, 0.563 mm at `outlet_2_grasp`, 0.238 mm at
+  `spectrometer_pick`, 0.099 mm at `clean_dump`, and 0.440 mm at
+  `brush_center`. Mean measured-minus-commanded XYZ offsets were respectively
+  `(+0.33,+0.27,-0.40)`, `(+0.10,+0.16,+1.03)`,
+  `(+1.36,+0.20,-2.06)`, `(+0.60,-0.44,-1.65)`, and
+  `(-1.58,-0.03,-2.20)` mm. These offsets are not proof that the physically
+  tuned station points are wrong: they include model/load deflection, and the
+  production approach path and cup payload differ from the empty debug path.
+  Never auto-apply their inverse to the catalog. Instrument the production path
+  with the real cup and require repeated physical acceptance before any
+  route-specific endpoint compensation.
+- The same session passed all 12 bidirectional 2 mm / 0.5 degree XYZ and
+  Roll/Pitch/Yaw jogs at `clean_dump`; maximum position/orientation error was
+  0.490 mm/0.360 degrees. If bounded correction exhausts while
+  `within_step_tolerance` is false, the API and browser must not present the
+  command as an ordinary green success merely because the trajectory executed.
 
 ## Build and validation
 
@@ -353,6 +425,17 @@ maximum final Home error was 0.02947 rad. Raw velocity-difference acceleration
 spikes remain encoder/SDK quantization artifacts; use position continuity, commanded
 trajectory limits, and sustained motion evidence before classifying one as a
 mechanical jerk.
+
+The final per-joint MIT refinement used synchronized
+`/arm_controller/controller_state` desired/actual data at full production speed.
+The accepted `Kp=[75,105,135,135,75,75]`, `Kd=5.5` profile reduced J2/J3
+dynamic RMS error by about 5.5%/4.4% from the preceding profile without adding
+settling motion. Ten consecutive high-speed Home/wait routes then completed
+first try in 19.45 seconds. HMI commissioning passed bidirectional 2, 5 and
+20 mm Z jogs with maximum position/orientation error 0.476 mm/0.396 degrees,
+safe exit returned Home, and an OUTLET_2 production cycle completed in
+59.94 seconds without error or recovery. A final cold start with no environment
+override logged the accepted gains and the existing four-pose gravity scales.
 
 The commissioning-only fixed motion launch is:
 
@@ -415,6 +498,22 @@ not a normal shutdown path.
   interpolate from its stale previous desired state and can jerk a joint. Manual
   reset is valid from every state, and manual pause must allow `IDLE -> PAUSED`;
   these transitions are required by HMI commissioning and startup recovery.
+- Fixed outlet pickup has two valid logical starts. From `home_near`, select
+  `home_to_outlet_1_grasp_smooth` or `home_to_outlet_2_grasp_smooth` by outlet;
+  from `outlet_wait`, select the matching `outlet_wait_to_outlet_*_grasp` route.
+  Do not collapse this into an outlet-1-only Home special case. Both outlet-2
+  variants completed consecutive full physical cycles at 100% speed in about
+  60 seconds per cycle with the production MIT gains.
+- Shutdown may encounter `ERROR` with a stale active task after safety recovery.
+  It may clear that context only when the gripper and spectrometer are empty and
+  fresh encoders independently verify commissioned Home. Otherwise it must keep
+  the hardware powered and refuse shutdown; never use task flags alone to infer
+  physical safety.
+- `outlet_wait` is about 1.12 rad from Home and is outside the 0.5 rad unknown-pose
+  recovery envelope. When that logical start is known, `/recover_home` must run
+  the compiled `outlet_wait_to_home_continuous` route through `safe_joint_center`;
+  do not widen the unknown-pose envelope. Physical validation completed this
+  route in 1.80 seconds and encoder-confirmed Home within 0.00854 rad.
 - A deferred pause request is one-shot: once `pauseRequested` is set, do not
   regenerate a higher-priority `PAUSE_AUTO` event every tick or action completion
   will be starved. At an action boundary, `pausedFromState` is the next unexecuted

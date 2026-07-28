@@ -36,7 +36,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'mit_kp',
-            default_value='60.0,60.0,60.0,60.0,60.0,60.0',
+            default_value='75.0,105.0,135.0,135.0,75.0,75.0',
             description='MIT Kp for joint1..joint6',
         ),
         DeclareLaunchArgument(
@@ -46,8 +46,23 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'mit_gravity_scale',
-            default_value='0.0,1.0,1.5,0.0,0.0,0.0',
+            default_value='0.0,1.04,1.10,1.52,0.0,0.0',
             description='Gravity feed-forward scale for joint1..joint6',
+        ),
+        DeclareLaunchArgument(
+            'payload_mass_kg',
+            default_value='0.0',
+            description='Added tool mass in kg; zero preserves the URDF model',
+        ),
+        DeclareLaunchArgument(
+            'payload_com_xyz_m',
+            default_value='0.0,0.0,0.0',
+            description='Added tool COM x,y,z in payload_frame, metres',
+        ),
+        DeclareLaunchArgument(
+            'payload_frame',
+            default_value='gripper_center',
+            description='URDF frame used for the added tool COM',
         ),
         SetEnvironmentVariable(
             name='PANTHERA_MIT_KP',
@@ -60,6 +75,18 @@ def generate_launch_description():
         SetEnvironmentVariable(
             name='PANTHERA_MIT_GRAVITY_SCALE',
             value=LaunchConfiguration('mit_gravity_scale'),
+        ),
+        SetEnvironmentVariable(
+            name='PANTHERA_PAYLOAD_MASS_KG',
+            value=LaunchConfiguration('payload_mass_kg'),
+        ),
+        SetEnvironmentVariable(
+            name='PANTHERA_PAYLOAD_COM_XYZ_M',
+            value=LaunchConfiguration('payload_com_xyz_m'),
+        ),
+        SetEnvironmentVariable(
+            name='PANTHERA_PAYLOAD_FRAME',
+            value=LaunchConfiguration('payload_frame'),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(moveit_launch),

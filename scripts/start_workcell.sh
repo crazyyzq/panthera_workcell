@@ -12,6 +12,12 @@ START_ATTEMPTS="${START_ATTEMPTS:-2}"
 START_RETRY_DELAY_SEC="${START_RETRY_DELAY_SEC:-5}"
 SPEED_SCALE="${SPEED_SCALE:-1.0}"
 HMI_PORT="${HMI_PORT:-8080}"
+MIT_KP="${MIT_KP:-75.0,105.0,135.0,135.0,75.0,75.0}"
+MIT_KD="${MIT_KD:-5.5,5.5,5.5,5.5,5.5,5.5}"
+MIT_GRAVITY_SCALE="${MIT_GRAVITY_SCALE:-0.0,1.04,1.10,1.52,0.0,0.0}"
+PAYLOAD_MASS_KG="${PAYLOAD_MASS_KG:-0.0}"
+PAYLOAD_COM_XYZ_M="${PAYLOAD_COM_XYZ_M:-0.0,0.0,0.0}"
+PAYLOAD_FRAME="${PAYLOAD_FRAME:-gripper_center}"
 ROBOT_CONFIG="${ROBOT_CONFIG:-$WS/install/panthera_ht_config/share/panthera_ht_config/robot_param/Follower_absolute.yaml}"
 CELL_CONFIG="${CELL_CONFIG:-$WS/install/panthera_spectrometer_cell/share/panthera_spectrometer_cell/config/spectrometer_cell.yaml}"
 KEEP_RUNNING_ON_FAILURE=0
@@ -223,6 +229,12 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
     default_speed_scale:="$SPEED_SCALE" \
     hardware_config_file:="$ROBOT_CONFIG" \
     cell_config_file:="$CELL_CONFIG" \
+    mit_kp:="$MIT_KP" \
+    mit_kd:="$MIT_KD" \
+    mit_gravity_scale:="$MIT_GRAVITY_SCALE" \
+    payload_mass_kg:="$PAYLOAD_MASS_KG" \
+    payload_com_xyz_m:="$PAYLOAD_COM_XYZ_M" \
+    payload_frame:="$PAYLOAD_FRAME" \
     start_hardware:=true simulation:=false start_hmi:=true hmi_port:="$HMI_PORT" \
     >"$LOG_DIR/launch_attempt_${attempt}.log" 2>&1 < /dev/null 9>&- &
   launch_pid=$!

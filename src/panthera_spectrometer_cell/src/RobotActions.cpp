@@ -399,6 +399,26 @@ ActionResult RobotActions::recoverHomeAfterError()
     RCLCPP_ERROR(logger_, "%s", motor_stop.message.c_str());
   }
 
+  if (usesFixedMotion()) {
+    std::string current_point;
+    {
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      current_point = fixed_point_;
+    }
+    if (current_point == "outlet_wait") {
+      const auto result = executeFixedRoute(
+        "outlet_wait_to_home_continuous",
+        "home_near",
+        "fixed route Home recovery");
+      if (!result.success) {
+        return ActionResult::fail("fixed route Home recovery failed: " + result.message);
+      }
+      std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+      active_outlet_ = OutletId::NONE;
+      return ActionResult::ok("fixed route Home recovery encoder-confirmed at home_near");
+    }
+  }
+
   std::vector<double> current;
   if (!getLatestArmJointValues(current) || current.size() != home.size()) {
     return ActionResult::fail("error recovery refused: fresh six-joint encoder state unavailable");
@@ -669,8 +689,8 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
       current_point = fixed_point_;
     }
     const std::string route_name =
-      current_point == "home_near" && outlet_one ?
-      "home_to_outlet_1_grasp_smooth" :
+      current_point == "home_near" ?
+      (outlet_one ? "home_to_outlet_1_grasp_smooth" : "home_to_outlet_2_grasp_smooth") :
       (outlet_one ? "outlet_wait_to_outlet_1_grasp" : "outlet_wait_to_outlet_2_grasp");
     result = executeFixedRoute(
       route_name,

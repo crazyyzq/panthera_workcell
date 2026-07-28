@@ -1,6 +1,7 @@
 #ifndef PANTHERA_HARDWARE__PANTHERA_HARDWARE_INTERFACE_HPP_
 #define PANTHERA_HARDWARE__PANTHERA_HARDWARE_INTERFACE_HPP_
 
+#include <array>
 #include <deque>
 #include <memory>
 #include <string>
@@ -16,7 +17,8 @@
 #include "rclcpp_lifecycle/state.hpp"
 
 // Forward declaration
-namespace panthera {
+namespace panthera
+{
 class Panthera;
 }
 
@@ -79,6 +81,9 @@ private:
   std::vector<double> kp_gains_;
   std::vector<double> kd_gains_;
   std::vector<double> gravity_scales_;
+  double payload_mass_kg_{0.0};
+  std::array<double, 3> payload_com_m_{{0.0, 0.0, 0.0}};
+  std::string payload_frame_{"gripper_center"};
 
   // Throttled logging requires a clock whose lifetime outlives the logging call.
   // A temporary shared clock here previously caused a use-after-free on error paths.

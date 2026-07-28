@@ -129,7 +129,10 @@ bool parseGainVector(const char * value, std::vector<double> & gains)
   return gains.size() == 6;
 }
 
-bool parseFiniteVector(const char * value, std::vector<double> & values)
+bool parseFiniteVector(
+  const char * value,
+  std::vector<double> & values,
+  std::size_t expected_size = 6)
 {
   if (value == nullptr) {
     return false;
@@ -159,7 +162,33 @@ bool parseFiniteVector(const char * value, std::vector<double> & values)
     return false;
   }
 
-  return values.size() == 6;
+  return values.size() == expected_size;
+}
+
+bool parseFinitePayloadVector(const char * value, std::array<double, 3> & values)
+{
+  std::vector<double> parsed;
+  if (!parseFiniteVector(value, parsed, values.size())) {
+    return false;
+  }
+  std::copy(parsed.begin(), parsed.end(), values.begin());
+  return true;
+}
+
+bool parseFiniteScalar(const char * value, double & result)
+{
+  if (value == nullptr) {
+    return false;
+  }
+  try {
+    const std::string item(value);
+    std::size_t parsed = 0;
+    result = std::stod(item, &parsed);
+    return std::isfinite(result) &&
+           item.find_first_not_of(" \t", parsed) == std::string::npos;
+  } catch (const std::exception &) {
+    return false;
+  }
 }
 
 }  // namespace
@@ -167,7 +196,11 @@ bool parseFiniteVector(const char * value, std::vector<double> & values)
 class GravityModel
 {
 public:
-  bool load(const std::string & config_file)
+  bool load(
+    const std::string & config_file,
+    const std::string & payload_frame,
+    double payload_mass_kg,
+    const std::array<double, 3> & payload_com_m)
   {
     try {
       const YAML::Node config = YAML::LoadFile(config_file);
@@ -194,6 +227,21 @@ public:
       }
 
       pinocchio::urdf::buildModel(urdf_path, model_);
+      if (payload_mass_kg > 0.0) {
+        if (!model_.existFrame(payload_frame)) {
+          return false;
+        }
+        const auto & frame = model_.frames[model_.getFrameId(payload_frame)];
+        if (frame.parentJoint == 0) {
+          return false;
+        }
+        const Eigen::Vector3d center_of_mass(
+          payload_com_m[0], payload_com_m[1], payload_com_m[2]);
+        model_.appendBodyToJoint(
+          frame.parentJoint,
+          pinocchio::Inertia(payload_mass_kg, center_of_mass, Eigen::Matrix3d::Zero()),
+          frame.placement);
+      }
       data_ = pinocchio::Data(model_);
 
       if (!config["kinematics"] || !config["kinematics"]["joint_names"]) {
@@ -415,15 +463,41 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
     const char * kp_value = std::getenv("PANTHERA_MIT_KP");
     const char * kd_value = std::getenv("PANTHERA_MIT_KD");
     const char * gravity_scale_value = std::getenv("PANTHERA_MIT_GRAVITY_SCALE");
+    const char * payload_mass_value = std::getenv("PANTHERA_PAYLOAD_MASS_KG");
+    const char * payload_com_value = std::getenv("PANTHERA_PAYLOAD_COM_XYZ_M");
+    const char * payload_frame_value = std::getenv("PANTHERA_PAYLOAD_FRAME");
     if ((kp_value != nullptr && !parseGainVector(kp_value, mit_kp)) ||
       (kd_value != nullptr && !parseGainVector(kd_value, mit_kd)) ||
       (gravity_scale_value != nullptr &&
-      !parseFiniteVector(gravity_scale_value, gravity_scales_)))
+      !parseFiniteVector(gravity_scale_value, gravity_scales_)) ||
+      (payload_mass_value != nullptr &&
+      !parseFiniteScalar(payload_mass_value, payload_mass_kg_)) ||
+      (payload_com_value != nullptr &&
+      !parseFinitePayloadVector(payload_com_value, payload_com_m_)))
     {
       RCLCPP_ERROR(
         rclcpp::get_logger("PantheraHardwareInterface"),
         "MIT gains must contain six finite non-negative values and gravity scale "
-        "must contain six finite values");
+        "must contain six finite values; payload mass/COM must be finite");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    if (payload_mass_kg_ < 0.0 || payload_mass_kg_ > 2.0 ||
+      std::any_of(
+        payload_com_m_.begin(), payload_com_m_.end(),
+        [](double value) {return std::abs(value) > 0.5;}))
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        "Payload must be 0..2kg with each COM coordinate within +/-0.5m");
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    if (payload_frame_value != nullptr) {
+      payload_frame_ = payload_frame_value;
+    }
+    if (payload_frame_.empty()) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("PantheraHardwareInterface"),
+        "Payload frame must not be empty");
       return hardware_interface::CallbackReturn::ERROR;
     }
     std::copy(mit_kp.begin(), mit_kp.end(), kp_gains_.begin());
@@ -441,6 +515,11 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
       "MIT gravity scale=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
       gravity_scales_[0], gravity_scales_[1], gravity_scales_[2],
       gravity_scales_[3], gravity_scales_[4], gravity_scales_[5]);
+    RCLCPP_INFO(
+      rclcpp::get_logger("PantheraHardwareInterface"),
+      "MIT payload: frame=%s mass=%.4fkg COM=[%.4f, %.4f, %.4f]m",
+      payload_frame_.c_str(), payload_mass_kg_,
+      payload_com_m_[0], payload_com_m_[1], payload_com_m_[2]);
   }
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -463,7 +542,9 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
                 "Panthera robot initialized successfully");
     if (control_mode_ == "mit_gravity_compensation") {
       gravity_model_ = std::make_shared<GravityModel>();
-      if (!gravity_model_->load(config_file_)) {
+      if (!gravity_model_->load(
+          config_file_, payload_frame_, payload_mass_kg_, payload_com_m_))
+      {
         RCLCPP_ERROR(
           rclcpp::get_logger("PantheraHardwareInterface"),
           "Failed to load the URDF/dynamics model for MIT gravity compensation");

@@ -148,6 +148,53 @@ def test_direct_coordinate_move_accepts_current_pose_without_motion():
     assert node._debug['phase'] == 'ready'
 
 
+def test_debug_target_corrects_submillimeter_residual():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'commanded_pose': {'xyz': [0.42, -0.08, 0.19], 'rpy': [0.0, 0.0, 0.0]},
+        'history': [],
+    }
+    measured = iter([
+        ([0.42, -0.08, 0.19025], [0.0, 0.0, 0.0]),
+        ([0.42, -0.08, 0.190], [0.0, 0.0, 0.0]),
+        ([0.42, -0.08, 0.191], [0.0, 0.0, 0.0]),
+    ])
+    node._settled_tool_pose = lambda: next(measured)
+    node._stage_and_execute_jog = lambda _delta, target: {
+        'success': True,
+        'target_xyz_m': list(target[0]),
+        'target_rpy_rad': list(target[1]),
+    }
+
+    result = node._execute_debug_target(
+        [0.42, -0.08, 0.19],
+        [0.0, 0.0, 0.0],
+        [0.42, -0.08, 0.191],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.001, 0.0, 0.0, 0.0],
+    )
+
+    assert result['correction_count'] == 2
+    assert result['within_step_tolerance'] is True
+
+
+def test_debug_jog_rejects_unrepeatable_one_millimeter_step():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': True, 'phase': 'ready'}
+    node._debug_require_paused = lambda: (True, 'ready')
+
+    result = node.debug_jog({
+        'translation_m': [0.0, 0.0, 0.001],
+        'rotation_rad': [0.0, 0.0, 0.0],
+    })
+
+    assert result['success'] is False
+    assert '2mm' in result['message']
+
+
 def test_direct_coordinate_move_rejects_more_than_20mm():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_operation_lock = threading.Lock()
@@ -163,6 +210,7 @@ def test_direct_coordinate_move_rejects_more_than_20mm():
 
     assert result['success'] is False
     assert '20 mm' in result['message']
+    assert node._debug['phase'] == 'ready'
 
 
 def test_active_debug_session_rejects_production_commands_and_speed_changes():

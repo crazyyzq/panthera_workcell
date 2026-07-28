@@ -46,6 +46,7 @@ DEBUG_PASSWORD_SALT = bytes.fromhex('1c52910fa7e65aeae68b7ee9106e8aa3')
 DEBUG_PASSWORD_HASH = bytes.fromhex(
     'f5355db155d9206dabd74f757e22bee79e70364ca2953c2960be1d7fb0704bd9'
     '9b87d5e29614f4aaa5b25fc0bc72e1ced43ce57a49a100c8177ae68affc88305')
+DEBUG_POSITION_TOLERANCE_M = 0.0005
 
 
 POINT_CONFIG_MOTION_KEYS = {
@@ -2104,11 +2105,11 @@ class WebHmiNode(Node):
             if len(active_deltas) != 1:
                 return {'success': False, 'message': 'jog must move exactly one axis'}
             if any(
-                    abs(value) > 1e-9 and not 0.0005 <= abs(value) <= 0.020
+                    abs(value) > 1e-9 and not 0.002 <= abs(value) <= 0.020
                     for value in translation):
                 return {
                     'success': False,
-                    'message': 'MIT Cartesian translation step must be between 0.5mm and 20mm',
+                    'message': 'MIT Cartesian translation step must be between 2mm and 20mm',
                 }
             min_rotation = math.radians(0.1)
             max_rotation = math.radians(10.0)
@@ -2160,6 +2161,10 @@ class WebHmiNode(Node):
                 self._debug.update(phase='jogging', last_message='正在执行输入坐标')
             return self._execute_debug_target(
                 start_xyz, start_rpy, target_xyz, target_rpy, deltas)
+        except ValueError as exc:
+            with self._debug_lock:
+                self._debug.update(phase='ready', last_message=str(exc))
+            return {'success': False, 'message': str(exc)}
         except Exception as exc:
             with self._debug_lock:
                 self._debug.update(phase='error', last_message=f'坐标执行失败: {exc}')
@@ -2171,7 +2176,7 @@ class WebHmiNode(Node):
             self, start_xyz, start_rpy, target_xyz, target_rpy, requested_delta):
         translation_distance = math.sqrt(sum(value * value for value in requested_delta[:3]))
         rotation_distance = rpy_orientation_error(start_rpy, target_rpy)
-        if translation_distance > 0.020 + 1e-9:
+        if translation_distance > 0.0205:
             raise ValueError(
                 f'单次输入位置距离为 {translation_distance * 1000.0:.1f} mm，'
                 '不得超过 20 mm')
@@ -2215,24 +2220,29 @@ class WebHmiNode(Node):
         error_trace = [{
             'position_error_m': position_error,
             'orientation_error_rad': orientation_error,
+            'position_residual_m': [
+                target - measured
+                for measured, target in zip(measured_xyz, target_xyz)],
         }]
 
-        for _ in range(3):
-            if position_error <= 0.001 and orientation_error <= math.radians(0.5):
+        for _ in range(8):
+            if (
+                    position_error <= DEBUG_POSITION_TOLERANCE_M and
+                    orientation_error <= math.radians(0.5)):
                 break
-            previous_position_error = position_error
-            previous_orientation_error = orientation_error
             correction = cartesian_pose_delta(
                 measured_xyz, measured_rpy, target_xyz, target_rpy)
-            if position_error > 0.001:
-                translation_scale = min(0.70, 0.003 / position_error)
+            if position_error > DEBUG_POSITION_TOLERANCE_M:
+                translation_scale = (
+                    min(0.70, 0.003 / position_error)
+                    if position_error > 0.003 else 0.35)
                 correction[:3] = [
                     value * translation_scale for value in correction[:3]]
             else:
                 correction[:3] = [0.0, 0.0, 0.0]
             if orientation_error > math.radians(0.5):
                 rotation_scale = min(
-                    0.60,
+                    0.60 if orientation_error > math.radians(1.0) else 0.30,
                     math.radians(0.75) / orientation_error)
                 correction[3:] = [
                     value * rotation_scale for value in correction[3:]]
@@ -2258,24 +2268,21 @@ class WebHmiNode(Node):
             error_trace.append({
                 'position_error_m': position_error,
                 'orientation_error_rad': orientation_error,
+                'position_residual_m': [
+                    target - measured
+                    for measured, target in zip(measured_xyz, target_xyz)],
             })
-            if (
-                    position_error > previous_position_error * 1.25 or
-                    orientation_error > max(
-                        math.radians(0.5), previous_orientation_error * 1.25)):
-                convergence_stopped = True
-                break
 
         within_tolerance = (
-            position_error <= 0.001 and
+            position_error <= DEBUG_POSITION_TOLERANCE_M and
             orientation_error <= math.radians(0.5))
         command_bias = math.sqrt(sum(
             (commanded - target) ** 2
             for commanded, target in zip(commanded_xyz, target_xyz)))
-        if convergence_stopped:
-            warning = '，⚠ 误差未收敛，已停止自动修正'
-        elif within_tolerance:
+        if within_tolerance:
             warning = ''
+        elif convergence_stopped:
+            warning = '，⚠ 误差开始变差，已停止同向修正'
         else:
             warning = '，⚠ 请检查实测值后再决定是否重试'
         message = (
@@ -2303,8 +2310,8 @@ class WebHmiNode(Node):
         })
         with self._debug_lock:
             self._debug['commanded_pose'] = {
-                'xyz': list(result['target_xyz_m']),
-                'rpy': list(result['target_rpy_rad']),
+                'xyz': list(result['target_xyz_m'] if within_tolerance else measured_xyz),
+                'rpy': list(result['target_rpy_rad'] if within_tolerance else measured_rpy),
             }
             self._debug['history'].append(list(requested_delta))
             self._debug['dirty'] = True
@@ -2339,7 +2346,11 @@ class WebHmiNode(Node):
                     rpy_orientation_error(sample[1], samples[-1][1])
                     for sample in samples)
                 if position_span <= 0.0005 and orientation_span <= math.radians(0.25):
-                    return samples[-1]
+                    averaged_xyz = [
+                        sum(sample[0][axis] for sample in samples) / len(samples)
+                        for axis in range(3)
+                    ]
+                    return averaged_xyz, samples[-1][1]
             time.sleep(0.2)
         raise ValueError('TCP is still settling; wait a moment and retry')
 

@@ -1281,6 +1281,30 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  home_to_outlet_2_grasp_smooth:
+    start: home_near
+    velocity_scale: 1.00
+    acceleration_scale: 1.00
+    segments:
+    - name: direct_to_outlet_2_high
+      type: joint
+      to: outlet_2_hover
+    - name: vertical_approach_outlet_2
+      type: linear
+      to: outlet_2_pregrasp
+      velocity_scale: 0.60
+      acceleration_scale: 0.50
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: final_10mm_grasp_outlet_2
+      type: linear
+      to: outlet_2_grasp
+      velocity_scale: 0.40
+      acceleration_scale: 0.35
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
   home_to_outlet_1_hover_commission:
     start: home_near
     velocity_scale: 1.00

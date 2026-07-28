@@ -456,7 +456,7 @@ private:
 
   void stageJog(const StageJog::Request & request, StageJog::Response & response)
   {
-    constexpr double max_translation_m = 0.020;
+    constexpr double max_translation_m = 0.021;
     constexpr double max_rotation_rad = 0.17453292519943295;
     const std::array<double, 6> deltas{
       request.delta_x_m, request.delta_y_m, request.delta_z_m,

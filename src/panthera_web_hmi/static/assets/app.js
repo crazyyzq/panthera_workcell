@@ -1110,8 +1110,8 @@ async function sendDebugJog(button) {
   const linearAxes = {x: 0, y: 1, z: 2};
   const rotationAxes = {roll: 0, pitch: 1, yaw: 2};
   if (button.dataset.jogAxis) {
-    if (!Number.isFinite(linearStep) || linearStep < 0.5 || linearStep > 20) {
-      setDebugResult('MIT 微调的平移步进必须在 0.5–20 mm，推荐 2–5 mm。', false);
+    if (!Number.isFinite(linearStep) || linearStep < 2 || linearStep > 20) {
+      setDebugResult('MIT 微调的平移步进必须在 2–20 mm，推荐 2–5 mm。', false);
       return;
     }
     translation[linearAxes[button.dataset.jogAxis]] = sign * linearStep / 1000;

@@ -15,6 +15,9 @@ def generate_launch_description():
     mit_kp = LaunchConfiguration('mit_kp')
     mit_kd = LaunchConfiguration('mit_kd')
     mit_gravity_scale = LaunchConfiguration('mit_gravity_scale')
+    payload_mass_kg = LaunchConfiguration('payload_mass_kg')
+    payload_com_xyz_m = LaunchConfiguration('payload_com_xyz_m')
+    payload_frame = LaunchConfiguration('payload_frame')
     default_speed_scale = LaunchConfiguration('default_speed_scale')
     start_hardware = LaunchConfiguration('start_hardware')
     hardware_config_file = LaunchConfiguration('hardware_config_file')
@@ -56,6 +59,9 @@ def generate_launch_description():
             'mit_kp': mit_kp,
             'mit_kd': mit_kd,
             'mit_gravity_scale': mit_gravity_scale,
+            'payload_mass_kg': payload_mass_kg,
+            'payload_com_xyz_m': payload_com_xyz_m,
+            'payload_frame': payload_frame,
             'catalog_file': catalog_file,
             'default_speed_scale': default_speed_scale,
         }.items(),
@@ -113,13 +119,25 @@ def generate_launch_description():
             default_value='mit_gravity_compensation'),
         DeclareLaunchArgument(
             'mit_kp',
-            default_value='60.0,60.0,60.0,60.0,60.0,60.0'),
+            default_value='75.0,105.0,135.0,135.0,75.0,75.0'),
         DeclareLaunchArgument(
             'mit_kd',
             default_value='5.5,5.5,5.5,5.5,5.5,5.5'),
         DeclareLaunchArgument(
             'mit_gravity_scale',
-            default_value='0.0,1.0,1.5,1.0,0.0,0.0'),
+            default_value='0.0,1.04,1.10,1.52,0.0,0.0'),
+        DeclareLaunchArgument(
+            'payload_mass_kg',
+            default_value='0.0',
+            description='Added tool mass in kg; zero preserves the URDF model'),
+        DeclareLaunchArgument(
+            'payload_com_xyz_m',
+            default_value='0.0,0.0,0.0',
+            description='Added tool COM x,y,z in payload_frame, metres'),
+        DeclareLaunchArgument(
+            'payload_frame',
+            default_value='gripper_center',
+            description='URDF frame used for the added tool COM'),
         DeclareLaunchArgument('default_speed_scale', default_value='0.20'),
         DeclareLaunchArgument('start_hardware', default_value='true'),
         DeclareLaunchArgument(

@@ -306,6 +306,9 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_NE(catalog.findRoute("safe_center_to_home"), nullptr);
 
   const std::set<std::string> required_routes{
+    "home_to_outlet_1_grasp_smooth",
+    "home_to_outlet_2_grasp_smooth",
+    "outlet_wait_to_home_continuous",
     "outlet_wait_to_outlet_1_grasp",
     "outlet_wait_to_outlet_2_grasp",
     "outlet_1_grasp_to_spectrometer_place",
@@ -339,6 +342,24 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   const auto & transfer_segment = outlet_route->segments.front();
   ASSERT_TRUE(transfer_segment.velocity_scale.has_value());
   EXPECT_DOUBLE_EQ(*transfer_segment.velocity_scale, 0.85);
+
+  const auto * home_to_outlet_2 =
+    catalog.findRoute("home_to_outlet_2_grasp_smooth");
+  ASSERT_NE(home_to_outlet_2, nullptr);
+  EXPECT_EQ(home_to_outlet_2->start, "home_near");
+  ASSERT_FALSE(home_to_outlet_2->segments.empty());
+  const auto & outlet_2_final_segment = home_to_outlet_2->segments.back();
+  EXPECT_EQ(outlet_2_final_segment.to, "outlet_2_grasp");
+  EXPECT_EQ(outlet_2_final_segment.type, panthera_motion::SegmentType::LINEAR);
+  EXPECT_EQ(outlet_2_final_segment.constraints.vertical_axis, "z");
+  EXPECT_TRUE(outlet_2_final_segment.constraints.keep_orientation);
+
+  const auto * outlet_wait_to_home =
+    catalog.findRoute("outlet_wait_to_home_continuous");
+  ASSERT_NE(outlet_wait_to_home, nullptr);
+  EXPECT_EQ(outlet_wait_to_home->start, "outlet_wait");
+  ASSERT_FALSE(outlet_wait_to_home->segments.empty());
+  EXPECT_EQ(outlet_wait_to_home->segments.back().to, "home_near");
 }
 
 }  // namespace

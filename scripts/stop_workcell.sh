@@ -125,6 +125,7 @@ motion_idle_and_settled()
 wait_until_safe_state()
 {
   local elapsed=0 status state active cup occupied
+  local error_reset_attempted=0
   while (( elapsed <= STOP_WAIT_SEC )); do
     status="$(cell_status || true)"
     if [[ -z "$status" ]] && motion_idle_and_settled &&
@@ -135,6 +136,19 @@ wait_until_safe_state()
     fi
     IFS='|' read -r state active cup occupied <<<"${status:-UNKNOWN|1|1|1}"
     echo "[stop] safety wait ${elapsed}/${STOP_WAIT_SEC}s state=$state active=$active cup=$cup occupied=$occupied"
+    if [[ "$state" == "ERROR" && "$active" == "1" && "$cup" == "0" &&
+      "$occupied" == "0" && "$error_reset_attempted" == "0" ]]
+    then
+      error_reset_attempted=1
+      if python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 \
+        >"$LOG_DIR/error_home_check.log" 2>&1; then
+        echo "[stop] failed task is empty and Home-verified; clearing stale ERROR context"
+        timeout 5 ros2 service call /spectrometer_cell/request_reset std_srvs/srv/Trigger '{}' \
+          >"$LOG_DIR/error_reset.log" 2>&1 || true
+        sleep 1
+        continue
+      fi
+    fi
     if [[ "$active" == "0" && "$cup" == "0" && "$occupied" == "0" ]] &&
       [[ "$state" == "IDLE" || "$state" == "WAIT_DISCHARGE" || "$state" == "PAUSED" || "$state" == "ERROR" ]]; then
       return 0

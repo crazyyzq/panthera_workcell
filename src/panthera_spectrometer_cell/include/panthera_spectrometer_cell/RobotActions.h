@@ -19,6 +19,7 @@
 
 #include "panthera_rs485/modbus_rtu.hpp"
 #include "panthera_interfaces/action/execute_motion.hpp"
+#include "panthera_interfaces/srv/stage_jog.hpp"
 #include "panthera_spectrometer_cell/Config.h"
 #include "panthera_spectrometer_cell/Types.h"
 
@@ -64,6 +65,12 @@ private:
     const std::string & route_name,
     const std::string & expected_end_point,
     const std::string & label);
+  ActionResult stageAndExecuteProcessPoint(
+    const std::string & point_name,
+    const Vec3 & offset_xyz,
+    const std::string & expected_end_point,
+    const std::string & label);
+  ActionResult computeSpectrometerOffset(double axis_position_mm, Vec3 & offset_xyz) const;
   ActionResult executeFixedCleaning();
   bool usesFixedMotion() const;
   ActionResult executePoseJoint(const PoseConfig & pose, const std::string & label);
@@ -78,11 +85,14 @@ private:
   ActionResult sendGripperTo(
     double position,
     double duration_sec,
-    const std::string & label);
+    const std::string & label,
+    bool require_grasp_contact = false);
+  ActionResult closeGripperForGrasp();
   bool waitForGripperTarget(
     double target_position,
     std::chrono::duration<double> timeout,
     bool allow_grasp_contact,
+    bool require_grasp_contact,
     bool & grasp_contact,
     std::string & error) const;
   ActionResult setCleaningMotor(bool enabled, const std::string & label);
@@ -108,6 +118,7 @@ private:
   std::unique_ptr<moveit::planning_interface::MoveGroupInterface> arm_;
   std::unique_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_;
   rclcpp_action::Client<panthera_interfaces::action::ExecuteMotion>::SharedPtr motion_client_;
+  rclcpp::Client<panthera_interfaces::srv::StageJog>::SharedPtr process_stage_client_;
   rclcpp::CallbackGroup::SharedPtr motion_callback_group_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr
   arm_recovery_client_;

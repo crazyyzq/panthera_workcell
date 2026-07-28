@@ -432,14 +432,33 @@ ActionResult WorkcellConfig::validate() const
   if (loop.spectrometerStartTimeoutSec <= 0.0) {
     return ActionResult::fail("loop.spectrometer_start_timeout_sec must be > 0");
   }
-  if (positioning.mode != "fixed" && positioning.mode != "sensor_offset") {
-    return ActionResult::fail("positioning.mode must be fixed or sensor_offset");
+  if (positioning.mode != "fixed" && positioning.mode != "sensor_optional" &&
+    positioning.mode != "sensor_offset")
+  {
+    return ActionResult::fail(
+      "positioning.mode must be fixed, sensor_optional or sensor_offset");
   }
   if (!std::isfinite(positioning.fixedAxisPositionMm)) {
     return ActionResult::fail("positioning.fixed_axis_position_mm must be finite");
   }
+  if (!std::isfinite(spectrometerAxis.laserMinMm) ||
+    !std::isfinite(spectrometerAxis.laserMaxMm) ||
+    !std::isfinite(spectrometerAxis.axisZeroLaserMm) ||
+    !std::isfinite(spectrometerAxis.axisScaleMPerMm))
+  {
+    return ActionResult::fail("spectrometer_axis numeric values must be finite");
+  }
   if (spectrometerAxis.laserMinMm >= spectrometerAxis.laserMaxMm) {
     return ActionResult::fail("spectrometer_axis laser_min_mm must be < laser_max_mm");
+  }
+  if (spectrometerAxis.axisScaleMPerMm == 0.0) {
+    return ActionResult::fail("spectrometer_axis.axis_scale_m_per_mm must not be zero");
+  }
+  if (positioning.mode == "sensor_optional" &&
+    std::abs(positioning.fixedAxisPositionMm - spectrometerAxis.axisZeroLaserMm) > 1e-9)
+  {
+    return ActionResult::fail(
+      "sensor_optional requires fixed_axis_position_mm equal to axis_zero_laser_mm");
   }
   if (spectrometerAxis.axis != "x" && spectrometerAxis.axis != "y" && spectrometerAxis.axis != "z") {
     return ActionResult::fail("spectrometer_axis.axis must be x, y, or z");

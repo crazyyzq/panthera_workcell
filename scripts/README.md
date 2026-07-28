@@ -8,10 +8,12 @@ scripts/start_workcell.sh
 ```
 
 This starts the commissioned production chain only: MIT hardware, ros2_control,
-Motion Server, the fixed-cache spectrometer state machine, and the Web HMI. It
-does not start MoveGroup, the legacy workflow executor, laser, pose tuner, or
-camera. Startup is idempotent and requires active controllers, a settled Motion
+Motion Server, the fixed-cache spectrometer state machine, laser adapter, and the
+Web HMI. It does not start MoveGroup, the legacy workflow executor, pose tuner,
+or camera. Startup is idempotent and requires active controllers, a settled Motion
 Server, fresh encoder positions at the commissioned Home, and ready HMI services.
+Laser data is optional: fresh valid data applies the calibrated spectrometer Y
+offset, while missing/stale data falls back to the canonical 150 mm position.
 Failed startup is retried only after a guarded cleanup; an unknown/non-Home pose
 is left powered and holding rather than being disabled.
 

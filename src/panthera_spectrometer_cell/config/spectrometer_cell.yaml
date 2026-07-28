@@ -297,7 +297,10 @@ positioning:
   # 当前工位位置固定，默认不依赖激光节点。fixed 模式返回下面的标称轴位置，
   # 因而 (fixed_axis_position_mm - axis_zero_laser_mm) 为 0，使用光谱仪基准点。
   # 未来完成轴向、标定和安全验收后，改为 sensor_offset 即可恢复两次测量语义。
-  mode: fixed
+  # Prefer fresh laser data; if the sensor is absent, stale or invalid, use the
+  # commissioned 150 mm default immediately. Use sensor_offset only when a laser
+  # fault must stop production.
+  mode: sensor_optional
   fixed_axis_position_mm: 150.0
 
 spectrometer_axis:
@@ -322,7 +325,8 @@ spectrometer_axis:
   base_pose_name: spectrometer_base
 
   # 光谱仪移动轴。只能填 x/y/z。你当前场景是 Y 轴变化。
-  axis: x
+  # Current fixture correction direction in base_link.
+  axis: y
 
   # 放杯点相对 spectrometer_base 的补偿，单位 m。
   # 用于只想微调放杯，不影响取杯基准的情况。

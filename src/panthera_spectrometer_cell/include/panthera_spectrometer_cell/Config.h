@@ -95,7 +95,7 @@ struct GripperConfig
 
 struct PositioningConfig
 {
-  std::string mode{"fixed"};
+  std::string mode{"sensor_optional"};
   double fixedAxisPositionMm{150.0};
 };
 

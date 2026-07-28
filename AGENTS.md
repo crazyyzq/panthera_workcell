@@ -128,7 +128,11 @@ This file contains durable repository context and operating rules for future age
   entry point; production fixed-cache motion still does not start MoveGroup.
 - Legacy `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` still replan with MoveIt and are migration-only. Their default HMI launch flags are disabled so they do not run beside another legacy owner.
 - Target architecture: one motion server is the only arm trajectory owner. MoveIt is retained for commissioning, IK, collision checks and trajectory compilation, not per-step production planning.
-- Fixed positioning is the current default requirement. Laser-based position correction must remain available behind an explicit `fixed | sensor_offset` mode.
+- Spectrometer positioning supports `fixed`, `sensor_optional`, and strict
+  `sensor_offset` modes. Production defaults to `sensor_optional`: a fresh valid
+  laser reading corrects base-link Y by `(reading_mm - 150.0) / 1000`; absent,
+  stale, or invalid data immediately falls back to the canonical point. The
+  150 mm reading is the calibrated zero-offset reference.
 - The 2026-07-24 bench revision rotated the robot base clockwise 90 degrees. In the
   current `base_link`, +X points toward the outlets and +Y toward the spectrometer.
   Provisional measured process coordinates are outlet1
@@ -176,6 +180,12 @@ This file contains durable repository context and operating rules for future age
 - Production gripper close is a retained position target of `0.0 m`; it must remain
   commanded until an explicit release/open operation. Do not auto-release because
   contact prevents the encoder from reaching zero.
+- A pickup close must also confirm stable contact before transport. Reaching the
+  zero target means no cup was intercepted and is a failed grasp, not success;
+  reinforcement closes while an already-held cup is in transit do not repeat
+  that pickup-only check. A fixed-backend empty outlet pickup retreats through
+  its validated safe route, returns Home, opens the gripper, clears the abandoned
+  task, and resumes `WAIT_DISCHARGE` without entering a latched ERROR.
 - Gripper path tolerance must not include a nonzero velocity tolerance. The SDK reports
   quantized finger velocity while opening/closing, and applying the final settled
   velocity threshold to the whole path caused immediate false aborts.
@@ -317,6 +327,13 @@ This file contains durable repository context and operating rules for future age
   well as in the browser. A cycle starts only from an empty `IDLE`/`WAIT_DISCHARGE`
   boundary, and detection completion is accepted only from
   `WAIT_DETECTION_DONE` (or a pause whose resume target is that state).
+- External PLC/IPC commands use the HMI HTTP adapter at
+  `POST /api/external/command`; do not add a second arm owner or state machine.
+  `request_id` is mandatory, persisted atomically under `.runtime`, and
+  idempotent across retries and restarts. A reused ID with a different command
+  is rejected. Supported commands are `PING`, `OUTLET_1_DISCHARGE_DONE`,
+  `OUTLET_2_DISCHARGE_DONE`, and `DETECTION_DONE`; inspect results with
+  `GET /api/external/status`.
 - `spectrometer_cell.state_age_sec` is telemetry freshness, not time spent in the
   current state. The HMI must label it as a state-data update age, never as state
   duration.
@@ -385,8 +402,9 @@ colcon test-result --verbose
 
 For focused development, use `--packages-up-to <package>` and still run a full build before handoff.
 
-As of 2026-07-28, focused tests report 17/17 Motion functional tests and 14/14 HMI
-functional tests green. Hardware and state-machine compile/static checks pass; each
+As of 2026-07-28, focused tests report 17/17 Motion functional tests, 24/24 HMI
+functional tests, and 3/3 optional-laser sensor tests green. Hardware and
+state-machine compile/static checks pass; each
 still has one legacy whole-package `ament_uncrustify` failure. Do not mass-format
 vendor/legacy packages during a functional change; reduce that debt in a dedicated
 commit.
@@ -437,6 +455,14 @@ safe exit returned Home, and an OUTLET_2 production cycle completed in
 59.94 seconds without error or recovery. A final cold start with no environment
 override logged the accepted gains and the existing four-pose gravity scales.
 
+The 2026-07-28 external-command acceptance sent 100 concurrent retries with one
+request ID: all returned HTTP 200, exactly one was non-duplicate, and the result
+remained duplicate after a full safe stop/cold start. Invalid commands returned
+400 and wrong-state commands returned 409. A real empty OUTLET_1 pickup then
+detected full gripper closure without contact, retreated through safe center,
+returned original Home with 0.007912 rad maximum error, opened the gripper, and
+resumed `WAIT_DISCHARGE` without a latched error.
+
 The commissioning-only fixed motion launch is:
 
 ```bash
@@ -465,8 +491,10 @@ The production lifecycle entry points are `scripts/start_workcell.sh` and
 controllers, Motion Server, fresh Home encoders, and HMI services pass. Stop
 must verify an empty cycle, settled Motion Server, and original Home before
 disabling, then terminate the owned group and verify all related processes are
-gone. Laser startup and fresh data are required; camera startup is optional and
-excluded from READY. Never restore the legacy MoveIt/workflow startup chain to
+gone. The laser adapter starts with production, but valid laser data is optional
+and excluded from READY because `sensor_optional` has a deterministic 150 mm
+fallback. Camera startup is also optional and excluded from READY. Never restore
+the legacy MoveIt/workflow startup chain to
 these production scripts. `--force` is an explicit maintenance escape hatch,
 not a normal shutdown path.
 - Production ROS control is local to the IPC: `ROS_LOCALHOST_ONLY=1` and
@@ -529,7 +557,9 @@ not a normal shutdown path.
 
 - Position units: metres.
 - Joint and RPY units: radians.
-- Laser distances: millimetres at adapter boundaries; convert explicitly to metres inside calibrated transforms.
+- Laser distances: millimetres at adapter boundaries; convert explicitly to metres
+  inside calibrated transforms. The spectrometer correction axis is base-link Y
+  and 150 mm means zero correction.
 - Quaternion order when present: XYZW.
 - Base frame: `base_link`.
 - Tool/TCP frame: `gripper_center`.
@@ -560,7 +590,7 @@ not a normal shutdown path.
 ## Open confirmations required before hardware acceptance
 
 - Low-speed physical confirmation of the assumed 30-degree brush roll and insertion axis.
-- Final fixed spectrometer TCP and future sensor correction axis.
+- Final fixed spectrometer TCP.
 - Physical E-stop, outlet-ready and spectrometer-done wiring/interfaces.
 - Approved production speed/acceleration and cycle-time target.
 - Whether low-speed acceptance may use an empty cup.

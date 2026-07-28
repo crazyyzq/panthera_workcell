@@ -124,8 +124,8 @@ services=d.get("services", {})
 required=("auto_mode", "actual_cycle_outlet_1", "detection_done", "speed_scale")
 ok=state in {"IDLE", "WAIT_DISCHARGE", "PAUSED"} and age is not None and age < 5
 ok=ok and all(services.get(name, {}).get("ready", False) for name in required)
-ok=ok and laser.get("valid", False) and isinstance(laser_age, (int, float)) and laser_age < 2
-print(f"state={state} age={age} laser={laser_distance} laser_age={laser_age}")
+laser_mode="sensor" if laser.get("valid", False) and isinstance(laser_age, (int, float)) and laser_age < 2 else "default_150mm"
+print(f"state={state} age={age} laser={laser_distance} laser_age={laser_age} positioning={laser_mode}")
 raise SystemExit(0 if ok else 1)
 '
 }

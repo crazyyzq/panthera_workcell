@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <sstream>
 #include <thread>
@@ -40,7 +41,9 @@ ActionResult Sensors::initialize()
 
 void Sensors::setupLaserInterfaces()
 {
-  if (config_.positioning.mode != "sensor_offset" || laser_sub_) {
+  if ((config_.positioning.mode != "sensor_optional" &&
+    config_.positioning.mode != "sensor_offset") || laser_sub_)
+  {
     return;
   }
 
@@ -120,13 +123,53 @@ MeasurementResult Sensors::readSpectrometerPosition()
       "fixed nominal spectrometer position");
   }
 
+  const bool sensor_optional = config_.positioning.mode == "sensor_optional";
+
   if (config_.simulation.enabled) {
+    if (sensor_optional) {
+      return MeasurementResult::ok(
+        config_.positioning.fixedAxisPositionMm,
+        "simulated optional laser absent; fixed nominal spectrometer position");
+    }
     if (shouldSimulateFailure()) {
       return MeasurementResult::fail("readSpectrometerPosition failed: simulated laser failure");
     }
 
     const double value = laser_dist_(rng_);
     return MeasurementResult::ok(value, "simulated laser measurement");
+  }
+
+  if (sensor_optional) {
+    std::string reason = "no laser message received";
+    {
+      std::lock_guard<std::mutex> lock(laser_mutex_);
+      if (has_laser_) {
+        const double age_sec = (node_->now() - latest_laser_received_time_).seconds();
+        const bool distance_valid =
+          std::isfinite(latest_laser_.distance_mm) &&
+          latest_laser_.distance_mm >= config_.spectrometerAxis.laserMinMm &&
+          latest_laser_.distance_mm <= config_.spectrometerAxis.laserMaxMm;
+        if (age_sec <= config_.loop.sensorTimeoutSec && latest_laser_.valid &&
+          distance_valid)
+        {
+          return MeasurementResult::ok(
+            latest_laser_.distance_mm, "real laser measurement");
+        }
+        std::ostringstream out;
+        if (age_sec > config_.loop.sensorTimeoutSec) {
+          out << "laser data stale age=" << age_sec << "s";
+        } else {
+          out << "laser invalid or out of range: " << latest_laser_.status;
+        }
+        reason = out.str();
+      }
+    }
+    std::ostringstream out;
+    out << "laser optional fallback to " << config_.positioning.fixedAxisPositionMm
+        << "mm: " << reason;
+    RCLCPP_WARN_THROTTLE(
+      logger_, *node_->get_clock(), 10000, "%s", out.str().c_str());
+    return MeasurementResult::ok(config_.positioning.fixedAxisPositionMm, out.str());
   }
 
   // Wait briefly for a fresh laser sample instead of immediately using a stale
@@ -151,9 +194,14 @@ MeasurementResult Sensors::readSpectrometerPosition()
           out << "readSpectrometerPosition waiting for fresh laser data: age="
               << age_sec << "s";
           last_error = out.str();
-        } else if (!latest_laser_.valid) {
+        } else if (!latest_laser_.valid ||
+          !std::isfinite(latest_laser_.distance_mm) ||
+          latest_laser_.distance_mm < config_.spectrometerAxis.laserMinMm ||
+          latest_laser_.distance_mm > config_.spectrometerAxis.laserMaxMm)
+        {
           last_error =
-            "readSpectrometerPosition failed: laser invalid: " + latest_laser_.status;
+            "readSpectrometerPosition failed: laser invalid or out of range: " +
+            latest_laser_.status;
         } else {
           return MeasurementResult::ok(latest_laser_.distance_mm, "real laser measurement");
         }
@@ -224,7 +272,8 @@ MeasurementResult Sensors::readLaserOnce(std::chrono::milliseconds timeout)
       "/laser_distance_node/read_once failed: " + response->message);
   }
 
-  if (response->distance_mm < config_.spectrometerAxis.laserMinMm ||
+  if (!std::isfinite(response->distance_mm) ||
+      response->distance_mm < config_.spectrometerAxis.laserMinMm ||
       response->distance_mm > config_.spectrometerAxis.laserMaxMm)
   {
     std::ostringstream out;

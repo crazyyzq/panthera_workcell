@@ -954,7 +954,8 @@ bool StateMachine::isTransitionAllowed(State from, State to, const CycleContext 
       return to == State::PICK_FROM_OUTLET || to == State::WAIT_DISCHARGE ||
              to == State::ERROR || to == State::ESTOP;
     case State::PICK_FROM_OUTLET:
-      return to == State::MEASURE_SPECTROMETER_BEFORE_PLACE || to == State::PAUSED ||
+      return to == State::MEASURE_SPECTROMETER_BEFORE_PLACE ||
+             to == State::WAIT_DISCHARGE || to == State::PAUSED ||
              to == State::ERROR || to == State::ESTOP;
     case State::MEASURE_SPECTROMETER_BEFORE_PLACE:
       return to == State::PLACE_TO_SPECTROMETER || to == State::PAUSED || to == State::ERROR ||
@@ -1244,6 +1245,22 @@ void StateMachine::handleActionFailure(const Event & event, const std::string & 
       "STALE_ACTION_EVENT name=%s commandId=%lu ignored",
       event.actionName.c_str(),
       event.commandId);
+    return;
+  }
+  if (event.actionName == "pick_from_outlet" &&
+    message.rfind("NO_CUP_AT_OUTLET:", 0) == 0)
+  {
+    const auto outlet = context_.outletId;
+    const auto cycle_id = context_.cycleId;
+    outlet_status_[outlet] = OutletStatus::WAITING_FILL;
+    context_.clearTask(cycle_id, State::PICK_FROM_OUTLET, nowMs());
+    RCLCPP_WARN(
+      logger_,
+      "TASK_ABORTED_NO_CUP cycle=%lu outlet=%s message=%s",
+      cycle_id,
+      toString(outlet).c_str(),
+      message.c_str());
+    transitionTo(State::WAIT_DISCHARGE, message);
     return;
   }
   std::ostringstream out;

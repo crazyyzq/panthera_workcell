@@ -113,7 +113,18 @@ install(DIRECTORY
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+  ament_add_gtest(test_sensors
+    test/test_sensors.cpp
+    src/Sensors.cpp
+  )
+  target_include_directories(test_sensors PRIVATE include)
+  ament_target_dependencies(test_sensors
+    rclcpp
+    std_srvs
+    panthera_interfaces
+  )
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()

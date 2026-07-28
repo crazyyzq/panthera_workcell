@@ -209,6 +209,8 @@ public:
         node_, "wrist_path_position_tolerance_rad", 0.45)),
     goal_velocity_tolerance_rad_sec_(getOrDeclareParameter<double>(
         node_, "goal_velocity_tolerance_rad_sec", 0.05)),
+    process_stage_max_translation_m_(getOrDeclareParameter<double>(
+        node_, "process_stage_max_translation_m", 0.16)),
     default_speed_scale_(getOrDeclareParameter<double>(
         node_, "default_speed_scale", 1.0)),
     compiler_(std::make_unique<TrajectoryCompiler>(node_))
@@ -396,7 +398,9 @@ private:
       trajectory_start_delay_sec_ < 0.0 || goal_position_tolerance_rad_ <= 0.0 ||
       path_position_tolerance_rad_ <= 0.0 || pour_path_position_tolerance_rad_ <= 0.0 ||
       wrist_path_position_tolerance_rad_ <= 0.0 ||
-      goal_velocity_tolerance_rad_sec_ <= 0.0)
+      goal_velocity_tolerance_rad_sec_ <= 0.0 ||
+      process_stage_max_translation_m_ < 0.021 ||
+      process_stage_max_translation_m_ > 0.25)
     {
       throw std::runtime_error("motion server safety/timing parameters are invalid");
     }
@@ -456,7 +460,8 @@ private:
 
   void stageJog(const StageJog::Request & request, StageJog::Response & response)
   {
-    constexpr double max_translation_m = 0.021;
+    const double max_translation_m =
+      request.process_profile ? process_stage_max_translation_m_ : 0.021;
     constexpr double max_rotation_rad = 0.17453292519943295;
     const std::array<double, 6> deltas{
       request.delta_x_m, request.delta_y_m, request.delta_z_m,
@@ -465,8 +470,16 @@ private:
       request.absolute_target_xyz_m[0], request.absolute_target_xyz_m[1],
       request.absolute_target_xyz_m[2], request.absolute_target_rpy_rad[0],
       request.absolute_target_rpy_rad[1], request.absolute_target_rpy_rad[2]};
+    const std::array<double, 3> point_offset{
+      request.point_offset_xyz_m[0],
+      request.point_offset_xyz_m[1],
+      request.point_offset_xyz_m[2]};
+    const bool uses_catalog_point = !request.base_point_name.empty();
     if (busy_.load() ||
       !std::all_of(deltas.begin(), deltas.end(), [](double value) {return std::isfinite(value);}) ||
+      !std::all_of(
+        point_offset.begin(), point_offset.end(),
+        [](double value) {return std::isfinite(value);}) ||
       (request.use_absolute_target &&
       !std::all_of(
         absolute_target.begin(), absolute_target.end(),
@@ -476,9 +489,14 @@ private:
       response.message = busy_.load() ? "motion server is busy" : "Cartesian target must be finite";
       return;
     }
+    if (uses_catalog_point && request.use_absolute_target) {
+      response.success = false;
+      response.message = "catalog point and absolute target are mutually exclusive";
+      return;
+    }
     const auto nonzero = std::count_if(
       deltas.begin(), deltas.end(), [](double value) {return std::abs(value) > 1e-9;});
-    if (!request.use_absolute_target && nonzero == 0) {
+    if (!uses_catalog_point && !request.use_absolute_target && nonzero == 0) {
       response.success = false;
       response.message = "at least one Cartesian delta must be non-zero";
       return;
@@ -514,7 +532,24 @@ private:
       Eigen::AngleAxisd(measured_pose.rpy[1], Eigen::Vector3d::UnitY()) *
       Eigen::AngleAxisd(measured_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
     Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
-    if (request.use_absolute_target) {
+    if (uses_catalog_point) {
+      const auto point = candidate.findPoint(request.base_point_name);
+      if (!point || !point->pose) {
+        response.success = false;
+        response.message =
+          "catalog point is missing or has no Cartesian pose: " + request.base_point_name;
+        return;
+      }
+      target.translation() = Eigen::Vector3d(
+        point->pose->xyz[0] + point_offset[0],
+        point->pose->xyz[1] + point_offset[1],
+        point->pose->xyz[2] + point_offset[2]);
+      target.linear() = request.process_profile ? measured_rotation :
+        (Eigen::AngleAxisd(point->pose->rpy[2], Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(point->pose->rpy[1], Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(point->pose->rpy[0], Eigen::Vector3d::UnitX()))
+        .toRotationMatrix();
+    } else if (request.use_absolute_target) {
       target.translation() = Eigen::Vector3d(
         request.absolute_target_xyz_m[0], request.absolute_target_xyz_m[1],
         request.absolute_target_xyz_m[2]);
@@ -544,7 +579,11 @@ private:
       rotation_angle > max_rotation_rad + 1e-12)
     {
       response.success = false;
-      response.message = "Cartesian target exceeds 20mm or 10deg from measured TCP";
+      std::ostringstream out;
+      out << "Cartesian target exceeds "
+          << static_cast<int>(std::lround(max_translation_m * 1000.0))
+          << "mm or 10deg from measured TCP";
+      response.message = out.str();
       return;
     }
     const auto target_rpy = matrixToRpy(target.rotation());
@@ -566,15 +605,15 @@ private:
     RouteDefinition route;
     route.name = route_name;
     route.start = start.name;
-    route.velocity_scale = 0.45;
-    route.acceleration_scale = 0.30;
+    route.velocity_scale = request.process_profile ? 0.80 : 0.45;
+    route.acceleration_scale = request.process_profile ? 0.60 : 0.30;
     SegmentDefinition segment;
     segment.name = "cartesian_teach_jog";
     segment.type = SegmentType::LINEAR;
     segment.to = goal.name;
-    segment.cartesian_step_m = 0.002;
-    segment.max_joint_jump_rad = 0.15;
-    segment.constraints.keep_orientation = false;
+    segment.cartesian_step_m = request.process_profile ? 0.005 : 0.002;
+    segment.max_joint_jump_rad = request.process_profile ? 0.20 : 0.15;
+    segment.constraints.keep_orientation = request.process_profile;
     route.segments.push_back(segment);
 
     CompiledRoute compiled;
@@ -611,7 +650,9 @@ private:
       compiled_routes_[route_name] = std::move(compiled);
     }
     response.success = true;
-    response.message = "Cartesian jog validated and staged";
+    response.message = request.process_profile ?
+      "Cartesian process move validated and staged" :
+      "Cartesian jog validated and staged";
     response.route_name = route_name;
     response.target_xyz_m = goal.pose->xyz;
     response.target_rpy_rad = goal.pose->rpy;
@@ -1227,6 +1268,7 @@ private:
   double pour_path_position_tolerance_rad_;
   double wrist_path_position_tolerance_rad_;
   double goal_velocity_tolerance_rad_sec_;
+  double process_stage_max_translation_m_;
   double default_speed_scale_;
 
   std::unique_ptr<TrajectoryCompiler> compiler_;

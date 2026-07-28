@@ -261,3 +261,100 @@ def test_production_signals_are_gated_by_cell_state(
     error = node._production_command_state_error(command)
 
     assert (error == '') is allowed
+
+
+def external_node(tmp_path):
+    node = WebHmiNode.__new__(WebHmiNode)
+    node.external_command_token = ''
+    node.external_command_journal_path = str(tmp_path / 'external_commands.json')
+    node._external_command_lock = threading.Lock()
+    node._external_command_records = {}
+    node.state_store = SimpleNamespace(
+        snapshot=lambda: {
+            'spectrometer_cell': {
+                'state': 'WAIT_DISCHARGE',
+                'context': {
+                    'cycle_id': 7,
+                    'outlet': 'NONE',
+                    'has_active_task': False,
+                },
+            },
+        },
+    )
+    return node
+
+
+def test_external_command_is_idempotent_and_persisted(tmp_path):
+    node = external_node(tmp_path)
+    calls = []
+    node.call_command = lambda command: (
+        calls.append(command) or {'success': True, 'message': 'queued'})
+
+    first, first_status = node.call_external_command({
+        'request_id': 'plc-42',
+        'command': 'OUTLET_1_DISCHARGE_DONE',
+    })
+    duplicate, duplicate_status = node.call_external_command({
+        'request_id': 'plc-42',
+        'command': 'OUTLET_1_DISCHARGE_DONE',
+    })
+
+    assert first_status == duplicate_status == 200
+    assert first['accepted'] is True
+    assert duplicate['duplicate'] is True
+    assert calls == ['actual_cycle_outlet_1']
+    assert (tmp_path / 'external_commands.json').is_file()
+
+
+def test_external_request_id_cannot_be_reused_for_another_command(tmp_path):
+    node = external_node(tmp_path)
+    node.call_command = lambda _command: {'success': True, 'message': 'queued'}
+    node.call_external_command({
+        'request_id': 'plc-43',
+        'command': 'OUTLET_1_DISCHARGE_DONE',
+    })
+
+    result, status = node.call_external_command({
+        'request_id': 'plc-43',
+        'command': 'DETECTION_DONE',
+    })
+
+    assert status == 409
+    assert result['success'] is False
+
+
+def test_rejected_external_command_remains_rejected_when_retried(tmp_path):
+    node = external_node(tmp_path)
+    node.call_command = lambda _command: {
+        'success': False,
+        'message': 'wrong state',
+    }
+    body = {
+        'request_id': 'plc-45',
+        'command': 'DETECTION_DONE',
+    }
+
+    first, first_status = node.call_external_command(body)
+    duplicate, duplicate_status = node.call_external_command(body)
+
+    assert first_status == duplicate_status == 409
+    assert first['success'] is duplicate['success'] is False
+    assert duplicate['duplicate'] is True
+
+
+def test_external_processing_record_becomes_uncertain_after_restart(tmp_path):
+    node = external_node(tmp_path)
+    node._external_command_records['plc-44'] = {
+        'request_id': 'plc-44',
+        'command': 'OUTLET_2_DISCHARGE_DONE',
+        'status': 'processing',
+    }
+    node._save_external_command_journal()
+
+    restarted = external_node(tmp_path)
+    restarted._external_command_records = restarted._load_external_command_journal()
+    result, status = restarted.external_command_status('plc-44')
+
+    assert status == 200
+    assert result['accepted'] is False
+    assert result['status'] == 'uncertain'

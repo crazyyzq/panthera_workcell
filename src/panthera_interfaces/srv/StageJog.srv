@@ -5,6 +5,13 @@ float64 delta_z_m
 float64 delta_roll_rad
 float64 delta_pitch_rad
 float64 delta_yaw_rad
+# False keeps the 20 mm commissioning limit. True is reserved for the local
+# production state machine and allows a longer validated straight process move.
+bool process_profile
+# Optional canonical catalog point plus XYZ offset. Production uses this so
+# station geometry remains owned by motion_catalog.yaml.
+string base_point_name
+float64[3] point_offset_xyz_m
 bool use_absolute_target
 float64[3] absolute_target_xyz_m
 float64[3] absolute_target_rpy_rad

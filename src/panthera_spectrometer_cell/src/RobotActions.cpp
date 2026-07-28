@@ -36,6 +36,7 @@ constexpr char kMotionAction[] = "/motion/execute";
 constexpr char kArmAction[] = "/arm_controller/follow_joint_trajectory";
 
 using ExecuteMotion = panthera_interfaces::action::ExecuteMotion;
+using StageJog = panthera_interfaces::srv::StageJog;
 using FollowTrajectory = control_msgs::action::FollowJointTrajectory;
 
 double clampPosition(double value, double min_value, double max_value)
@@ -699,9 +700,33 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
     if (!result.success) {
       return result;
     }
-    result = closeGripper();
+    result = closeGripperForGrasp();
     if (!result.success) {
-      return result;
+      const std::string close_error = result.message;
+      const bool no_cup =
+        close_error.find("fully closed without cup contact") != std::string::npos;
+      result = executeFixedRoute(
+        outlet_one ? "debug_outlet_1_grasp_to_safe" : "debug_outlet_2_grasp_to_safe",
+        "safe_joint_center",
+        "failed outlet pick retreat");
+      if (result.success) {
+        result = executeFixedRoute(
+          "safe_center_to_home",
+          "home_near",
+          "failed outlet pick Home recovery");
+      }
+      if (result.success) {
+        result = openGripper();
+      }
+      if (!result.success) {
+        return ActionResult::fail(
+          close_error + "; outlet pick recovery failed: " + result.message);
+      }
+      if (no_cup) {
+        return ActionResult::fail(
+          "NO_CUP_AT_OUTLET: " + close_error + "; recovered Home encoder-confirmed");
+      }
+      return ActionResult::fail(close_error + "; recovered Home encoder-confirmed");
     }
     {
       std::lock_guard<std::mutex> lock(fixed_state_mutex_);
@@ -759,7 +784,7 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
     return result;
   }
 
-  result = closeGripper();
+  result = closeGripperForGrasp();
   if (!result.success) {
     return result;
   }
@@ -901,12 +926,38 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     if (active_outlet == OutletId::NONE) {
       return ActionResult::fail("fixed spectrometer place rejected: no active source outlet");
     }
+    Vec3 sensor_offset{0.0, 0.0, 0.0};
+    auto result = computeSpectrometerOffset(axis_position_mm, sensor_offset);
+    if (!result.success) {
+      return result;
+    }
     const bool outlet_one = active_outlet == OutletId::OUTLET_1;
-    auto result = executeFixedRoute(
-      outlet_one ? "outlet_1_grasp_to_spectrometer_place_continuous" :
-      "outlet_2_grasp_to_spectrometer_place",
-      "spectrometer_place",
-      "fixed route place to spectrometer");
+    const bool sensor_adjusted = std::any_of(
+      sensor_offset.begin(), sensor_offset.end(),
+      [](double value) {return std::abs(value) > 1e-6;});
+    if (!sensor_adjusted) {
+      result = executeFixedRoute(
+        outlet_one ? "outlet_1_grasp_to_spectrometer_place_continuous" :
+        "outlet_2_grasp_to_spectrometer_place",
+        "spectrometer_place",
+        "fixed route place to spectrometer");
+    } else {
+      result = executeFixedRoute(
+        outlet_one ? "outlet_1_grasp_to_spectrometer_hover" :
+        "outlet_2_grasp_to_spectrometer_hover",
+        "spectrometer_hover",
+        "fixed route transfer to spectrometer hover");
+      if (result.success) {
+        result = stageAndExecuteProcessPoint(
+          "spectrometer_hover", sensor_offset, "spectrometer_sensor_hover",
+          "align above laser-adjusted spectrometer place");
+      }
+      if (result.success) {
+        result = stageAndExecuteProcessPoint(
+          "spectrometer_place", sensor_offset, "spectrometer_sensor_place",
+          "vertical laser-adjusted spectrometer place");
+      }
+    }
     if (!result.success) {
       return result;
     }
@@ -918,10 +969,21 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     if (!result.success) {
       return result;
     }
-    return executeFixedRoute(
-      "spectrometer_place_to_hover",
-      "spectrometer_hover",
-      "fixed route leave spectrometer after place");
+    if (!sensor_adjusted) {
+      return executeFixedRoute(
+        "spectrometer_place_to_hover",
+        "spectrometer_hover",
+        "fixed route leave spectrometer after place");
+    }
+    result = stageAndExecuteProcessPoint(
+      "spectrometer_hover", sensor_offset, "spectrometer_sensor_hover",
+      "vertical leave laser-adjusted spectrometer place");
+    if (!result.success) {
+      return result;
+    }
+    return stageAndExecuteProcessPoint(
+      "spectrometer_hover", Vec3{0.0, 0.0, 0.0}, "spectrometer_hover",
+      "return to nominal spectrometer hover");
   }
 
   PoseConfig target;
@@ -973,18 +1035,49 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
 ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
 {
   if (usesFixedMotion()) {
-    auto result = executeFixedRoute(
-      "spectrometer_hover_to_pick",
-      "spectrometer_pick",
-      "fixed route pick from spectrometer");
+    Vec3 sensor_offset{0.0, 0.0, 0.0};
+    auto result = computeSpectrometerOffset(axis_position_mm, sensor_offset);
     if (!result.success) {
       return result;
     }
-    result = closeGripper();
+    const bool sensor_adjusted = std::any_of(
+      sensor_offset.begin(), sensor_offset.end(),
+      [](double value) {return std::abs(value) > 1e-6;});
+    if (!sensor_adjusted) {
+      result = executeFixedRoute(
+        "spectrometer_hover_to_pick",
+        "spectrometer_pick",
+        "fixed route pick from spectrometer");
+    } else {
+      result = stageAndExecuteProcessPoint(
+        "spectrometer_pick_hover", sensor_offset, "spectrometer_sensor_pick_hover",
+        "align above laser-adjusted spectrometer pick");
+      if (result.success) {
+        result = stageAndExecuteProcessPoint(
+          "spectrometer_pick", sensor_offset, "spectrometer_sensor_pick",
+          "vertical laser-adjusted spectrometer pick");
+      }
+    }
     if (!result.success) {
       return result;
     }
-    return attachCup();
+    result = closeGripperForGrasp();
+    if (!result.success) {
+      return result;
+    }
+    result = attachCup();
+    if (!result.success || !sensor_adjusted) {
+      return result;
+    }
+    result = stageAndExecuteProcessPoint(
+      "spectrometer_pick_hover", sensor_offset, "spectrometer_sensor_pick_hover",
+      "vertical lift from laser-adjusted spectrometer pick");
+    if (!result.success) {
+      return result;
+    }
+    return stageAndExecuteProcessPoint(
+      "spectrometer_pick_hover", Vec3{0.0, 0.0, 0.0}, "spectrometer_pick_hover",
+      "return to nominal spectrometer pick hover");
   }
 
   PoseConfig target;
@@ -1021,7 +1114,7 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
     return result;
   }
 
-  result = closeGripper();
+  result = closeGripperForGrasp();
   if (!result.success) {
     return result;
   }
@@ -1389,6 +1482,10 @@ ActionResult RobotActions::initializeFixedMotionInterface()
       node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     motion_client_ = rclcpp_action::create_client<ExecuteMotion>(
       node_, kMotionAction, motion_callback_group_);
+    process_stage_client_ = node_->create_client<StageJog>(
+      "/motion/stage_jog",
+      rmw_qos_profile_services_default,
+      motion_callback_group_);
   } catch (const std::exception & exc) {
     return ActionResult::fail(
       std::string("initialize fixed motion interface failed: ") + exc.what());
@@ -1579,10 +1676,49 @@ ActionResult RobotActions::executeFixedRoute(
   return ActionResult::fail(label + " failed after transient retries: " + last_error);
 }
 
+ActionResult RobotActions::stageAndExecuteProcessPoint(
+  const std::string & point_name,
+  const Vec3 & offset_xyz,
+  const std::string & expected_end_point,
+  const std::string & label)
+{
+  if (!process_stage_client_) {
+    return ActionResult::fail(label + " failed: process staging client is not initialized");
+  }
+  if (!process_stage_client_->wait_for_service(std::chrono::seconds(3))) {
+    return ActionResult::fail(label + " failed: /motion/stage_jog is unavailable");
+  }
+
+  auto request = std::make_shared<StageJog::Request>();
+  request->process_profile = true;
+  request->base_point_name = point_name;
+  request->point_offset_xyz_m = offset_xyz;
+  request->use_absolute_target = false;
+
+  auto future = process_stage_client_->async_send_request(request);
+  if (future.future.wait_for(std::chrono::seconds(20)) != std::future_status::ready) {
+    process_stage_client_->remove_pending_request(future);
+    return ActionResult::fail(label + " failed: Cartesian process staging timeout");
+  }
+  const auto response = future.future.get();
+  if (!response->success) {
+    return ActionResult::fail(label + " failed: " + response->message);
+  }
+  return executeFixedRoute(response->route_name, expected_end_point, label);
+}
+
 ActionResult RobotActions::executeFixedCleaning()
 {
+  std::string current_point;
+  {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    current_point = fixed_point_;
+  }
+  const bool starts_from_pick_hover = current_point == "spectrometer_pick_hover";
   if (!config_.cleaning.brushEnabled) {
     auto result = executeFixedRoute(
+      starts_from_pick_hover ?
+      "spectrometer_pick_hover_to_clean_dump" :
       "spectrometer_pick_to_clean_dump",
       "clean_dump",
       "fixed route spectrometer to clean dump");
@@ -1600,6 +1736,8 @@ ActionResult RobotActions::executeFixedCleaning()
   }
 
   auto result = executeFixedRoute(
+    starts_from_pick_hover ?
+    "spectrometer_pick_hover_to_brush_entry_smooth" :
     "spectrometer_pick_to_brush_entry_continuous",
     "brush_entry",
     "fixed continuous spectrometer lift, pour, shake and brush approach");
@@ -2268,7 +2406,8 @@ bool RobotActions::getLatestArmJointValues(std::vector<double> & positions) cons
 ActionResult RobotActions::sendGripperTo(
   double position,
   double duration_sec,
-  const std::string & label)
+  const std::string & label,
+  bool require_grasp_contact)
 {
   if (config_.simulation.enabled) {
     return simulateDelay(label);
@@ -2345,6 +2484,7 @@ ActionResult RobotActions::sendGripperTo(
         command_position,
         std::chrono::duration<double>(scaled_duration + config_.gripper.settleTimeoutSec),
         allow_grasp_contact,
+        require_grasp_contact,
         grasp_contact,
         target_error))
     {
@@ -2372,9 +2512,11 @@ ActionResult RobotActions::sendGripperTo(
       const auto cancel_future = gripper_client_->async_cancel_goal(goal_handle);
       cancel_future.wait_for(
         std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec));
-      last_error = "gripper result timeout";
+      last_error = target_error.empty() ? "gripper result timeout" : target_error;
     }
-    last_error += "; " + target_error;
+    if (!target_error.empty() && last_error.find(target_error) == std::string::npos) {
+      last_error += "; " + target_error;
+    }
     if (attempt < config_.gripper.retryCount) {
       RCLCPP_WARN(
         logger_, "%s attempt %d/%d failed: %s; retrying idempotent gripper target",
@@ -2389,6 +2531,7 @@ bool RobotActions::waitForGripperTarget(
   double target_position,
   std::chrono::duration<double> timeout,
   bool allow_grasp_contact,
+  bool require_grasp_contact,
   bool & grasp_contact,
   std::string & error) const
 {
@@ -2420,8 +2563,10 @@ bool RobotActions::waitForGripperTarget(
         error = "joint state is missing gripper position or velocity";
       } else {
         const double position_error = std::abs(current_position - target_position);
-        if (position_error <= config_.gripper.positionToleranceM &&
-          std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps)
+        const bool encoder_target_reached =
+          position_error <= config_.gripper.positionToleranceM &&
+          std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps;
+        if (encoder_target_reached && !require_grasp_contact)
         {
           return true;
         }
@@ -2444,10 +2589,15 @@ bool RobotActions::waitForGripperTarget(
         } else {
           contact_since.reset();
         }
-        std::ostringstream out;
-        out << "gripper target not reached: position_error=" << position_error
-            << "m velocity=" << current_velocity << "m/s";
-        error = out.str();
+        if (encoder_target_reached && require_grasp_contact) {
+          error = "gripper fully closed without cup contact";
+          return false;
+        } else {
+          std::ostringstream out;
+          out << "gripper target not reached: position_error=" << position_error
+              << "m velocity=" << current_velocity << "m/s";
+          error = out.str();
+        }
       }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -2591,6 +2741,25 @@ ActionResult RobotActions::closeGripper()
     "close gripper");
 }
 
+ActionResult RobotActions::closeGripperForGrasp()
+{
+  auto result = maybeSimulatedFailure("close gripper for grasp");
+  if (!result.success) {
+    return result;
+  }
+
+  RCLCPP_INFO(
+    logger_,
+    "close gripper for grasp position=%.4f duration=%.2fs",
+    config_.gripper.closePosition,
+    config_.gripper.closeDurationSec);
+  return sendGripperTo(
+    config_.gripper.closePosition,
+    config_.gripper.closeDurationSec,
+    "close gripper for grasp",
+    true);
+}
+
 ActionResult RobotActions::simulateDelay(const std::string & label)
 {
   if (config_.simulation.actionDelayMs > 0) {
@@ -2649,6 +2818,37 @@ ActionResult RobotActions::computeSpectrometerTarget(
   }
 
   return ActionResult::ok("spectrometer target computed");
+}
+
+ActionResult RobotActions::computeSpectrometerOffset(
+  double axis_position_mm,
+  Vec3 & offset_xyz) const
+{
+  const auto & axis = config_.spectrometerAxis;
+  if (!std::isfinite(axis_position_mm) ||
+    axis_position_mm < axis.laserMinMm ||
+    axis_position_mm > axis.laserMaxMm)
+  {
+    std::ostringstream out;
+    out << "spectrometer offset failed: laser position " << axis_position_mm
+        << " mm outside range [" << axis.laserMinMm << ", "
+        << axis.laserMaxMm << "] mm";
+    return ActionResult::fail(out.str());
+  }
+
+  offset_xyz = {0.0, 0.0, 0.0};
+  const double delta_m =
+    (axis_position_mm - axis.axisZeroLaserMm) * axis.axisScaleMPerMm;
+  if (axis.axis == "x") {
+    offset_xyz[0] = delta_m;
+  } else if (axis.axis == "y") {
+    offset_xyz[1] = delta_m;
+  } else if (axis.axis == "z") {
+    offset_xyz[2] = delta_m;
+  } else {
+    return ActionResult::fail("spectrometer offset failed: invalid axis " + axis.axis);
+  }
+  return ActionResult::ok("spectrometer offset computed");
 }
 
 ActionResult RobotActions::applyCollisionObjects()

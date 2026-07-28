@@ -48,6 +48,15 @@ DEBUG_PASSWORD_HASH = bytes.fromhex(
     '9b87d5e29614f4aaa5b25fc0bc72e1ced43ce57a49a100c8177ae68affc88305')
 DEBUG_POSITION_TOLERANCE_M = 0.0005
 
+EXTERNAL_COMMANDS = {
+    'PING': None,
+    'OUTLET_1_DISCHARGE_DONE': 'actual_cycle_outlet_1',
+    'OUTLET_2_DISCHARGE_DONE': 'actual_cycle_outlet_2',
+    'DETECTION_DONE': 'detection_done',
+}
+EXTERNAL_REQUEST_ID_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$')
+EXTERNAL_JOURNAL_LIMIT = 256
+
 
 POINT_CONFIG_MOTION_KEYS = {
     'outlet_approach_y',
@@ -1274,11 +1283,26 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header(
+            'Access-Control-Allow-Headers',
+            'Content-Type, X-Panthera-Token')
         self.end_headers()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/external/status':
+            if not self.server.bridge_node.external_command_authorized(
+                    self.headers.get('X-Panthera-Token', '')):
+                self._send_json(
+                    {'success': False, 'message': 'external command token rejected'},
+                    status=401)
+                return
+            request_id = urllib.parse.parse_qs(parsed.query).get(
+                'request_id', [''])[0]
+            result, status = self.server.bridge_node.external_command_status(
+                request_id)
+            self._send_json(result, status=status)
+            return
         if parsed.path == '/api/status':
             self._send_json(self.server.bridge_node.snapshot())
             return
@@ -1322,6 +1346,7 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/debug/gripper',
             '/api/debug/brush',
             '/api/debug/reference_zero',
+            '/api/external/command',
         ):
             self._send_json({'success': False, 'message': 'unknown endpoint'}, status=404)
             return
@@ -1344,6 +1369,16 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'json body must be an object'}, status=400)
             return
 
+        if parsed.path == '/api/external/command':
+            if not self.server.bridge_node.external_command_authorized(
+                    self.headers.get('X-Panthera-Token', '')):
+                self._send_json(
+                    {'success': False, 'message': 'external command token rejected'},
+                    status=401)
+                return
+            result, status = self.server.bridge_node.call_external_command(body)
+            self._send_json(result, status=status)
+            return
         if parsed.path == '/api/speed_scale':
             result = self.server.bridge_node.call_speed_scale(body)
         elif parsed.path == '/api/camera/restart':
@@ -1519,6 +1554,19 @@ class WebHmiNode(Node):
         self.motion_catalog_path = self.declare_parameter(
             'motion_catalog_path',
             default_motion_catalog_path).value
+        default_external_journal = os.path.join(
+            os.path.expanduser('~'),
+            'panthera_workcell_ws',
+            '.runtime',
+            'external_commands.json')
+        self.external_command_journal_path = self.declare_parameter(
+            'external_command_journal_path',
+            default_external_journal).value
+        self.external_command_token = self.declare_parameter(
+            'external_command_token',
+            os.environ.get('PANTHERA_EXTERNAL_COMMAND_TOKEN', '')).value
+        self._external_command_lock = threading.Lock()
+        self._external_command_records = self._load_external_command_journal()
         self.rgb_topic = self.declare_parameter('rgb_topic', '/camera/color/image_raw').value
         self.depth_topic = self.declare_parameter('depth_topic', '/camera/depth/image_raw').value
         self.rgb_info_topic = self.declare_parameter(
@@ -2072,6 +2120,9 @@ class WebHmiNode(Node):
         request = StageJog.Request()
         request.delta_x_m, request.delta_y_m, request.delta_z_m = deltas[:3]
         request.delta_roll_rad, request.delta_pitch_rad, request.delta_yaw_rad = deltas[3:]
+        request.process_profile = False
+        request.base_point_name = ''
+        request.point_offset_xyz_m = [0.0, 0.0, 0.0]
         request.use_absolute_target = absolute_target is not None
         if absolute_target is not None:
             request.absolute_target_xyz_m = list(absolute_target[0])
@@ -3052,6 +3103,193 @@ class WebHmiNode(Node):
             }
 
         return result_holder['result']
+
+    def external_command_authorized(self, supplied_token):
+        required = str(self.external_command_token)
+        return not required or hmac.compare_digest(required, str(supplied_token))
+
+    def _load_external_command_journal(self):
+        try:
+            with open(
+                    self.external_command_journal_path,
+                    encoding='utf-8') as stream:
+                document = json.load(stream)
+            records = document.get('records', [])
+            if document.get('version') != 1 or not isinstance(records, list):
+                raise ValueError('unsupported external command journal')
+            loaded = {}
+            for record in records[-EXTERNAL_JOURNAL_LIMIT:]:
+                if not isinstance(record, dict):
+                    continue
+                request_id = record.get('request_id')
+                command = record.get('command')
+                if (not isinstance(request_id, str) or
+                        not EXTERNAL_REQUEST_ID_PATTERN.fullmatch(request_id) or
+                        command not in EXTERNAL_COMMANDS):
+                    continue
+                item = dict(record)
+                if item.get('status') == 'processing':
+                    item.update({
+                        'accepted': False,
+                        'status': 'uncertain',
+                        'message': (
+                            'previous process stopped before acknowledgement; '
+                            'inspect live workcell state and use a new request_id'),
+                    })
+                loaded[request_id] = item
+            return loaded
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            self.get_logger().error(
+                f'external command journal ignored: {exc}')
+            return {}
+
+    def _save_external_command_journal(self):
+        os.makedirs(
+            os.path.dirname(os.path.abspath(self.external_command_journal_path)),
+            exist_ok=True)
+        while len(self._external_command_records) > EXTERNAL_JOURNAL_LIMIT:
+            del self._external_command_records[next(iter(
+                self._external_command_records))]
+        document = {
+            'version': 1,
+            'records': list(self._external_command_records.values()),
+        }
+        self._atomic_write_text(
+            self.external_command_journal_path,
+            json.dumps(document, ensure_ascii=False, indent=2) + '\n')
+
+    def _external_live_state(self):
+        cell = self.state_store.snapshot().get('spectrometer_cell', {})
+        context = cell.get('context') or {}
+        return {
+            'state': cell.get('state', 'UNKNOWN'),
+            'cycle_id': context.get('cycle_id'),
+            'active_outlet': context.get('outlet', 'NONE'),
+            'has_active_task': bool(context.get('has_active_task')),
+        }
+
+    def external_command_status(self, request_id=''):
+        live = self._external_live_state()
+        if not request_id:
+            return {
+                'success': True,
+                'api_version': '1.0',
+                'commands': list(EXTERNAL_COMMANDS),
+                'idempotency': 'request_id is retained for the latest 256 commands',
+                'workcell': live,
+            }, 200
+        if not EXTERNAL_REQUEST_ID_PATTERN.fullmatch(str(request_id)):
+            return {
+                'success': False,
+                'message': 'request_id must be 1-64 letters, digits, dot, colon, dash or underscore',
+            }, 400
+        with self._external_command_lock:
+            record = self._external_command_records.get(request_id)
+            if record is None:
+                return {
+                    'success': False,
+                    'request_id': request_id,
+                    'message': 'request_id not found',
+                    'workcell': live,
+                }, 404
+            result = dict(record)
+        result.update({'success': True, 'duplicate': True, 'workcell': live})
+        return result, 200
+
+    def call_external_command(self, body):
+        request_id = str(body.get('request_id', '')).strip()
+        command = str(body.get('command', '')).strip().upper()
+        if not EXTERNAL_REQUEST_ID_PATTERN.fullmatch(request_id):
+            return {
+                'success': False,
+                'message': 'request_id must be 1-64 letters, digits, dot, colon, dash or underscore',
+            }, 400
+        if command not in EXTERNAL_COMMANDS:
+            return {
+                'success': False,
+                'request_id': request_id,
+                'message': f'unsupported command: {command}',
+                'commands': list(EXTERNAL_COMMANDS),
+            }, 400
+
+        with self._external_command_lock:
+            previous = self._external_command_records.get(request_id)
+            if previous is not None:
+                if previous.get('command') != command:
+                    return {
+                        'success': False,
+                        'request_id': request_id,
+                        'message': 'request_id was already used for another command',
+                        'workcell': self._external_live_state(),
+                    }, 409
+                result = dict(previous)
+                accepted = bool(previous.get('accepted'))
+                result.update({
+                    'success': accepted,
+                    'duplicate': True,
+                    'workcell': self._external_live_state(),
+                })
+                return result, 200 if accepted else 409
+
+            record = {
+                'api_version': '1.0',
+                'request_id': request_id,
+                'command': command,
+                'accepted': False,
+                'duplicate': False,
+                'status': 'processing',
+                'received_time_ms': int(time.time() * 1000),
+            }
+            self._external_command_records[request_id] = record
+            try:
+                self._save_external_command_journal()
+            except Exception as exc:
+                del self._external_command_records[request_id]
+                return {
+                    'success': False,
+                    'request_id': request_id,
+                    'message': f'cannot persist request before execution: {exc}',
+                }, 503
+
+            try:
+                ros_command = EXTERNAL_COMMANDS[command]
+                command_result = (
+                    {'success': True, 'message': 'external command interface ready'}
+                    if ros_command is None else self.call_command(ros_command))
+            except Exception as exc:
+                command_result = {
+                    'success': False,
+                    'message': f'external command execution failed: {exc}',
+                }
+
+            record.update({
+                'accepted': bool(command_result.get('success')),
+                'status': (
+                    'accepted' if command_result.get('success') else 'rejected'),
+                'message': command_result.get('message', ''),
+                'completed_time_ms': int(time.time() * 1000),
+            })
+            if command_result.get('service'):
+                record['service'] = command_result['service']
+            journal_error = ''
+            try:
+                self._save_external_command_journal()
+            except Exception as exc:
+                journal_error = str(exc)
+                record['journal_error'] = journal_error
+                self.get_logger().error(
+                    f'external command result journal failed: {exc}')
+            result = dict(record)
+            result.update({
+                'success': bool(record['accepted']),
+                'workcell': self._external_live_state(),
+            })
+            if journal_error:
+                result['message'] += (
+                    '; result persistence failed, do not retry automatically')
+            return result, 200 if record['accepted'] else 409
 
     def _production_command_state_error(self, command):
         cycle_commands = {

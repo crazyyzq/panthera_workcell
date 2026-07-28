@@ -471,6 +471,17 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  home_to_spectrometer_pick_hover_recovery:
+    start: home_near
+    velocity_scale: 0.70
+    acceleration_scale: 0.55
+    segments:
+    - name: leave_home_via_safe_center
+      type: joint
+      to: safe_joint_center
+    - name: transfer_above_spectrometer_pick
+      type: joint
+      to: spectrometer_pick_hover
   home_to_clean_hover_recovery:
     start: home_near
     segments:
@@ -543,6 +554,14 @@ routes:
     - name: maintenance_home
       type: joint
       to: home_near
+  debug_spectrometer_pick_hover_to_safe:
+    start: spectrometer_pick_hover
+    velocity_scale: 0.70
+    acceleration_scale: 0.55
+    segments:
+    - name: leave_spectrometer_area
+      type: joint
+      to: safe_joint_center
   safe_center_to_outlet_wait:
     start: safe_joint_center
     segments:
@@ -684,6 +703,32 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  outlet_1_grasp_to_spectrometer_hover:
+    start: outlet_1_grasp
+    velocity_scale: 1.00
+    acceleration_scale: 1.00
+    segments:
+    - name: precision_lift_outlet_1
+      type: linear
+      to: outlet_1_pregrasp
+      velocity_scale: 0.50
+      acceleration_scale: 0.45
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: vertical_lift_outlet_1
+      type: linear
+      to: outlet_1_hover
+      velocity_scale: 0.80
+      acceleration_scale: 0.70
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: transfer_to_spectrometer
+      type: joint
+      to: spectrometer_hover
+      velocity_scale: 0.85
+      acceleration_scale: 0.85
   outlet_1_hover_to_spectrometer_place:
     start: outlet_1_hover
     velocity_scale: 0.85
@@ -748,6 +793,32 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  outlet_2_grasp_to_spectrometer_hover:
+    start: outlet_2_grasp
+    velocity_scale: 1.00
+    acceleration_scale: 1.00
+    segments:
+    - name: precision_lift_outlet_2
+      type: linear
+      to: outlet_2_pregrasp
+      velocity_scale: 0.30
+      acceleration_scale: 0.25
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: vertical_lift_outlet_2
+      type: linear
+      to: outlet_2_hover
+      velocity_scale: 0.55
+      acceleration_scale: 0.45
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: transfer_to_spectrometer
+      type: joint
+      to: spectrometer_hover
+      velocity_scale: 0.85
+      acceleration_scale: 0.85
   spectrometer_place_to_hover:
     start: spectrometer_place
     segments:
@@ -897,6 +968,14 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  spectrometer_pick_hover_to_clean_hover_recovery:
+    start: spectrometer_pick_hover
+    velocity_scale: 0.70
+    acceleration_scale: 0.55
+    segments:
+    - name: leave_spectrometer_with_recovered_cup
+      type: joint
+      to: clean_hover
   spectrometer_pick_to_brush_entry_smooth:
     start: spectrometer_pick
     velocity_scale: 1.00
@@ -916,6 +995,40 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+    - name: transfer_to_cleaning
+      type: joint
+      to: clean_dump_hover
+    - name: vertical_enter_dump
+      type: linear
+      to: clean_dump
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: rotate_wrist_to_pour
+      type: joint
+      to: clean_dump_pour
+      velocity_scale: 0.75
+      acceleration_scale: 0.55
+    - name: pour_shake_relief
+      type: joint
+      to: clean_dump_shake_relief
+      velocity_scale: 0.55
+      acceleration_scale: 0.45
+    - name: pour_shake_back
+      type: joint
+      to: clean_dump_pour
+      velocity_scale: 0.55
+      acceleration_scale: 0.45
+    - name: transfer_to_brush_entry
+      type: joint
+      to: brush_entry
+      velocity_scale: 0.60
+      acceleration_scale: 0.50
+  spectrometer_pick_hover_to_brush_entry_smooth:
+    start: spectrometer_pick_hover
+    velocity_scale: 1.00
+    acceleration_scale: 1.00
+    segments:
     - name: transfer_to_cleaning
       type: joint
       to: clean_dump_hover

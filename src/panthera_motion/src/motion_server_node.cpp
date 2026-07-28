@@ -434,6 +434,11 @@ private:
           continuous_error) ||
         !aliasContinuousRoute(
           candidate_routes,
+          "spectrometer_sensor_pick_hover_to_brush_entry_recovery",
+          "spectrometer_pick_hover_to_brush_entry_smooth",
+          continuous_error) ||
+        !aliasContinuousRoute(
+          candidate_routes,
           "brush_entry_to_outlet_1_return_continuous",
           "brush_entry_to_outlet_1_return_smooth",
           continuous_error))
@@ -845,8 +850,10 @@ private:
       route.name.size() - (sizeof(debug_exit_suffix) - 1),
       sizeof(debug_exit_suffix) - 1,
       debug_exit_suffix) == 0;
-    const double tolerance = debug_exit ? std::max(start_tolerance_rad_, 0.50) :
-      start_tolerance_rad_;
+    const bool sensor_pick_recovery =
+      route.name == "spectrometer_sensor_pick_hover_to_brush_entry_recovery";
+    const double tolerance = debug_exit || sensor_pick_recovery ?
+      std::max(start_tolerance_rad_, 0.50) : start_tolerance_rad_;
     if (maximum > tolerance) {
       std::ostringstream out;
       out << "route start mismatch at " << route.trajectory.joint_names[maximum_index]

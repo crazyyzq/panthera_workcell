@@ -225,7 +225,7 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
     sleep "$START_RETRY_DELAY_SEC"
   fi
   echo "[start] launch attempt $attempt/$START_ATTEMPTS"
-  setsid ros2 launch panthera_motion fixed_spectrometer_cell.launch.py \
+  setsid --wait ros2 launch panthera_motion fixed_spectrometer_cell.launch.py \
     default_speed_scale:="$SPEED_SCALE" \
     hardware_config_file:="$ROBOT_CONFIG" \
     cell_config_file:="$CELL_CONFIG" \
@@ -302,7 +302,8 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
     fail "startup health unavailable; system left powered to avoid an unsafe disable"
   else
     echo "[start] hardware process is not active; cleaning failed launch before retry"
-    WORKCELL_LOCK_HELD=1 STOP_WAIT_SEC=0 "$WS/scripts/stop_workcell.sh" --for-restart || true
+    WORKCELL_LOCK_HELD=1 STOP_WAIT_SEC=0 "$WS/scripts/stop_workcell.sh" --for-restart ||
+      fail "failed launch could not be cleaned safely; refusing duplicate retry"
     rm -f "$PID_FILE"
   fi
 done

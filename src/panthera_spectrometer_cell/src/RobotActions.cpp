@@ -364,9 +364,9 @@ ActionResult RobotActions::stop()
     fixed_point_.clear();
     active_outlet_ = OutletId::NONE;
   }
-  if (gripper_client_) {
-    gripper_client_->async_cancel_all_goals();
-  }
+  // Retain the last gripper target. Cancelling a successful close makes the
+  // trajectory controller hold the measured contact position and removes the
+  // closing force. Only an explicit open command may replace the 0 m target.
   if (!config_.simulation.enabled && arm_) {
     try {
       arm_->stop();
@@ -586,9 +586,8 @@ ActionResult RobotActions::recoverHomeAfterError()
 ActionResult RobotActions::reset()
 {
   RCLCPP_INFO(logger_, "robot reset requested");
-  if (gripper_client_) {
-    gripper_client_->async_cancel_all_goals();
-  }
+  // Do not cancel the gripper here. A reset may follow an arm failure while a
+  // cup is held, and the retained 0 m close target is the payload safety hold.
   if (usesFixedMotion() && motion_client_) {
     motion_client_->async_cancel_all_goals();
     const auto recovery = recoverHomeAfterError();
@@ -1072,12 +1071,7 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
     result = stageAndExecuteProcessPoint(
       "spectrometer_pick_hover", sensor_offset, "spectrometer_sensor_pick_hover",
       "vertical lift from laser-adjusted spectrometer pick");
-    if (!result.success) {
-      return result;
-    }
-    return stageAndExecuteProcessPoint(
-      "spectrometer_pick_hover", Vec3{0.0, 0.0, 0.0}, "spectrometer_pick_hover",
-      "return to nominal spectrometer pick hover");
+    return result;
   }
 
   PoseConfig target;
@@ -1715,6 +1709,8 @@ ActionResult RobotActions::executeFixedCleaning()
     current_point = fixed_point_;
   }
   const bool starts_from_pick_hover = current_point == "spectrometer_pick_hover";
+  const bool starts_from_sensor_pick_hover =
+    current_point == "spectrometer_sensor_pick_hover";
   if (!config_.cleaning.brushEnabled) {
     auto result = executeFixedRoute(
       starts_from_pick_hover ?
@@ -1736,9 +1732,11 @@ ActionResult RobotActions::executeFixedCleaning()
   }
 
   auto result = executeFixedRoute(
-    starts_from_pick_hover ?
+    starts_from_sensor_pick_hover ?
+    "spectrometer_sensor_pick_hover_to_brush_entry_recovery" :
+    (starts_from_pick_hover ?
     "spectrometer_pick_hover_to_brush_entry_smooth" :
-    "spectrometer_pick_to_brush_entry_continuous",
+    "spectrometer_pick_to_brush_entry_continuous"),
     "brush_entry",
     "fixed continuous spectrometer lift, pour, shake and brush approach");
   if (!result.success) {

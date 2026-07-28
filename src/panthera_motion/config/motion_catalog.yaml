@@ -224,13 +224,13 @@ points:
     description: 光谱仪取杯点正上方；独立于放杯上方点，保证取杯垂直进出。
     pose:
       xyz:
-      - 0.132
-      - 0.600
+      - 0.131644
+      - 0.598167
       - 0.45
       rpy:
-      - 0.0
-      - 0.0
-      - 1.5708
+      - -0.002968
+      - -0.00861
+      - 1.570615
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
@@ -272,13 +272,13 @@ points:
     description: 光谱仪取杯点；比放杯点低10mm。
     pose:
       xyz:
-      - 0.132
-      - 0.600
-      - 0.312
+      - 0.131644
+      - 0.598167
+      - 0.330652
       rpy:
-      - 0.0
-      - 0.0
-      - 1.5708
+      - -0.002968
+      - -0.00861
+      - 1.570615
     ik_seed: spectrometer_hover
     tags:
     - process
@@ -288,13 +288,13 @@ points:
     description: 光谱仪取杯点正上方10mm；最终精确夹取的起点。
     pose:
       xyz:
-      - 0.132
-      - 0.600
-      - 0.322
+      - 0.131644
+      - 0.598167
+      - 0.340652
       rpy:
-      - 0.0
-      - 0.0
-      - 1.5708
+      - -0.002968
+      - -0.00861
+      - 1.570615
     ik_seed: spectrometer_hover
     tags:
     - spectrometer

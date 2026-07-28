@@ -5,9 +5,10 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- Current controller address: `192.168.137.186`. The Windows share is
-  `\\192.168.137.186\b1s_share\panthera_workcell_ws` and maps to the canonical
-  workspace. Treat older `10.89.*`, `172.20.*`, and `192.168.8.*` addresses as stale.
+- Current controller address: `172.20.10.2`. The Windows share is
+  `\\172.20.10.2\b1s_share\panthera_workcell_ws` and maps to the canonical
+  workspace. Treat older `10.89.*`, `192.168.8.*`, and `192.168.137.*`
+  addresses as stale.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -511,6 +512,9 @@ not a normal shutdown path.
 - Start/stop must stop any stale ROS 2 CLI daemon before health queries.
   `ros2 control list_controllers` on this Humble install otherwise reuses a daemon
   left in `!rclpy.ok()` and falsely reports startup failure while controllers run.
+- The launch process must be tracked with `setsid --wait`; plain `setsid` can
+  exit before its child and make startup retry a second complete ROS graph.
+  Never retry until the previous launch has been proven cleanly stopped.
 - `b1` must belong to the `realtime` group and
   `/etc/security/limits.d/99-panthera-realtime.conf` must match
   `config/system/99-panthera-realtime.conf`. A fresh login must report
@@ -558,6 +562,16 @@ not a normal shutdown path.
   sequential controller spawners. Hardware reconnect attempts must retain a 5-second
   cooldown; reconnecting immediately after disable produced a transient SDK `999`
   encoder frame during real testing.
+- A successful gripper close retains a `0.0 m` position target. Arm stop, error
+  recovery, and reset must not cancel that goal or replace it with the measured
+  contact position; only an explicit open command may release the cup. Keep the
+  commissioned 2.5 Nm hardware limit unless a separate hardware acceptance test
+  approves a change.
+- A laser-adjusted spectrometer pickup finishes at
+  `spectrometer_sensor_pick_hover` and enters cleaning through the dedicated
+  `spectrometer_sensor_pick_hover_to_brush_entry_recovery` route. Do not
+  Cartesian-resolve it back to the nominal hover: that can select another IK
+  branch and cause a route-start mismatch.
 
 ## Configuration conventions
 

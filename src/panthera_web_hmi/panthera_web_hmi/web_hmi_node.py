@@ -1612,7 +1612,6 @@ class WebHmiNode(Node):
             callback_group=self.debug_callback_group)
         self._debug_lock = threading.RLock()
         self._debug_operation_lock = threading.Lock()
-        self._debug_auth_failures = []
         self._debug = {
             'active': False,
             'phase': 'inactive',
@@ -2072,96 +2071,79 @@ class WebHmiNode(Node):
             translation_axis = next(
                 (index for index, value in enumerate(translation) if abs(value) > 1e-9),
                 None)
-            start_xyz, start_rpy = self._fresh_tool_pose()
-            desired_xyz = [
-                value + delta for value, delta in zip(start_xyz, translation)]
-            desired_rpy = [
-                value + delta for value, delta in zip(start_rpy, rotation)]
+            start_xyz, start_rpy = self._settled_tool_pose()
             with self._debug_lock:
                 self._debug.update(phase='jogging', last_message='正在执行点动')
             result = self._stage_and_execute_jog(deltas)
             if result.get('success'):
-                correction_count = 0
-                while True:
-                    time.sleep(0.6)
-                    measured_xyz, measured_rpy = self._fresh_tool_pose()
-                    if translation_axis is not None:
-                        residual = (
-                            desired_xyz[translation_axis] -
-                            measured_xyz[translation_axis])
-                        tracking_error = abs(residual)
-                        tolerance = 0.00075
+                measured_xyz, measured_rpy = self._settled_tool_pose()
+                if translation_axis is not None:
+                    requested_delta = translation[translation_axis]
+                    measured_delta = (
+                        measured_xyz[translation_axis] - start_xyz[translation_axis])
+                    correction_count = 0
+                    residual = requested_delta - measured_delta
+                    if abs(residual) > 0.001:
                         correction = [0.0] * 6
-                        if tracking_error >= 0.0005:
-                            damped = math.copysign(
-                                max(0.0005, abs(residual) * 0.5), residual)
-                            correction[translation_axis] = max(
-                                -0.005, min(0.005, damped))
-                    else:
-                        rotation_axis = next(
-                            index for index, value in enumerate(rotation)
-                            if abs(value) > 1e-9)
-                        residual = (
-                            desired_rpy[rotation_axis] -
-                            measured_rpy[rotation_axis] + math.pi
-                        ) % (2.0 * math.pi) - math.pi
-                        tracking_error = abs(residual)
-                        tolerance = math.radians(0.2)
-                        correction = [0.0] * 6
-                        if tracking_error >= min_rotation:
-                            correction[3 + rotation_axis] = max(
-                                -max_rotation, min(max_rotation, residual))
-                    if tracking_error <= tolerance or correction_count >= 5:
-                        break
-                    correction_result = self._stage_and_execute_jog(correction)
-                    if not correction_result.get('success'):
+                        correction[translation_axis] = math.copysign(
+                            min(0.001, max(0.0005, abs(residual) * 0.5)),
+                            residual)
+                        correction_result = self._stage_and_execute_jog(correction)
+                        if not correction_result.get('success'):
+                            raise RuntimeError(
+                                f'bounded jog correction failed: '
+                                f'{correction_result.get("message", "unknown error")}')
                         result = correction_result
-                        break
-                    result = correction_result
-                    correction_count += 1
-
-                if not result.get('success'):
-                    result['message'] = (
-                        f'微调闭环执行失败：{result.get("message", "unknown error")}；'
-                        '请点击“安全退出”回 Home 后重试，本次点位不会保存'
-                    )
-                else:
-                    result['correction_count'] = correction_count
-                    result['tracking_error'] = tracking_error
-                    if translation_axis is not None:
+                        correction_count = 1
+                        measured_xyz, measured_rpy = self._settled_tool_pose()
                         measured_delta = (
                             measured_xyz[translation_axis] - start_xyz[translation_axis])
-                        cross_delta = max(
-                            abs(measured_xyz[index] - start_xyz[index])
-                            for index in range(3) if index != translation_axis)
-                        result['measured_delta_m'] = measured_delta
-                        result['measured_cross_axis_m'] = cross_delta
-                        axis = 'XYZ'[translation_axis]
-                        result['message'] = (
-                            f'{axis} 轴指令 {translation[translation_axis] * 1000.0:+.1f} mm，'
-                            f'实测 {measured_delta * 1000.0:+.1f} mm，'
-                            f'串轴最大 {cross_delta * 1000.0:.1f} mm，'
-                            f'闭环 {correction_count} 次'
-                        )
-                    else:
-                        rotation_axis = next(
-                            index for index, value in enumerate(rotation)
-                            if abs(value) > 1e-9)
-                        measured_delta = (
-                            measured_rpy[rotation_axis] - start_rpy[rotation_axis] + math.pi
-                        ) % (2.0 * math.pi) - math.pi
-                        result['measured_rotation_delta_rad'] = measured_delta
-                        axis = ('Roll', 'Pitch', 'Yaw')[rotation_axis]
-                        result['message'] = (
-                            f'{axis} 指令 {math.degrees(rotation[rotation_axis]):+.1f}°，'
-                            f'实测 {math.degrees(measured_delta):+.1f}°，'
-                            f'闭环 {correction_count} 次'
-                        )
-                    with self._debug_lock:
-                        self._debug['commanded_pose'] = {
-                            'xyz': list(result['target_xyz_m']),
-                            'rpy': list(result['target_rpy_rad']),
-                        }
+                    cross_delta = max(
+                        abs(measured_xyz[index] - start_xyz[index])
+                        for index in range(3) if index != translation_axis)
+                    step_error = abs(measured_delta - requested_delta)
+                    result['measured_delta_m'] = measured_delta
+                    result['measured_cross_axis_m'] = cross_delta
+                    result['correction_count'] = correction_count
+                    result['within_step_tolerance'] = (
+                        step_error <= 0.001 and cross_delta <= 0.001)
+                    axis = 'XYZ'[translation_axis]
+                    warning = '' if result['within_step_tolerance'] else '，⚠ 请以实测值为准'
+                    correction_text = f'，稳定后修正 {correction_count} 次' if correction_count else ''
+                    result['message'] = (
+                        f'{axis} 轴单次指令 {requested_delta * 1000.0:+.1f} mm，'
+                        f'实测 {measured_delta * 1000.0:+.1f} mm，'
+                        f'串轴最大 {cross_delta * 1000.0:.1f} mm'
+                        f'{correction_text}{warning}'
+                    )
+                else:
+                    rotation_axis = next(
+                        index for index, value in enumerate(rotation)
+                        if abs(value) > 1e-9)
+                    requested_delta = rotation[rotation_axis]
+                    measured_delta = (
+                        measured_rpy[rotation_axis] - start_rpy[rotation_axis] + math.pi
+                    ) % (2.0 * math.pi) - math.pi
+                    step_error = abs(measured_delta - requested_delta)
+                    position_drift = max(
+                        abs(measured_xyz[index] - start_xyz[index])
+                        for index in range(3))
+                    result['measured_rotation_delta_rad'] = measured_delta
+                    result['measured_position_drift_m'] = position_drift
+                    result['within_step_tolerance'] = (
+                        step_error <= math.radians(0.5) and position_drift <= 0.001)
+                    axis = ('Roll', 'Pitch', 'Yaw')[rotation_axis]
+                    warning = '' if result['within_step_tolerance'] else '，⚠ 请以实测值为准'
+                    result['message'] = (
+                        f'{axis} 单次指令 {math.degrees(requested_delta):+.1f}°，'
+                        f'实测 {math.degrees(measured_delta):+.1f}°，'
+                        f'平移漂移 {position_drift * 1000.0:.1f} mm{warning}'
+                    )
+                with self._debug_lock:
+                    self._debug['commanded_pose'] = {
+                        'xyz': list(result['target_xyz_m']),
+                        'rpy': list(result['target_rpy_rad']),
+                    }
             elif result.get('message'):
                 result['message'] = (
                     f'微调执行失败：{result["message"]}；'
@@ -2195,6 +2177,26 @@ class WebHmiNode(Node):
         if not all(math.isfinite(value) for value in xyz + angles):
             raise ValueError('measured tool pose contains a non-finite value')
         return xyz, angles
+
+    def _settled_tool_pose(self, timeout_sec=8.0):
+        deadline = time.monotonic() + timeout_sec
+        samples = []
+        while time.monotonic() < deadline:
+            xyz, rpy = self._fresh_tool_pose()
+            samples.append((xyz, rpy))
+            samples = samples[-6:]
+            if len(samples) == 6:
+                position_span = max(
+                    max(sample[0][axis] for sample in samples) -
+                    min(sample[0][axis] for sample in samples)
+                    for axis in range(3))
+                orientation_span = max(
+                    rpy_orientation_error(sample[1], samples[-1][1])
+                    for sample in samples)
+                if position_span <= 0.0005 and orientation_span <= math.radians(0.25):
+                    return samples[-1]
+            time.sleep(0.2)
+        raise ValueError('TCP is still settling; wait a moment and retry')
 
     def save_debug_point(self):
         if not self._debug_operation_lock.acquire(blocking=False):
@@ -2393,12 +2395,6 @@ class WebHmiNode(Node):
         return result
 
     def _check_debug_password(self, password):
-        now = time.monotonic()
-        with self._debug_lock:
-            self._debug_auth_failures = [
-                stamp for stamp in self._debug_auth_failures if now - stamp < 60.0]
-            if len(self._debug_auth_failures) >= 5:
-                return False, 'too many password failures; retry after 60 seconds'
         try:
             candidate = hashlib.scrypt(
                 str(password).encode('utf-8'),
@@ -2409,12 +2405,8 @@ class WebHmiNode(Node):
         except Exception:
             candidate = b''
         if not hmac.compare_digest(candidate, DEBUG_PASSWORD_HASH):
-            with self._debug_lock:
-                self._debug_auth_failures.append(now)
-            return False, 'password is incorrect'
-        with self._debug_lock:
-            self._debug_auth_failures.clear()
-        return True, 'password accepted'
+            return False, '密码错误'
+        return True, '密码验证通过'
 
     def set_debug_reference_zero(self, body):
         if not self._debug_operation_lock.acquire(blocking=False):
@@ -2433,14 +2425,14 @@ class WebHmiNode(Node):
             if not self._debug['active'] or self._debug['phase'] != 'ready':
                 return {'success': False, 'message': 'debug point is not ready'}
         try:
-            xyz, rpy = self._fresh_tool_pose()
+            xyz, rpy = self._settled_tool_pose()
         except Exception as exc:
             return {'success': False, 'message': str(exc)}
         with self._debug_lock:
             self._debug['reference_pose'] = {'xyz': xyz, 'rpy': rpy}
             self._debug['last_message'] = '调试参考零点已设置'
         self.get_logger().warn('password-authorized debug reference zero set from measured TCP')
-        return {'success': True, 'message': 'debug reference zero set'}
+        return {'success': True, 'message': '相对显示零点已设置（未修改编码器或 Home）'}
 
     def _load_motion_catalog(self):
         if not os.path.isfile(self.motion_catalog_path):

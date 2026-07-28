@@ -1115,7 +1115,7 @@ function render(snapshot) {
   const modeLabel = modeLabels[mode] || mode;
   setText('stateText', `${stateLabel} · ${state}`);
   setText('stateAge', formatAge(cell.state_age_sec));
-  setText('stateDuration', `持续 ${formatAge(cell.state_age_sec)}`);
+  setText('stateDuration', `状态数据更新 ${formatAge(cell.state_age_sec)}`);
   setText('previousState', `上一步 ${context.previous_state || '--'}`);
   setText('transitionReason', `原因 ${context.last_transition_reason || '--'}`);
   setText('modeText', modeLabel);

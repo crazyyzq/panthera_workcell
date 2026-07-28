@@ -500,29 +500,11 @@ private:
       return;
     }
 
-    std::vector<double> command_start = current;
-    double command_bias = 0.0;
-    {
-      std::lock_guard<std::mutex> lock(commanded_state_mutex_);
-      if (last_commanded_joints_.size() == current.size()) {
-        for (std::size_t index = 0; index < current.size(); ++index) {
-          command_bias = std::max(
-            command_bias,
-            std::abs(last_commanded_joints_[index] - current[index]));
-        }
-        if (command_bias <= start_tolerance_rad_) {
-          command_start = last_commanded_joints_;
-        } else {
-          command_bias = 0.0;
-        }
-      }
-    }
-
-    PoseDefinition command_pose;
+    PoseDefinition measured_pose;
     ValidationResult result;
     {
       std::lock_guard<std::mutex> lock(compiler_mutex_);
-      result = compiler_->forwardKinematics(candidate, command_start, command_pose);
+      result = compiler_->forwardKinematics(candidate, current, measured_pose);
     }
     if (!result.success) {
       response.success = false;
@@ -536,21 +518,21 @@ private:
       Eigen::AngleAxisd(request.delta_roll_rad, Eigen::Vector3d::UnitX())).toRotationMatrix();
     Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
     target.translation() = Eigen::Vector3d(
-      command_pose.xyz[0] + request.delta_x_m,
-      command_pose.xyz[1] + request.delta_y_m,
-      command_pose.xyz[2] + request.delta_z_m);
+      measured_pose.xyz[0] + request.delta_x_m,
+      measured_pose.xyz[1] + request.delta_y_m,
+      measured_pose.xyz[2] + request.delta_z_m);
     target.linear() =
       base_delta *
-      (Eigen::AngleAxisd(command_pose.rpy[2], Eigen::Vector3d::UnitZ()) *
-      Eigen::AngleAxisd(command_pose.rpy[1], Eigen::Vector3d::UnitY()) *
-      Eigen::AngleAxisd(command_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+      (Eigen::AngleAxisd(measured_pose.rpy[2], Eigen::Vector3d::UnitZ()) *
+      Eigen::AngleAxisd(measured_pose.rpy[1], Eigen::Vector3d::UnitY()) *
+      Eigen::AngleAxisd(measured_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
     const auto target_rpy = matrixToRpy(target.rotation());
 
     const auto route_id = jog_sequence_.fetch_add(1);
     const std::string route_name = kStagedJogPrefix + std::to_string(route_id);
     PointDefinition start;
     start.name = route_name + "_start";
-    start.joints = command_start;
+    start.joints = current;
     PointDefinition goal;
     goal.name = route_name + "_goal";
     goal.ik_seed = start.name;
@@ -593,9 +575,9 @@ private:
     RCLCPP_INFO(
       logger_,
       "staged Cartesian jog route=%s delta=[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f] "
-      "duration=%.3fs max_joint_delta=%.4frad measured_command_offset=%.4frad",
+      "duration=%.3fs max_joint_delta=%.4frad",
       route_name.c_str(), deltas[0], deltas[1], deltas[2], deltas[3], deltas[4], deltas[5],
-      compiled.duration_sec, max_joint_delta, command_bias);
+      compiled.duration_sec, max_joint_delta);
     {
       std::lock_guard<std::mutex> lock(catalog_mutex_);
       for (auto it = compiled_routes_.begin(); it != compiled_routes_.end(); ) {

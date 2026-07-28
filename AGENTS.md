@@ -229,11 +229,16 @@ This file contains durable repository context and operating rules for future age
   10 degrees per click.
 - MIT static loaded deflection can make a small Cartesian command differ from the
   measured TCP near the extended outlet pose. Translation requests are limited to
-  `0.5..20 mm`, rotations to `0.1..10 deg`, and exactly one axis per request. Point
-  jog compilation starts from the last nominal commanded joints and compiles one
-  Cartesian line. The HMI may apply at most five damped corrections on the requested
-  axis only (50% residual, clamped to `0.5..5 mm`); it must not chase cross-axis
-  elastic deflection or apply a full residual in one step.
+  `0.5..20 mm`, rotations to `0.1..10 deg`, and exactly one axis per request. Debug
+  jog compilation starts from the current measured joints/TCP, not the previous
+  nominal endpoint, and compiles one Cartesian line. Before and after a jog, accept
+  the TCP only after six samples at 0.2-second intervals stay within 0.5 mm and
+  0.25 degrees (maximum wait 8 seconds). A translation may make at most one stable,
+  bounded correction on the requested axis (half the residual, clamped to
+  `0.5..1.0 mm`); never loop and never chase cross-axis elastic deflection.
+  Rotations receive no automatic correction. Always show the measured main-axis
+  result and cross-axis/position drift, and warn above 1 mm cross-axis drift,
+  1 mm rotation-position drift, or 0.5 degrees rotation error.
 - Entering a tunable point pauses the state machine, verifies or recovers to original
   Home, then runs `home_to_safe_center` and the point's validated
   `debug_safe_to_<point>` route. Exiting must not replay inverse jogs: MIT endpoint
@@ -254,6 +259,9 @@ This file contains durable repository context and operating rules for future age
   well as in the browser. A cycle starts only from an empty `IDLE`/`WAIT_DISCHARGE`
   boundary, and detection completion is accepted only from
   `WAIT_DETECTION_DONE` (or a pause whose resume target is that state).
+- `spectrometer_cell.state_age_sec` is telemetry freshness, not time spent in the
+  current state. The HMI must label it as a state-data update age, never as state
+  duration.
 - Commissioning translation jogs accept 0.5-20 mm per command; rotation jogs
   accept 0.1-10 degrees. Keep the browser limits and backend validation identical.
 - The red HMI control is explicitly a software stop and must never be labelled or
@@ -267,7 +275,16 @@ This file contains durable repository context and operating rules for future age
   restore the previous catalog.
 - The password-protected "zero" control sets only a temporary relative display
   reference for the current commissioning session. It does not reset motor encoders,
-  alter the commissioned Home vector, or persist a hardware zero.
+  alter the commissioned Home vector, or persist a hardware zero. Per the operator's
+  2026-07-28 decision, an incorrect password is rejected but repeated failures must
+  not lock the HMI or impose a retry delay.
+- The 2026-07-28 physical zero-control validation rejected an incorrect password,
+  accepted the configured password, preserved Home and the point catalog, and
+  returned all six relative values to zero after re-zeroing. The first reference
+  residual was within 0.36 mm and 0.11 degrees. A subsequent base `+Z 2.0 mm` jog
+  measured `+2.41 mm` on the requested axis with 2.27 mm cross-axis elastic drift;
+  the command completed safely, the UI reports that drift, and exit returned to
+  encoder-confirmed Home.
 
 ## Build and validation
 

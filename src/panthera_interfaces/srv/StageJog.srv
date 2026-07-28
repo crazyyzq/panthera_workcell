@@ -1,10 +1,13 @@
-# Stage one validated Cartesian jog from the latest measured arm state.
+# Stage one validated Cartesian delta from the latest measured arm state.
 float64 delta_x_m
 float64 delta_y_m
 float64 delta_z_m
 float64 delta_roll_rad
 float64 delta_pitch_rad
 float64 delta_yaw_rad
+bool use_absolute_target
+float64[3] absolute_target_xyz_m
+float64[3] absolute_target_rpy_rad
 ---
 bool success
 string message

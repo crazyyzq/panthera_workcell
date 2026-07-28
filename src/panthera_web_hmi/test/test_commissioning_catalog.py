@@ -8,6 +8,9 @@ import yaml
 
 from panthera_web_hmi.web_hmi_node import WebHmiNode
 from panthera_web_hmi.web_hmi_node import _validate_motion_catalog_document
+from panthera_web_hmi.web_hmi_node import cartesian_pose_delta
+from panthera_web_hmi.web_hmi_node import cartesian_pose_target
+from panthera_web_hmi.web_hmi_node import compensated_command_target
 from panthera_web_hmi.web_hmi_node import rpy_orientation_error
 
 
@@ -83,6 +86,83 @@ def test_equivalent_rpy_representations_have_no_orientation_error():
         (0.0, 0.0, 0.0),
         (-3.141592653589793, 3.141592653589793, 3.141592653589793),
     ) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_cartesian_pose_delta_round_trips_multi_axis_target():
+    start_xyz = [0.42, -0.08, 0.19]
+    start_rpy = [0.2, -0.3, 1.1]
+    requested = [0.004, -0.003, 0.002, 0.03, -0.02, 0.04]
+
+    target_xyz, target_rpy = cartesian_pose_target(
+        start_xyz, start_rpy, requested)
+    recovered = cartesian_pose_delta(
+        start_xyz, start_rpy, target_xyz, target_rpy)
+
+    assert recovered[:3] == pytest.approx(requested[:3], abs=1e-12)
+    assert rpy_orientation_error(recovered[3:], requested[3:]) == pytest.approx(
+        0.0, abs=1e-7)
+
+
+def test_compensated_target_preserves_loaded_command_bias():
+    measured_xyz = [0.473, -0.097, 0.197]
+    commanded_xyz = [0.469, -0.096, 0.191]
+    measured_rpy = [-0.004, -0.014, 0.001]
+    commanded_rpy = [-0.001, -0.005, 0.000]
+    physical_target_xyz = [0.474, -0.098, 0.198]
+    physical_target_rpy = [-0.004, -0.014, 0.009]
+
+    target_xyz, target_rpy = compensated_command_target(
+        measured_xyz,
+        measured_rpy,
+        commanded_xyz,
+        commanded_rpy,
+        physical_target_xyz,
+        physical_target_rpy,
+    )
+
+    assert target_xyz == pytest.approx([0.470, -0.097, 0.192], abs=1e-12)
+    command_delta = cartesian_pose_delta(
+        commanded_xyz, commanded_rpy, target_xyz, target_rpy)
+    physical_delta = cartesian_pose_delta(
+        measured_xyz, measured_rpy, physical_target_xyz, physical_target_rpy)
+    assert command_delta[:3] == pytest.approx(physical_delta[:3], abs=1e-12)
+    assert rpy_orientation_error(command_delta[3:], physical_delta[3:]) == pytest.approx(
+        0.0, abs=1e-7)
+
+
+def test_direct_coordinate_move_accepts_current_pose_without_motion():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': True, 'phase': 'ready', 'last_message': ''}
+    node._debug_require_paused = lambda: (True, 'ready')
+    node._settled_tool_pose = lambda: ([0.42, -0.08, 0.19], [0.2, -0.3, 1.1])
+
+    result = node.debug_move_to({
+        'target_xyz_m': [0.42, -0.08, 0.19],
+        'target_rpy_rad': [0.2, -0.3, 1.1],
+    })
+
+    assert result['success'] is True
+    assert result['already_at_target'] is True
+    assert node._debug['phase'] == 'ready'
+
+
+def test_direct_coordinate_move_rejects_more_than_20mm():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': True, 'phase': 'ready', 'last_message': ''}
+    node._debug_require_paused = lambda: (True, 'ready')
+    node._settled_tool_pose = lambda: ([0.42, -0.08, 0.19], [0.2, -0.3, 1.1])
+
+    result = node.debug_move_to({
+        'target_xyz_m': [0.45, -0.08, 0.19],
+        'target_rpy_rad': [0.2, -0.3, 1.1],
+    })
+
+    assert result['success'] is False
+    assert '20 mm' in result['message']
 
 
 def test_active_debug_session_rejects_production_commands_and_speed_changes():

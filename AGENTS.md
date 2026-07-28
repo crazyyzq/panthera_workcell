@@ -224,21 +224,25 @@ This file contains durable repository context and operating rules for future age
   action as production. It must not create another controller publisher or start
   MoveGroup/`panthera_pose_tuner`.
 - The operator mapping is base-frame `+X=right`, `+Y=front`, `+Z=up`. Roll, pitch,
-  and yaw jogs are also about base-frame axes. One request may change exactly one
-  degree of freedom; the backend rejects translation above 20 mm or rotation above
-  10 degrees per click.
+  and yaw jogs are also about base-frame axes. Button jogs change exactly one degree
+  of freedom. Direct coordinate entry may change XYZ/RPY together, but the backend
+  rejects a target more than 20 mm or 10 degrees from the settled measured TCP.
 - MIT static loaded deflection can make a small Cartesian command differ from the
   measured TCP near the extended outlet pose. Translation requests are limited to
-  `0.5..20 mm`, rotations to `0.1..10 deg`, and exactly one axis per request. Debug
-  jog compilation starts from the current measured joints/TCP, not the previous
+  `0.5..20 mm` and rotations to `0.1..10 deg`. Debug motion compilation starts from
+  the current measured joints/TCP, not the previous
   nominal endpoint, and compiles one Cartesian line. Before and after a jog, accept
   the TCP only after six samples at 0.2-second intervals stay within 0.5 mm and
-  0.25 degrees (maximum wait 8 seconds). A translation may make at most one stable,
-  bounded correction on the requested axis (half the residual, clamped to
-  `0.5..1.0 mm`); never loop and never chase cross-axis elastic deflection.
-  Rotations receive no automatic correction. Always show the measured main-axis
-  result and cross-axis/position drift, and warn above 1 mm cross-axis drift,
-  1 mm rotation-position drift, or 0.5 degrees rotation error.
+  0.25 degrees (maximum wait 8 seconds). The trajectory always starts from measured
+  joints. Apply the operator's physical target delta to the last command target,
+  preserving the learned `commanded - measured` MIT load bias instead of resetting
+  the command to the gravity-deflected measured TCP. Precision compensation then
+  accumulates on that command target. After settling, it may make at most three
+  stable six-DOF corrections: 70% of position residual capped at 3 mm and 60% of
+  orientation residual capped at 0.75 degrees. Stop immediately at the 1 mm/0.5
+  degree acceptance threshold instead of chasing a tighter value, and stop if either
+  error worsens by more than 25%. Always show the requested target, measured TCP,
+  position/orientation error, load compensation and correction count.
 - Entering a tunable point pauses the state machine, verifies or recovers to original
   Home, then runs `home_to_safe_center` and the point's validated
   `debug_safe_to_<point>` route. Exiting must not replay inverse jogs: MIT endpoint
@@ -285,6 +289,14 @@ This file contains durable repository context and operating rules for future age
   measured `+2.41 mm` on the requested axis with 2.27 mm cross-axis elastic drift;
   the command completed safely, the UI reports that drift, and exit returned to
   encoder-confirmed Home.
+- The 2026-07-28 compensated-coordinate commissioning validation at
+  `outlet_1_grasp` proved the durable MIT load-bias rule. A combined
+  `(+1,-1,+1) mm` plus `+0.5 degree yaw` target finished at 0.70 mm position and
+  0.23 degree orientation error. Subsequent bias-preserving `+Z 1.0 mm` and
+  `+Z 0.5 mm` jogs finished without correction at 0.67 mm/0.04 degree and
+  0.41 mm/negligible orientation error. A real Edge coordinate-entry click of
+  `+X 0.5 mm` finished at 0.81 mm/0.11 degree with no browser errors. No test
+  point was saved; safe exit returned to encoder-confirmed Home.
 
 ## Build and validation
 

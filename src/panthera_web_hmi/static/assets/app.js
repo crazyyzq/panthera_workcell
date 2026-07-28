@@ -105,6 +105,7 @@ let motionCatalogSelectedRoute = '';
 let motionCatalogDirty = false;
 let motionCatalogShowAdvancedPoints = false;
 let debugBusy = false;
+let debugTargetPoint = '';
 let activePage = localStorage.getItem('panthera_hmi_page') || 'dashboard';
 
 function $(id) {
@@ -952,13 +953,36 @@ function renderDebugPointOptions() {
   }
 }
 
-function setDebugResult(message, ok = true) {
+function setDebugResult(message, ok = true, warning = false) {
   const box = $('debugResult');
   if (!box) {
     return;
   }
   box.textContent = message || '--';
   box.classList.toggle('error-text', !ok);
+  box.classList.toggle('warning-text', ok && warning);
+}
+
+function copyMeasuredPoseToTarget(snapshot = latestSnapshot) {
+  const tool = (snapshot || {}).tool_pose || {};
+  const position = tool.position_mm || {};
+  const rpy = tool.rpy_deg || {};
+  const values = {
+    debugTargetX: position.x,
+    debugTargetY: position.y,
+    debugTargetZ: position.z,
+    debugTargetRoll: rpy.roll,
+    debugTargetPitch: rpy.pitch,
+    debugTargetYaw: rpy.yaw,
+  };
+  if (!Object.values(values).every(Number.isFinite)) {
+    setDebugResult('当前实测夹取中心无效，不能填入目标坐标。', false);
+    return false;
+  }
+  Object.entries(values).forEach(([id, value]) => {
+    $(id).value = Number(value).toFixed(2);
+  });
+  return true;
 }
 
 function renderDebug(snapshot) {
@@ -989,8 +1013,12 @@ function renderDebug(snapshot) {
   document.querySelectorAll('.jog-button').forEach((button) => {
     button.disabled = !ready;
   });
+  document.querySelectorAll('.debug-target-grid input').forEach((input) => {
+    input.disabled = !ready;
+  });
   ['debugGripperOpen', 'debugGripperClose', 'debugBrushStart', 'debugBrushStop',
-    'debugBrushSave', 'debugSave', 'debugReferenceZero', 'debugExit'].forEach((id) => {
+    'debugBrushSave', 'debugSave', 'debugReferenceZero', 'debugExit',
+    'debugCopyPose', 'debugMoveTo'].forEach((id) => {
     const button = $(id);
     if (button) {
       button.disabled = !active || debugBusy || (id !== 'debugExit' && !ready);
@@ -1015,8 +1043,17 @@ function renderDebug(snapshot) {
   setText('debugInterlock', active
     ? `${debugPhaseLabels[debug.phase] || debug.phase} · 已点动 ${debug.jog_count || 0} 次 · ${debug.dirty ? '有未保存修改' : '点位与配置一致'}`
     : '选择点位后，点击“进入调试并前往该点”。');
+  if (ready && debugTargetPoint !== debug.selected_point &&
+      copyMeasuredPoseToTarget(snapshot)) {
+    debugTargetPoint = debug.selected_point;
+  } else if (!active) {
+    debugTargetPoint = '';
+  }
   if (debug.last_message) {
-    setDebugResult(debug.last_message, debug.phase !== 'error');
+    setDebugResult(
+      debug.last_message,
+      debug.phase !== 'error',
+      String(debug.last_message).includes('⚠'));
   }
 }
 
@@ -1042,7 +1079,7 @@ async function runDebugRequest(path, body, button) {
   renderDebug(latestSnapshot || {});
   try {
     const result = await postJson(path, body);
-    setDebugResult(result.message, !!result.success);
+    setDebugResult(result.message, !!result.success, !!result.warning);
     appendLog(`DEBUG ${path}: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
     setButtonFeedback(button, result.success ? 'success' : 'failed');
     return result;
@@ -1073,8 +1110,8 @@ async function sendDebugJog(button) {
   const linearAxes = {x: 0, y: 1, z: 2};
   const rotationAxes = {roll: 0, pitch: 1, yaw: 2};
   if (button.dataset.jogAxis) {
-    if (!Number.isFinite(linearStep) || linearStep < 2 || linearStep > 20) {
-      setDebugResult('MIT 微调的平移步进必须在 2–20 mm，推荐 5 mm。', false);
+    if (!Number.isFinite(linearStep) || linearStep < 0.5 || linearStep > 20) {
+      setDebugResult('MIT 微调的平移步进必须在 0.5–20 mm，推荐 2–5 mm。', false);
       return;
     }
     translation[linearAxes[button.dataset.jogAxis]] = sign * linearStep / 1000;
@@ -1085,7 +1122,28 @@ async function sendDebugJog(button) {
     }
     rotation[rotationAxes[button.dataset.jogRotation]] = sign * angularStep * Math.PI / 180;
   }
-  await runDebugRequest('/api/debug/jog', {translation_m: translation, rotation_rad: rotation}, button);
+  const result = await runDebugRequest(
+    '/api/debug/jog', {translation_m: translation, rotation_rad: rotation}, button);
+  if (result && result.success && !result.already_at_target) {
+    copyMeasuredPoseToTarget(latestSnapshot);
+  }
+}
+
+async function moveDebugToInput(button) {
+  const ids = [
+    'debugTargetX', 'debugTargetY', 'debugTargetZ',
+    'debugTargetRoll', 'debugTargetPitch', 'debugTargetYaw',
+  ];
+  const rawValues = ids.map((id) => $(id).value.trim());
+  const values = rawValues.map(Number);
+  if (rawValues.some((value) => value === '') || !values.every(Number.isFinite)) {
+    setDebugResult('请完整填写有效的 XYZ 和 Roll/Pitch/Yaw。', false);
+    return;
+  }
+  await runDebugRequest('/api/debug/move_to', {
+    target_xyz_m: values.slice(0, 3).map((value) => value / 1000),
+    target_rpy_rad: values.slice(3).map((value) => value * Math.PI / 180),
+  }, button);
 }
 
 function openZeroDialog() {
@@ -1405,6 +1463,22 @@ function wireButtons() {
     button.addEventListener('click', () => {
       if (!button.disabled) {
         sendDebugJog(button);
+      }
+    });
+  });
+
+  const debugCopyPose = $('debugCopyPose');
+  debugCopyPose?.addEventListener('click', () => {
+    if (copyMeasuredPoseToTarget()) {
+      setDebugResult('已填入当前实测值，可以直接修改后执行。');
+    }
+  });
+  const debugMoveTo = $('debugMoveTo');
+  debugMoveTo?.addEventListener('click', () => moveDebugToInput(debugMoveTo));
+  document.querySelectorAll('.debug-target-grid input').forEach((input) => {
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !debugMoveTo.disabled) {
+        debugMoveTo.click();
       }
     });
   });

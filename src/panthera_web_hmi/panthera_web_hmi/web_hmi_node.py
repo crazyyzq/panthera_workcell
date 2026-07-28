@@ -720,21 +720,65 @@ def quaternion_to_rpy(x, y, z, w):
     return roll, pitch, yaw
 
 
-def rpy_orientation_error(first, second):
-    def quaternion(rpy):
-        roll, pitch, yaw = rpy
-        cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
-        cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
-        cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
-        return (
-            sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-            cr * cp * cy + sr * sp * sy,
-        )
+def rpy_to_quaternion(rpy):
+    roll, pitch, yaw = rpy
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    return (
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
 
-    first_quaternion = quaternion(first)
-    second_quaternion = quaternion(second)
+
+def _quaternion_product(first, second):
+    x1, y1, z1, w1 = first
+    x2, y2, z2, w2 = second
+    return (
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    )
+
+
+def cartesian_pose_target(current_xyz, current_rpy, deltas):
+    target_xyz = [current + delta for current, delta in zip(current_xyz, deltas[:3])]
+    target_quaternion = _quaternion_product(
+        rpy_to_quaternion(deltas[3:]),
+        rpy_to_quaternion(current_rpy))
+    target_rpy = quaternion_to_rpy(*target_quaternion)
+    return target_xyz, list(target_rpy)
+
+
+def cartesian_pose_delta(current_xyz, current_rpy, target_xyz, target_rpy):
+    translation = [target - current for current, target in zip(current_xyz, target_xyz)]
+    current_quaternion = rpy_to_quaternion(current_rpy)
+    target_quaternion = rpy_to_quaternion(target_rpy)
+    inverse_current = (
+        -current_quaternion[0],
+        -current_quaternion[1],
+        -current_quaternion[2],
+        current_quaternion[3],
+    )
+    rotation = quaternion_to_rpy(
+        *_quaternion_product(target_quaternion, inverse_current))
+    return translation + list(rotation)
+
+
+def compensated_command_target(
+        measured_xyz, measured_rpy, commanded_xyz, commanded_rpy,
+        physical_target_xyz, physical_target_rpy):
+    physical_delta = cartesian_pose_delta(
+        measured_xyz, measured_rpy, physical_target_xyz, physical_target_rpy)
+    return cartesian_pose_target(commanded_xyz, commanded_rpy, physical_delta)
+
+
+def rpy_orientation_error(first, second):
+    first_quaternion = rpy_to_quaternion(first)
+    second_quaternion = rpy_to_quaternion(second)
     dot = abs(sum(a * b for a, b in zip(first_quaternion, second_quaternion)))
     return 2.0 * math.acos(max(-1.0, min(1.0, dot)))
 
@@ -1271,6 +1315,7 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/motion_catalog/reload',
             '/api/debug/enter',
             '/api/debug/jog',
+            '/api/debug/move_to',
             '/api/debug/save',
             '/api/debug/exit',
             '/api/debug/gripper',
@@ -1314,6 +1359,8 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.enter_debug(body)
         elif parsed.path == '/api/debug/jog':
             result = self.server.bridge_node.debug_jog(body)
+        elif parsed.path == '/api/debug/move_to':
+            result = self.server.bridge_node.debug_move_to(body)
         elif parsed.path == '/api/debug/save':
             result = self.server.bridge_node.save_debug_point()
         elif parsed.path == '/api/debug/exit':
@@ -2020,10 +2067,14 @@ class WebHmiNode(Node):
         finally:
             self._debug_operation_lock.release()
 
-    def _stage_and_execute_jog(self, deltas):
+    def _stage_and_execute_jog(self, deltas, absolute_target=None):
         request = StageJog.Request()
         request.delta_x_m, request.delta_y_m, request.delta_z_m = deltas[:3]
         request.delta_roll_rad, request.delta_pitch_rad, request.delta_yaw_rad = deltas[3:]
+        request.use_absolute_target = absolute_target is not None
+        if absolute_target is not None:
+            request.absolute_target_xyz_m = list(absolute_target[0])
+            request.absolute_target_rpy_rad = list(absolute_target[1])
         response, error = self._call_service_request(
             self.stage_jog_client, request, '/motion/stage_jog', timeout_sec=20.0)
         if not response or not response.success:
@@ -2068,103 +2119,197 @@ class WebHmiNode(Node):
                     'success': False,
                     'message': 'rotation step must be between 0.1 and 10 degrees',
                 }
-            translation_axis = next(
-                (index for index, value in enumerate(translation) if abs(value) > 1e-9),
-                None)
             start_xyz, start_rpy = self._settled_tool_pose()
+            target_xyz, target_rpy = cartesian_pose_target(
+                start_xyz, start_rpy, deltas)
             with self._debug_lock:
                 self._debug.update(phase='jogging', last_message='正在执行点动')
-            result = self._stage_and_execute_jog(deltas)
-            if result.get('success'):
-                measured_xyz, measured_rpy = self._settled_tool_pose()
-                if translation_axis is not None:
-                    requested_delta = translation[translation_axis]
-                    measured_delta = (
-                        measured_xyz[translation_axis] - start_xyz[translation_axis])
-                    correction_count = 0
-                    residual = requested_delta - measured_delta
-                    if abs(residual) > 0.001:
-                        correction = [0.0] * 6
-                        correction[translation_axis] = math.copysign(
-                            min(0.001, max(0.0005, abs(residual) * 0.5)),
-                            residual)
-                        correction_result = self._stage_and_execute_jog(correction)
-                        if not correction_result.get('success'):
-                            raise RuntimeError(
-                                f'bounded jog correction failed: '
-                                f'{correction_result.get("message", "unknown error")}')
-                        result = correction_result
-                        correction_count = 1
-                        measured_xyz, measured_rpy = self._settled_tool_pose()
-                        measured_delta = (
-                            measured_xyz[translation_axis] - start_xyz[translation_axis])
-                    cross_delta = max(
-                        abs(measured_xyz[index] - start_xyz[index])
-                        for index in range(3) if index != translation_axis)
-                    step_error = abs(measured_delta - requested_delta)
-                    result['measured_delta_m'] = measured_delta
-                    result['measured_cross_axis_m'] = cross_delta
-                    result['correction_count'] = correction_count
-                    result['within_step_tolerance'] = (
-                        step_error <= 0.001 and cross_delta <= 0.001)
-                    axis = 'XYZ'[translation_axis]
-                    warning = '' if result['within_step_tolerance'] else '，⚠ 请以实测值为准'
-                    correction_text = f'，稳定后修正 {correction_count} 次' if correction_count else ''
-                    result['message'] = (
-                        f'{axis} 轴单次指令 {requested_delta * 1000.0:+.1f} mm，'
-                        f'实测 {measured_delta * 1000.0:+.1f} mm，'
-                        f'串轴最大 {cross_delta * 1000.0:.1f} mm'
-                        f'{correction_text}{warning}'
-                    )
-                else:
-                    rotation_axis = next(
-                        index for index, value in enumerate(rotation)
-                        if abs(value) > 1e-9)
-                    requested_delta = rotation[rotation_axis]
-                    measured_delta = (
-                        measured_rpy[rotation_axis] - start_rpy[rotation_axis] + math.pi
-                    ) % (2.0 * math.pi) - math.pi
-                    step_error = abs(measured_delta - requested_delta)
-                    position_drift = max(
-                        abs(measured_xyz[index] - start_xyz[index])
-                        for index in range(3))
-                    result['measured_rotation_delta_rad'] = measured_delta
-                    result['measured_position_drift_m'] = position_drift
-                    result['within_step_tolerance'] = (
-                        step_error <= math.radians(0.5) and position_drift <= 0.001)
-                    axis = ('Roll', 'Pitch', 'Yaw')[rotation_axis]
-                    warning = '' if result['within_step_tolerance'] else '，⚠ 请以实测值为准'
-                    result['message'] = (
-                        f'{axis} 单次指令 {math.degrees(requested_delta):+.1f}°，'
-                        f'实测 {math.degrees(measured_delta):+.1f}°，'
-                        f'平移漂移 {position_drift * 1000.0:.1f} mm{warning}'
-                    )
-                with self._debug_lock:
-                    self._debug['commanded_pose'] = {
-                        'xyz': list(result['target_xyz_m']),
-                        'rpy': list(result['target_rpy_rad']),
-                    }
-            elif result.get('message'):
-                result['message'] = (
-                    f'微调执行失败：{result["message"]}；'
-                    '请点击“安全退出”回 Home 后重试，本次点位不会保存'
-                )
-            with self._debug_lock:
-                if result.get('success'):
-                    self._debug['history'].append(deltas)
-                    self._debug['dirty'] = True
-                    self._debug.update(phase='ready', last_message='点动完成')
-                else:
-                    self._debug.update(
-                        phase='error',
-                        last_message=result.get('message', '点动失败，请安全退出后重试'))
-            return result
+            return self._execute_debug_target(
+                start_xyz, start_rpy, target_xyz, target_rpy, deltas)
         except Exception as exc:
             with self._debug_lock:
                 self._debug.update(phase='error', last_message=f'点动失败: {exc}')
             return {'success': False, 'message': f'jog failed: {exc}'}
         finally:
             self._debug_operation_lock.release()
+
+    def debug_move_to(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'previous debug motion is still running'}
+        try:
+            ready, message = self._debug_require_paused()
+            with self._debug_lock:
+                active = self._debug['active'] and self._debug['phase'] == 'ready'
+            if not ready or not active:
+                return {
+                    'success': False,
+                    'message': message if not ready else 'debug point is not ready',
+                }
+            try:
+                target_xyz = [float(value) for value in body.get('target_xyz_m', [])]
+                target_rpy = [float(value) for value in body.get('target_rpy_rad', [])]
+            except (TypeError, ValueError):
+                return {'success': False, 'message': '目标坐标必须是有效数字'}
+            if len(target_xyz) != 3 or len(target_rpy) != 3:
+                return {'success': False, 'message': '目标坐标必须包含 XYZ 和 Roll/Pitch/Yaw'}
+            if not all(math.isfinite(value) for value in target_xyz + target_rpy):
+                return {'success': False, 'message': '目标坐标不能包含无穷或空值'}
+            start_xyz, start_rpy = self._settled_tool_pose()
+            deltas = cartesian_pose_delta(start_xyz, start_rpy, target_xyz, target_rpy)
+            with self._debug_lock:
+                self._debug.update(phase='jogging', last_message='正在执行输入坐标')
+            return self._execute_debug_target(
+                start_xyz, start_rpy, target_xyz, target_rpy, deltas)
+        except Exception as exc:
+            with self._debug_lock:
+                self._debug.update(phase='error', last_message=f'坐标执行失败: {exc}')
+            return {'success': False, 'message': f'坐标执行失败: {exc}'}
+        finally:
+            self._debug_operation_lock.release()
+
+    def _execute_debug_target(
+            self, start_xyz, start_rpy, target_xyz, target_rpy, requested_delta):
+        translation_distance = math.sqrt(sum(value * value for value in requested_delta[:3]))
+        rotation_distance = rpy_orientation_error(start_rpy, target_rpy)
+        if translation_distance > 0.020 + 1e-9:
+            raise ValueError(
+                f'单次输入位置距离为 {translation_distance * 1000.0:.1f} mm，'
+                '不得超过 20 mm')
+        if rotation_distance > math.radians(10.0) + 1e-9:
+            raise ValueError(
+                f'单次输入姿态变化为 {math.degrees(rotation_distance):.1f}°，'
+                '不得超过 10°')
+        if translation_distance < 0.0001 and rotation_distance < math.radians(0.05):
+            message = '实测位置已经在输入目标内，无需运动'
+            with self._debug_lock:
+                self._debug.update(phase='ready', last_message=message)
+            return {'success': True, 'message': message, 'already_at_target': True}
+
+        with self._debug_lock:
+            previous_command = self._debug.get('commanded_pose')
+        if previous_command:
+            commanded_xyz, commanded_rpy = compensated_command_target(
+                start_xyz,
+                start_rpy,
+                previous_command['xyz'],
+                previous_command['rpy'],
+                target_xyz,
+                target_rpy)
+        else:
+            commanded_xyz, commanded_rpy = list(target_xyz), list(target_rpy)
+        measured_to_command = cartesian_pose_delta(
+            start_xyz, start_rpy, commanded_xyz, commanded_rpy)
+        result = self._stage_and_execute_jog(
+            measured_to_command, (commanded_xyz, commanded_rpy))
+        if not result.get('success'):
+            raise RuntimeError(result.get('message', 'Cartesian motion failed'))
+        commanded_xyz = list(result['target_xyz_m'])
+        commanded_rpy = list(result['target_rpy_rad'])
+        measured_xyz, measured_rpy = self._settled_tool_pose()
+        position_error = math.sqrt(sum(
+            (target - measured) ** 2
+            for measured, target in zip(measured_xyz, target_xyz)))
+        orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
+        correction_count = 0
+        convergence_stopped = False
+        error_trace = [{
+            'position_error_m': position_error,
+            'orientation_error_rad': orientation_error,
+        }]
+
+        for _ in range(3):
+            if position_error <= 0.001 and orientation_error <= math.radians(0.5):
+                break
+            previous_position_error = position_error
+            previous_orientation_error = orientation_error
+            correction = cartesian_pose_delta(
+                measured_xyz, measured_rpy, target_xyz, target_rpy)
+            if position_error > 0.001:
+                translation_scale = min(0.70, 0.003 / position_error)
+                correction[:3] = [
+                    value * translation_scale for value in correction[:3]]
+            else:
+                correction[:3] = [0.0, 0.0, 0.0]
+            if orientation_error > math.radians(0.5):
+                rotation_scale = min(
+                    0.60,
+                    math.radians(0.75) / orientation_error)
+                correction[3:] = [
+                    value * rotation_scale for value in correction[3:]]
+            else:
+                correction[3:] = [0.0, 0.0, 0.0]
+            commanded_xyz, commanded_rpy = cartesian_pose_target(
+                commanded_xyz, commanded_rpy, correction)
+            measured_to_command = cartesian_pose_delta(
+                measured_xyz, measured_rpy, commanded_xyz, commanded_rpy)
+            correction_result = self._stage_and_execute_jog(
+                measured_to_command, (commanded_xyz, commanded_rpy))
+            if not correction_result.get('success'):
+                raise RuntimeError(
+                    f'bounded Cartesian correction failed: '
+                    f'{correction_result.get("message", "unknown error")}')
+            result = correction_result
+            correction_count += 1
+            measured_xyz, measured_rpy = self._settled_tool_pose()
+            position_error = math.sqrt(sum(
+                (target - measured) ** 2
+                for measured, target in zip(measured_xyz, target_xyz)))
+            orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
+            error_trace.append({
+                'position_error_m': position_error,
+                'orientation_error_rad': orientation_error,
+            })
+            if (
+                    position_error > previous_position_error * 1.25 or
+                    orientation_error > max(
+                        math.radians(0.5), previous_orientation_error * 1.25)):
+                convergence_stopped = True
+                break
+
+        within_tolerance = (
+            position_error <= 0.001 and
+            orientation_error <= math.radians(0.5))
+        command_bias = math.sqrt(sum(
+            (commanded - target) ** 2
+            for commanded, target in zip(commanded_xyz, target_xyz)))
+        if convergence_stopped:
+            warning = '，⚠ 误差未收敛，已停止自动修正'
+        elif within_tolerance:
+            warning = ''
+        else:
+            warning = '，⚠ 请检查实测值后再决定是否重试'
+        message = (
+            f'目标 XYZ [{", ".join(f"{value * 1000.0:.2f}" for value in target_xyz)}] mm，'
+            f'实测 [{", ".join(f"{value * 1000.0:.2f}" for value in measured_xyz)}] mm，'
+            f'位置误差 {position_error * 1000.0:.2f} mm，'
+            f'姿态误差 {math.degrees(orientation_error):.2f}°，'
+            f'负载补偿 {command_bias * 1000.0:.2f} mm，'
+            f'稳定修正 {correction_count} 次{warning}'
+        )
+        result.update({
+            'message': message,
+            'requested_target_xyz_m': list(target_xyz),
+            'requested_target_rpy_rad': list(target_rpy),
+            'measured_xyz_m': list(measured_xyz),
+            'measured_rpy_rad': list(measured_rpy),
+            'position_error_m': position_error,
+            'orientation_error_rad': orientation_error,
+            'command_bias_m': command_bias,
+            'correction_count': correction_count,
+            'convergence_stopped': convergence_stopped,
+            'error_trace': error_trace,
+            'within_step_tolerance': within_tolerance,
+            'warning': not within_tolerance,
+        })
+        with self._debug_lock:
+            self._debug['commanded_pose'] = {
+                'xyz': list(result['target_xyz_m']),
+                'rpy': list(result['target_rpy_rad']),
+            }
+            self._debug['history'].append(list(requested_delta))
+            self._debug['dirty'] = True
+            self._debug.update(phase='ready', last_message=message)
+        return result
 
     def _fresh_tool_pose(self):
         tool = self.state_store.snapshot().get('tool_pose', {})

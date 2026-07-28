@@ -461,29 +461,26 @@ private:
     const std::array<double, 6> deltas{
       request.delta_x_m, request.delta_y_m, request.delta_z_m,
       request.delta_roll_rad, request.delta_pitch_rad, request.delta_yaw_rad};
+    const std::array<double, 6> absolute_target{
+      request.absolute_target_xyz_m[0], request.absolute_target_xyz_m[1],
+      request.absolute_target_xyz_m[2], request.absolute_target_rpy_rad[0],
+      request.absolute_target_rpy_rad[1], request.absolute_target_rpy_rad[2]};
     if (busy_.load() ||
-      !std::all_of(deltas.begin(), deltas.end(), [](double value) {return std::isfinite(value);}))
+      !std::all_of(deltas.begin(), deltas.end(), [](double value) {return std::isfinite(value);}) ||
+      (request.use_absolute_target &&
+      !std::all_of(
+        absolute_target.begin(), absolute_target.end(),
+        [](double value) {return std::isfinite(value);})))
     {
       response.success = false;
-      response.message = busy_.load() ? "motion server is busy" : "jog delta must be finite";
+      response.message = busy_.load() ? "motion server is busy" : "Cartesian target must be finite";
       return;
     }
     const auto nonzero = std::count_if(
       deltas.begin(), deltas.end(), [](double value) {return std::abs(value) > 1e-9;});
-    if (nonzero != 1) {
+    if (!request.use_absolute_target && nonzero == 0) {
       response.success = false;
-      response.message = "exactly one Cartesian jog axis must be non-zero";
-      return;
-    }
-    if (std::max(
-        {std::abs(request.delta_x_m), std::abs(request.delta_y_m),
-          std::abs(request.delta_z_m)}) > max_translation_m + 1e-12 ||
-      std::max(
-        {std::abs(request.delta_roll_rad), std::abs(request.delta_pitch_rad),
-          std::abs(request.delta_yaw_rad)}) > max_rotation_rad + 1e-12)
-    {
-      response.success = false;
-      response.message = "jog exceeds 20mm or 10deg per-command limit";
+      response.message = "at least one Cartesian delta must be non-zero";
       return;
     }
 
@@ -512,20 +509,44 @@ private:
       return;
     }
 
-    const Eigen::Matrix3d base_delta =
-      (Eigen::AngleAxisd(request.delta_yaw_rad, Eigen::Vector3d::UnitZ()) *
-      Eigen::AngleAxisd(request.delta_pitch_rad, Eigen::Vector3d::UnitY()) *
-      Eigen::AngleAxisd(request.delta_roll_rad, Eigen::Vector3d::UnitX())).toRotationMatrix();
-    Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
-    target.translation() = Eigen::Vector3d(
-      measured_pose.xyz[0] + request.delta_x_m,
-      measured_pose.xyz[1] + request.delta_y_m,
-      measured_pose.xyz[2] + request.delta_z_m);
-    target.linear() =
-      base_delta *
+    const Eigen::Matrix3d measured_rotation =
       (Eigen::AngleAxisd(measured_pose.rpy[2], Eigen::Vector3d::UnitZ()) *
       Eigen::AngleAxisd(measured_pose.rpy[1], Eigen::Vector3d::UnitY()) *
       Eigen::AngleAxisd(measured_pose.rpy[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+    Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
+    if (request.use_absolute_target) {
+      target.translation() = Eigen::Vector3d(
+        request.absolute_target_xyz_m[0], request.absolute_target_xyz_m[1],
+        request.absolute_target_xyz_m[2]);
+      target.linear() =
+        (Eigen::AngleAxisd(request.absolute_target_rpy_rad[2], Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(request.absolute_target_rpy_rad[1], Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(request.absolute_target_rpy_rad[0], Eigen::Vector3d::UnitX()))
+        .toRotationMatrix();
+    } else {
+      const Eigen::Matrix3d base_delta =
+        (Eigen::AngleAxisd(request.delta_yaw_rad, Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(request.delta_pitch_rad, Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(request.delta_roll_rad, Eigen::Vector3d::UnitX()))
+        .toRotationMatrix();
+      target.translation() = Eigen::Vector3d(
+        measured_pose.xyz[0] + request.delta_x_m,
+        measured_pose.xyz[1] + request.delta_y_m,
+        measured_pose.xyz[2] + request.delta_z_m);
+      target.linear() = base_delta * measured_rotation;
+    }
+    const double translation_norm =
+      (target.translation() -
+      Eigen::Vector3d(measured_pose.xyz[0], measured_pose.xyz[1], measured_pose.xyz[2])).norm();
+    const double rotation_angle = Eigen::AngleAxisd(target.linear() * measured_rotation.transpose())
+      .angle();
+    if (translation_norm > max_translation_m + 1e-12 ||
+      rotation_angle > max_rotation_rad + 1e-12)
+    {
+      response.success = false;
+      response.message = "Cartesian target exceeds 20mm or 10deg from measured TCP";
+      return;
+    }
     const auto target_rpy = matrixToRpy(target.rotation());
 
     const auto route_id = jog_sequence_.fetch_add(1);

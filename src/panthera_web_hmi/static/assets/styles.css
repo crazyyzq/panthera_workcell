@@ -972,6 +972,16 @@ button.failed {
   line-height: 1.4;
 }
 
+.command-result.error-text {
+  color: var(--red);
+}
+
+.command-result.warning-text {
+  color: #92400e;
+  background: #fff7e6;
+  border-color: #f59e0b;
+}
+
 .large-number {
   min-height: 50px;
   font-size: 42px;
@@ -1378,6 +1388,56 @@ button.failed {
   height: 48px;
 }
 
+.debug-target-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(520px, 2fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.debug-target-hint {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.debug-target-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(74px, 1fr));
+  gap: 8px;
+}
+
+.debug-target-grid label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.debug-target-grid input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 8px;
+  background: #fff;
+  color: var(--text);
+}
+
+.debug-target-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .debug-tools {
   justify-content: space-between;
   align-items: flex-start;
@@ -1472,6 +1532,10 @@ button.failed {
     grid-template-columns: 1fr;
   }
 
+  .debug-target-panel {
+    grid-template-columns: 1fr;
+  }
+
   .point-config-grid {
     grid-template-columns: 1fr;
   }
@@ -1522,6 +1586,14 @@ button.failed {
 
   .debug-pose-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .debug-target-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .debug-target-actions {
+    flex-direction: column;
   }
 
   .flow-cn {

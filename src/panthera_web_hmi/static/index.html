@@ -196,7 +196,6 @@
             <div><span>Pitch</span><strong id="debugPosePitch">--</strong></div>
             <div><span>Yaw</span><strong id="debugPoseYaw">--</strong></div>
           </div>
-          <div id="debugReferenceDelta" class="debug-delta">参考零点未设置</div>
         </div>
 
         <div class="debug-jog-panel">
@@ -267,7 +266,6 @@
 
       <div class="debug-final-actions">
         <button id="debugSave" class="cmd primary" type="button">保存并热重载</button>
-        <button id="debugReferenceZero" class="cmd neutral" type="button">设置相对显示零点</button>
         <button id="debugExit" class="cmd warn" type="button">放弃未保存修改并回 Home</button>
       </div>
       <div id="debugResult" class="command-result">请选择点位后执行。</div>
@@ -397,19 +395,6 @@
       <div class="confirm-actions">
         <button id="confirmCancel" class="cmd neutral" type="button">取消</button>
         <button id="confirmOk" class="cmd warn" type="button">确认执行</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="zeroOverlay" class="confirm-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="zeroTitle">
-    <div class="confirm-dialog">
-      <h2 id="zeroTitle">设置调试参考零点</h2>
-      <p>只清零本次调试的相对显示，不修改电机编码器零位。</p>
-      <label class="password-field"><span>维护密码</span><input id="zeroPassword" type="password" autocomplete="current-password"></label>
-      <div id="zeroError" class="modal-error"></div>
-      <div class="confirm-actions">
-        <button id="zeroCancel" class="cmd neutral" type="button">取消</button>
-        <button id="zeroApply" class="cmd warn" type="button">确认设置</button>
       </div>
     </div>
   </div>

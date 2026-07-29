@@ -304,6 +304,9 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
 
   EXPECT_NE(catalog.findRoute("home_to_safe_center"), nullptr);
   EXPECT_NE(catalog.findRoute("safe_center_to_home"), nullptr);
+  const auto * home = catalog.findPoint("home_near");
+  ASSERT_NE(home, nullptr);
+  EXPECT_EQ(home->joints, std::vector<double>(6, 0.0));
 
   const std::set<std::string> required_routes{
     "home_to_outlet_1_grasp_smooth",

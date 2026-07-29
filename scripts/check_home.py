@@ -4,17 +4,38 @@
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import rclpy
+import yaml
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 
 JOINTS = [f"joint{i}" for i in range(1, 7)]
-HOME = [-0.006, 0.0, 0.012, -0.072, -0.006, 0.034]
+DEFAULT_CATALOG = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "panthera_motion"
+    / "config"
+    / "motion_catalog.yaml"
+)
 
 
-def home_error(names, positions):
+def load_home(catalog_path):
+    with open(catalog_path, encoding="utf-8") as stream:
+        catalog = yaml.safe_load(stream)
+    home = catalog.get("points", {}).get("home_near", {}).get("joints")
+    if (
+        not isinstance(home, list)
+        or len(home) != len(JOINTS)
+        or any(not isinstance(value, (int, float)) for value in home)
+    ):
+        raise ValueError("motion catalog home_near must contain six numeric joints")
+    return [float(value) for value in home]
+
+
+def home_error(names, positions, home):
     if len(names) != len(positions):
         raise ValueError("joint name/position length mismatch")
     values = dict(zip(names, positions))
@@ -22,15 +43,15 @@ def home_error(names, positions):
     if missing:
         raise ValueError(f"missing joints: {','.join(missing)}")
     actual = [values[name] for name in JOINTS]
-    errors = [abs(actual[i] - HOME[i]) for i in range(6)]
+    errors = [abs(actual[i] - home[i]) for i in range(6)]
     return actual, errors
 
 
-def self_test():
-    actual, errors = home_error(list(reversed(JOINTS)), list(reversed(HOME)))
-    assert actual == HOME and max(errors) == 0.0
+def self_test(home):
+    actual, errors = home_error(list(reversed(JOINTS)), list(reversed(home)), home)
+    assert actual == home and max(errors) == 0.0
     try:
-        home_error(JOINTS[:-1], HOME[:-1])
+        home_error(JOINTS[:-1], home[:-1], home)
     except ValueError:
         pass
     else:
@@ -41,10 +62,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--tolerance", type=float, default=0.05)
+    parser.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    try:
+        home = load_home(args.catalog)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"HOME_CONFIG_INVALID {exc}", file=sys.stderr)
+        return 4
     if args.self_test:
-        self_test()
+        self_test(home)
         print("check_home self-test OK")
         return 0
     if not 0.0 < args.tolerance <= 0.2 or args.timeout <= 0.0:
@@ -62,7 +89,9 @@ def main():
             print("HOME_UNKNOWN no fresh /joint_states message", file=sys.stderr)
             return 3
         try:
-            actual, errors = home_error(latest[-1].name, latest[-1].position)
+            actual, errors = home_error(
+                latest[-1].name, latest[-1].position, home
+            )
         except ValueError as exc:
             print(f"HOME_UNKNOWN {exc}", file=sys.stderr)
             return 3

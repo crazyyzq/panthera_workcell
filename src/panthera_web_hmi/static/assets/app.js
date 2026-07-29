@@ -1021,7 +1021,7 @@ function renderDebug(snapshot) {
     input.disabled = !ready;
   });
   ['debugGripperOpen', 'debugGripperClose', 'debugBrushStart', 'debugBrushStop',
-    'debugBrushSave', 'debugSave', 'debugReferenceZero', 'debugExit',
+    'debugBrushSave', 'debugSave', 'debugExit',
     'debugCopyPose', 'debugMoveTo'].forEach((id) => {
     const button = $(id);
     if (button) {
@@ -1040,10 +1040,6 @@ function renderDebug(snapshot) {
   setText('debugPoseRoll', Number.isFinite(rpy.roll) ? `${rpy.roll.toFixed(2)}°` : '--');
   setText('debugPosePitch', Number.isFinite(rpy.pitch) ? `${rpy.pitch.toFixed(2)}°` : '--');
   setText('debugPoseYaw', Number.isFinite(rpy.yaw) ? `${rpy.yaw.toFixed(2)}°` : '--');
-  const delta = debug.reference_delta;
-  setText('debugReferenceDelta', delta
-    ? `相对零点 X ${delta.x_mm.toFixed(2)} / Y ${delta.y_mm.toFixed(2)} / Z ${delta.z_mm.toFixed(2)} mm · Roll ${delta.roll_deg.toFixed(2)} / Pitch ${delta.pitch_deg.toFixed(2)} / Yaw ${delta.yaw_deg.toFixed(2)}°`
-    : '参考零点未设置');
   setText('debugInterlock', active
     ? `${debugPhaseLabels[debug.phase] || debug.phase} · 已点动 ${debug.jog_count || 0} 次 · ${debug.dirty ? '有未保存修改' : '点位与配置一致'}`
     : '选择点位后，点击“进入调试并前往该点”。');
@@ -1084,8 +1080,12 @@ async function runDebugRequest(path, body, button) {
   try {
     const result = await postJson(path, body);
     setDebugResult(result.message, !!result.success, !!result.warning);
-    appendLog(`DEBUG ${path}: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
-    setButtonFeedback(button, result.success ? 'success' : 'failed');
+    appendLog(
+      `DEBUG ${path}: ${result.message || '--'}`,
+      result.warning ? 'log-warn' : (result.success ? 'log-ok' : 'log-error'));
+    setButtonFeedback(
+      button,
+      result.warning ? 'warning' : (result.success ? 'success' : 'failed'));
     return result;
   } catch (error) {
     setDebugResult(String(error), false);
@@ -1148,18 +1148,6 @@ async function moveDebugToInput(button) {
     target_xyz_m: values.slice(0, 3).map((value) => value / 1000),
     target_rpy_rad: values.slice(3).map((value) => value * Math.PI / 180),
   }, button);
-}
-
-function openZeroDialog() {
-  $('zeroPassword').value = '';
-  setText('zeroError', '');
-  $('zeroOverlay').classList.remove('hidden');
-  window.setTimeout(() => $('zeroPassword').focus(), 0);
-}
-
-function closeZeroDialog() {
-  $('zeroPassword').value = '';
-  $('zeroOverlay').classList.add('hidden');
 }
 
 function render(snapshot) {
@@ -1269,11 +1257,11 @@ function setButtonFeedback(button, state) {
   if (!button) {
     return;
   }
-  button.classList.remove('loading', 'success', 'failed');
+  button.classList.remove('loading', 'success', 'warning', 'failed');
   if (state) {
     button.classList.add(state);
   }
-  if (state === 'success' || state === 'failed') {
+  if (state === 'success' || state === 'warning' || state === 'failed') {
     window.setTimeout(() => button.classList.remove(state), 1400);
   }
 }
@@ -1522,27 +1510,6 @@ function wireButtons() {
       : '机械臂将沿标定退出路线回到安全调试点和 Home。确认继续？';
     if (await confirmAction(message, '退出点位调试')) {
       await runDebugRequest('/api/debug/exit', {}, debugExit);
-    }
-  });
-
-  $('debugReferenceZero')?.addEventListener('click', openZeroDialog);
-  $('zeroCancel')?.addEventListener('click', closeZeroDialog);
-  $('zeroApply')?.addEventListener('click', async () => {
-    const password = $('zeroPassword').value;
-    const result = await runDebugRequest(
-      '/api/debug/reference_zero', {password}, $('zeroApply'));
-    $('zeroPassword').value = '';
-    if (result && result.success) {
-      closeZeroDialog();
-    } else {
-      setText('zeroError', result ? result.message : '设置失败');
-    }
-  });
-  $('zeroPassword')?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      $('zeroApply').click();
-    } else if (event.key === 'Escape') {
-      closeZeroDialog();
     }
   });
 

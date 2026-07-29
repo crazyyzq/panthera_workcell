@@ -78,9 +78,9 @@ motion:
   transient_retry_delay_sec: 0.25
   cancel_wait_sec: 2.0
 
-  # 普通流程错误（不含急停）后，保持伺服使能并从编码器当前位置回原始工程 Home。
+  # 普通流程错误（不含急停）后，保持伺服使能并回厂商绝对零点 Home。
   # 只有终点编码器确认成功后，上层才进入可安全停机状态。
-  home_joint_pose: [-0.006, 0.000, 0.012, -0.072, -0.006, 0.034]
+  home_joint_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   error_recovery_duration_sec: 10.0
   error_recovery_path_tolerance_rad: 0.50
   error_recovery_goal_tolerance_rad: 0.05

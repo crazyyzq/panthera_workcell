@@ -794,6 +794,12 @@ button.success {
   border-color: var(--green) !important;
 }
 
+button.warning {
+  background: var(--amber) !important;
+  color: #fff !important;
+  border-color: var(--amber) !important;
+}
+
 button.failed {
   background: var(--red) !important;
   color: #fff !important;
@@ -1262,8 +1268,7 @@ button.failed {
 }
 
 .debug-entry-row select,
-.debug-step-row input,
-.password-field input {
+.debug-step-row input {
   min-height: 40px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1306,13 +1311,6 @@ button.failed {
 .debug-pose-grid strong {
   margin-top: 3px;
   font-size: 15px;
-}
-
-.debug-delta {
-  margin-top: 10px;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .step-presets {
@@ -1462,19 +1460,6 @@ button.failed {
 
 .advanced-maintenance {
   opacity: 0.94;
-}
-
-.password-field {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 14px;
-}
-
-.modal-error {
-  min-height: 20px;
-  color: var(--red);
-  font-size: 13px;
-  margin-bottom: 8px;
 }
 
 @media (max-width: 1420px) {

@@ -68,7 +68,7 @@ struct MotionConfig
   double cleanPreZ{0.160};
   double cleanReadyZ{0.160};
   std::vector<double> safeJointPose{0.0, 0.180, 0.180, 0.0, 0.0, 0.0};
-  std::vector<double> homeJointPose{-0.006, 0.0, 0.012, -0.072, -0.006, 0.034};
+  std::vector<double> homeJointPose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   double errorRecoveryDurationSec{10.0};
   double errorRecoveryPathToleranceRad{0.50};
   double errorRecoveryGoalToleranceRad{0.05};

@@ -19,7 +19,7 @@ from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 
-HOME = [-0.006, 0.0, 0.012, -0.072, -0.006, 0.034]
+HOME = [0.0] * 6
 JOINTS = [f'joint{index}' for index in range(1, 7)]
 
 

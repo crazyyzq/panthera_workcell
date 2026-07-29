@@ -1,5 +1,4 @@
 import json
-import hashlib
 import hmac
 import mimetypes
 import os
@@ -42,10 +41,6 @@ from panthera_interfaces.msg import ExternalSignal, LaserDistance, WorkflowStatu
 from panthera_interfaces.srv import RunWorkflow, SetBrush, SetSpeedScale, StageJog
 
 
-DEBUG_PASSWORD_SALT = bytes.fromhex('1c52910fa7e65aeae68b7ee9106e8aa3')
-DEBUG_PASSWORD_HASH = bytes.fromhex(
-    'f5355db155d9206dabd74f757e22bee79e70364ca2953c2960be1d7fb0704bd9'
-    '9b87d5e29614f4aaa5b25fc0bc72e1ced43ce57a49a100c8177ae68affc88305')
 DEBUG_POSITION_TOLERANCE_M = 0.0005
 
 EXTERNAL_COMMANDS = {
@@ -1273,6 +1268,12 @@ class HmiHttpServer(ThreadingHTTPServer):
 class HmiRequestHandler(BaseHTTPRequestHandler):
     server_version = 'PantheraWebHMI/0.1'
 
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def log_message(self, fmt, *args):
         try:
             message = fmt % args
@@ -1345,7 +1346,6 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/debug/exit',
             '/api/debug/gripper',
             '/api/debug/brush',
-            '/api/debug/reference_zero',
             '/api/external/command',
         ):
             self._send_json({'success': False, 'message': 'unknown endpoint'}, status=404)
@@ -1405,8 +1405,6 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.debug_gripper(body)
         elif parsed.path == '/api/debug/brush':
             result = self.server.bridge_node.debug_brush(body)
-        elif parsed.path == '/api/debug/reference_zero':
-            result = self.server.bridge_node.set_debug_reference_zero(body)
         else:
             command = body.get('command', '')
             result = self.server.bridge_node.call_command(command)
@@ -1718,7 +1716,6 @@ class WebHmiNode(Node):
             'dirty': False,
             'history': [],
             'commanded_pose': None,
-            'reference_pose': None,
             'last_message': '',
             'brush_enabled': False,
             'brush_speed_percent': 50.0,
@@ -1917,28 +1914,13 @@ class WebHmiNode(Node):
         self._update_service_status()
         data = self.state_store.snapshot()
         data['camera']['debug'] = self.camera_store.stats()
-        data['debug'] = self.debug_snapshot(data)
+        data['debug'] = self.debug_snapshot()
         return data
 
-    def debug_snapshot(self, state=None):
-        state = state or self.state_store.snapshot()
+    def debug_snapshot(self):
         with self._debug_lock:
             result = {key: value for key, value in self._debug.items() if key != 'history'}
             result['jog_count'] = len(self._debug['history'])
-        result['reference_delta'] = None
-        tool = state.get('tool_pose', {})
-        reference = result.get('reference_pose')
-        if reference and tool.get('available') and (tool.get('age_sec') or 0.0) <= 0.5:
-            position = tool.get('position_m', {})
-            rpy = tool.get('rpy_rad', {})
-            result['reference_delta'] = {
-                'x_mm': (position.get('x', 0.0) - reference['xyz'][0]) * 1000.0,
-                'y_mm': (position.get('y', 0.0) - reference['xyz'][1]) * 1000.0,
-                'z_mm': (position.get('z', 0.0) - reference['xyz'][2]) * 1000.0,
-                'roll_deg': math.degrees(rpy.get('roll', 0.0) - reference['rpy'][0]),
-                'pitch_deg': math.degrees(rpy.get('pitch', 0.0) - reference['rpy'][1]),
-                'yaw_deg': math.degrees(rpy.get('yaw', 0.0) - reference['rpy'][2]),
-            }
         return result
 
     @staticmethod
@@ -2037,7 +2019,7 @@ class WebHmiNode(Node):
             with self._debug_lock:
                 self._debug.update(
                     active=False, phase='error', selected_point='', dirty=False,
-                    history=[], commanded_pose=None, reference_pose=None, last_message=message)
+                    history=[], commanded_pose=None, last_message=message)
             return result
 
         try:
@@ -2111,7 +2093,6 @@ class WebHmiNode(Node):
                         'xyz': [float(value) for value in point['pose']['xyz']],
                         'rpy': [float(value) for value in point['pose']['rpy']],
                     },
-                    reference_pose=None,
                     last_message='点位已到达，可以点动')
             return {'success': True, 'message': 'debug point reached', 'point_name': point_name}
         except Exception as exc:
@@ -2498,7 +2479,7 @@ class WebHmiNode(Node):
                     with self._debug_lock:
                         self._debug.update(
                             active=False, phase='inactive', selected_point='', dirty=False,
-                            history=[], commanded_pose=None, reference_pose=None, brush_enabled=False,
+                            history=[], commanded_pose=None, brush_enabled=False,
                             last_message='安全退出轨迹失败，已自动恢复到 Home')
                     return {
                         'success': True,
@@ -2527,6 +2508,11 @@ class WebHmiNode(Node):
             stop.speed_percent = 0.0
             self._call_service_request(
                 self.debug_brush_client, stop, '/spectrometer_cell/debug/set_brush', 5.0)
+            rewind = self._rewind_debug_history()
+            if not rewind.get('success'):
+                with self._debug_lock:
+                    self._debug.update(phase='error', last_message=rewind['message'])
+                return rewind
             _, _, _, _, exit_route = self._debug_catalog_target(point_name)
             result = self._execute_motion_route(exit_route)
             if not result.get('success'):
@@ -2537,7 +2523,7 @@ class WebHmiNode(Node):
             with self._debug_lock:
                 self._debug.update(
                     active=False, phase='inactive', selected_point='', dirty=False,
-                    history=[], commanded_pose=None, reference_pose=None, brush_enabled=False,
+                    history=[], commanded_pose=None, brush_enabled=False,
                     last_message='已安全回到 Home，自动流程仍暂停')
             return {'success': True, 'message': 'debug mode exited at Home; automatic mode remains paused'}
         except Exception as exc:
@@ -2546,6 +2532,31 @@ class WebHmiNode(Node):
             return {'success': False, 'message': f'debug exit failed: {exc}'}
         finally:
             self._debug_operation_lock.release()
+
+    def _rewind_debug_history(self):
+        while True:
+            with self._debug_lock:
+                if not self._debug['history']:
+                    return {'success': True, 'message': 'debug jog path rewound'}
+                delta = list(self._debug['history'][-1])
+                self._debug.update(
+                    phase='returning',
+                    last_message=f'正在沿点动原路返回，剩余 {len(self._debug["history"])} 步')
+            result = self._stage_and_execute_jog([-value for value in delta])
+            if not result.get('success'):
+                return {
+                    'success': False,
+                    'message': (
+                        'debug jog rewind failed; robot remains enabled: '
+                        f'{result.get("message", "unknown error")}'
+                    ),
+                }
+            with self._debug_lock:
+                self._debug['history'].pop()
+                self._debug['commanded_pose'] = {
+                    'xyz': list(result['target_xyz_m']),
+                    'rpy': list(result['target_rpy_rad']),
+                }
 
     def debug_gripper(self, body):
         if not self._debug_operation_lock.acquire(blocking=False):
@@ -2622,46 +2633,6 @@ class WebHmiNode(Node):
                 if not saved.get('success'):
                     result['message'] += f"; default save failed: {saved.get('message')}"
         return result
-
-    def _check_debug_password(self, password):
-        try:
-            candidate = hashlib.scrypt(
-                str(password).encode('utf-8'),
-                salt=DEBUG_PASSWORD_SALT,
-                n=2 ** 14,
-                r=8,
-                p=1)
-        except Exception:
-            candidate = b''
-        if not hmac.compare_digest(candidate, DEBUG_PASSWORD_HASH):
-            return False, '密码错误'
-        return True, '密码验证通过'
-
-    def set_debug_reference_zero(self, body):
-        if not self._debug_operation_lock.acquire(blocking=False):
-            return {'success': False, 'message': 'another debug operation is running'}
-        try:
-            return self._set_debug_reference_zero_locked(body)
-        finally:
-            self._debug_operation_lock.release()
-
-    def _set_debug_reference_zero_locked(self, body):
-        valid, message = self._check_debug_password(body.get('password', ''))
-        if not valid:
-            self.get_logger().warn('debug reference-zero authentication failed')
-            return {'success': False, 'message': message}
-        with self._debug_lock:
-            if not self._debug['active'] or self._debug['phase'] != 'ready':
-                return {'success': False, 'message': 'debug point is not ready'}
-        try:
-            xyz, rpy = self._settled_tool_pose()
-        except Exception as exc:
-            return {'success': False, 'message': str(exc)}
-        with self._debug_lock:
-            self._debug['reference_pose'] = {'xyz': xyz, 'rpy': rpy}
-            self._debug['last_message'] = '调试参考零点已设置'
-        self.get_logger().warn('password-authorized debug reference zero set from measured TCP')
-        return {'success': True, 'message': '相对显示零点已设置（未修改编码器或 Home）'}
 
     def _load_motion_catalog(self):
         if not os.path.isfile(self.motion_catalog_path):

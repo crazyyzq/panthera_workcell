@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+
+# Keep traps, file descriptors, and `exit` inside this script even when an
+# operator starts it with `. start_workcell.sh` or `source start_workcell.sh`.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  if bash "${BASH_SOURCE[0]}" "$@"; then
+    return 0
+  else
+    return $?
+  fi
+fi
+
 set -Eeuo pipefail
 
 WS="${WS:-/home/b1/panthera_workcell_ws}"
@@ -161,12 +172,12 @@ empty=(not context.get("has_active_task") and not context.get("cup_in_gripper")
        and not context.get("spectrometer_occupied"))
 raise SystemExit(0 if cell.get("state") == "ERROR" and empty else 1)
 ' || return 1
+  # The ROS 2 daemon can retain an invalid rcl context after a long recovery
+  # call. Recreate only the CLI discovery process; control nodes stay running.
+  reset_ros2_daemon
   timeout 12 ros2 service call /spectrometer_cell/restart_cleaning_motor \
     std_srvs/srv/Trigger '{}' >"$LOG_DIR/startup_motor_recovery.log" 2>&1 &&
-    grep -q 'success=True' "$LOG_DIR/startup_motor_recovery.log" &&
-    timeout 8 ros2 service call /spectrometer_cell/request_reset \
-      std_srvs/srv/Trigger '{}' >"$LOG_DIR/startup_state_reset.log" 2>&1 &&
-    grep -q 'success=True' "$LOG_DIR/startup_state_reset.log"
+    grep -q 'success=True' "$LOG_DIR/startup_motor_recovery.log"
 }
 
 cleanup_failed_attempt()
@@ -261,6 +272,7 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
   mv "$PID_FILE.tmp" "$PID_FILE"
 
   home_checked=0
+  restart_required=0
   attempt_deadline=$((SECONDS + START_TIMEOUT_SEC))
   second=0
   while (( SECONDS < attempt_deadline )); do
@@ -285,12 +297,11 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
               >"$LOG_DIR/startup_home_recovery.log" 2>&1 &&
             grep -q 'success=True' "$LOG_DIR/startup_home_recovery.log" &&
             python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 \
-              >>"$LOG_DIR/home_check.log" 2>&1 &&
-            timeout 8 ros2 service call /spectrometer_cell/request_reset std_srvs/srv/Trigger '{}' \
-              >"$LOG_DIR/startup_state_reset.log" 2>&1 &&
-            grep -q 'success=True' "$LOG_DIR/startup_state_reset.log"; then
-            echo "[start] recovered startup pose and state to commissioned Home"
+              >>"$LOG_DIR/home_check.log" 2>&1; then
+            echo "[start] recovered startup pose to commissioned Home; restarting control stack"
             home_checked=1
+            restart_required=1
+            break
           else
             KEEP_RUNNING_ON_FAILURE=1
             fail "robot is not safely recoverable to commissioned Home; system left powered and holding"
@@ -299,7 +310,13 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
       fi
     fi
     if (( second % 5 == 0 )) && recover_empty_startup_error; then
-      echo "[start] recovered empty startup ERROR without restarting hardware"
+      if python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 \
+          >>"$LOG_DIR/home_check.log" 2>&1; then
+        echo "[start] restored empty startup prerequisite; restarting control stack"
+        home_checked=1
+        restart_required=1
+        break
+      fi
     fi
     if [[ "$home_checked" -eq 1 ]] &&
       hmi_ready >>"$LOG_DIR/health_wait.log" 2>&1 &&
@@ -316,7 +333,11 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
   done
 
   if [[ "$home_checked" -eq 1 ]]; then
-    echo "[start] attempt $attempt failed health checks; safe cleanup before retry"
+    if [[ "$restart_required" -eq 1 ]]; then
+      echo "[start] attempt $attempt completed bounded recovery; safe restart required"
+    else
+      echo "[start] attempt $attempt failed health checks; safe cleanup before retry"
+    fi
     WORKCELL_LOCK_HELD=1 STOP_WAIT_SEC=0 "$WS/scripts/stop_workcell.sh" --for-restart || fail "failed attempt could not be cleaned safely"
     rm -f "$PID_FILE"
   elif pgrep -f 'controller_manager/ros2_control_node' >/dev/null 2>&1; then

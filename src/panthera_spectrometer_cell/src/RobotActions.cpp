@@ -941,21 +941,13 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
         "spectrometer_place",
         "fixed route place to spectrometer");
     } else {
-      result = executeFixedRoute(
-        outlet_one ? "outlet_1_grasp_to_spectrometer_hover" :
-        "outlet_2_grasp_to_spectrometer_hover",
-        "spectrometer_hover",
-        "fixed route transfer to spectrometer hover");
-      if (result.success) {
-        result = stageAndExecuteProcessPoint(
-          "spectrometer_hover", sensor_offset, "spectrometer_sensor_hover",
-          "align above laser-adjusted spectrometer place");
-      }
-      if (result.success) {
-        result = stageAndExecuteProcessPoint(
-          "spectrometer_place", sensor_offset, "spectrometer_sensor_place",
-          "vertical laser-adjusted spectrometer place");
-      }
+      result = stageAndExecuteProcessRoute(
+        outlet_one ? "outlet_1_grasp_to_spectrometer_place" :
+        "outlet_2_grasp_to_spectrometer_place",
+        {"spectrometer_hover", "spectrometer_preplace", "spectrometer_place"},
+        sensor_offset,
+        "spectrometer_sensor_place",
+        "continuous laser-adjusted spectrometer place");
     }
     if (!result.success) {
       return result;
@@ -974,15 +966,13 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
         "spectrometer_hover",
         "fixed route leave spectrometer after place");
     }
-    result = stageAndExecuteProcessPoint(
-      "spectrometer_hover", sensor_offset, "spectrometer_sensor_hover",
-      "vertical leave laser-adjusted spectrometer place");
-    if (!result.success) {
-      return result;
-    }
-    return stageAndExecuteProcessPoint(
-      "spectrometer_hover", Vec3{0.0, 0.0, 0.0}, "spectrometer_hover",
-      "return to nominal spectrometer hover");
+    return stageAndExecuteProcessRoute(
+      "spectrometer_sensor_place_to_nominal_hover_template",
+      {"spectrometer_place", "spectrometer_preplace",
+        "spectrometer_sensor_hover_template"},
+      sensor_offset,
+      "spectrometer_hover",
+      "continuous leave laser-adjusted spectrometer place");
   }
 
   PoseConfig target;
@@ -1048,14 +1038,12 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
         "spectrometer_pick",
         "fixed route pick from spectrometer");
     } else {
-      result = stageAndExecuteProcessPoint(
-        "spectrometer_pick_hover", sensor_offset, "spectrometer_sensor_pick_hover",
-        "align above laser-adjusted spectrometer pick");
-      if (result.success) {
-        result = stageAndExecuteProcessPoint(
-          "spectrometer_pick", sensor_offset, "spectrometer_sensor_pick",
-          "vertical laser-adjusted spectrometer pick");
-      }
+      result = stageAndExecuteProcessRoute(
+        "spectrometer_hover_to_pick",
+        {"spectrometer_pick_hover", "spectrometer_prepick", "spectrometer_pick"},
+        sensor_offset,
+        "spectrometer_sensor_pick",
+        "continuous laser-adjusted spectrometer pick");
     }
     if (!result.success) {
       return result;
@@ -1068,10 +1056,20 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
     if (!result.success || !sensor_adjusted) {
       return result;
     }
-    result = stageAndExecuteProcessPoint(
-      "spectrometer_pick_hover", sensor_offset, "spectrometer_sensor_pick_hover",
-      "vertical lift from laser-adjusted spectrometer pick");
-    return result;
+    if (config_.cleaning.brushEnabled) {
+      return stageAndExecuteProcessRoute(
+        "spectrometer_pick_to_brush_entry_smooth",
+        {"spectrometer_pick", "spectrometer_prepick", "spectrometer_pick_hover"},
+        sensor_offset,
+        "brush_entry",
+        "continuous laser-adjusted lift and cleaning transfer");
+    }
+    return stageAndExecuteProcessRoute(
+      "spectrometer_pick_to_hover",
+      {"spectrometer_pick", "spectrometer_prepick", "spectrometer_pick_hover"},
+      sensor_offset,
+      "spectrometer_sensor_pick_hover",
+      "continuous lift from laser-adjusted spectrometer pick");
   }
 
   PoseConfig target;
@@ -1701,6 +1699,38 @@ ActionResult RobotActions::stageAndExecuteProcessPoint(
   return executeFixedRoute(response->route_name, expected_end_point, label);
 }
 
+ActionResult RobotActions::stageAndExecuteProcessRoute(
+  const std::string & route_name,
+  const std::vector<std::string> & offset_point_names,
+  const Vec3 & offset_xyz,
+  const std::string & expected_end_point,
+  const std::string & label)
+{
+  if (!process_stage_client_) {
+    return ActionResult::fail(label + " failed: process staging client is not initialized");
+  }
+  if (!process_stage_client_->wait_for_service(std::chrono::seconds(3))) {
+    return ActionResult::fail(label + " failed: /motion/stage_jog is unavailable");
+  }
+
+  auto request = std::make_shared<StageJog::Request>();
+  request->process_profile = true;
+  request->base_route_name = route_name;
+  request->offset_point_names = offset_point_names;
+  request->point_offset_xyz_m = offset_xyz;
+
+  auto future = process_stage_client_->async_send_request(request);
+  if (future.future.wait_for(std::chrono::seconds(20)) != std::future_status::ready) {
+    process_stage_client_->remove_pending_request(future);
+    return ActionResult::fail(label + " failed: continuous process staging timeout");
+  }
+  const auto response = future.future.get();
+  if (!response->success) {
+    return ActionResult::fail(label + " failed: " + response->message);
+  }
+  return executeFixedRoute(response->route_name, expected_end_point, label);
+}
+
 ActionResult RobotActions::executeFixedCleaning()
 {
   std::string current_point;
@@ -1711,6 +1741,7 @@ ActionResult RobotActions::executeFixedCleaning()
   const bool starts_from_pick_hover = current_point == "spectrometer_pick_hover";
   const bool starts_from_sensor_pick_hover =
     current_point == "spectrometer_sensor_pick_hover";
+  const bool starts_from_brush_entry = current_point == "brush_entry";
   if (!config_.cleaning.brushEnabled) {
     auto result = executeFixedRoute(
       starts_from_pick_hover ?
@@ -1731,16 +1762,19 @@ ActionResult RobotActions::executeFixedCleaning()
       "fixed route leave pour pose");
   }
 
-  auto result = executeFixedRoute(
-    starts_from_sensor_pick_hover ?
-    "spectrometer_sensor_pick_hover_to_brush_entry_recovery" :
-    (starts_from_pick_hover ?
-    "spectrometer_pick_hover_to_brush_entry_smooth" :
-    "spectrometer_pick_to_brush_entry_continuous"),
-    "brush_entry",
-    "fixed continuous spectrometer lift, pour, shake and brush approach");
-  if (!result.success) {
-    return result;
+  auto result = ActionResult::ok("already at brush entry");
+  if (!starts_from_brush_entry) {
+    result = executeFixedRoute(
+      starts_from_sensor_pick_hover ?
+      "spectrometer_sensor_pick_hover_to_brush_entry_recovery" :
+      (starts_from_pick_hover ?
+      "spectrometer_pick_hover_to_brush_entry_smooth" :
+      "spectrometer_pick_to_brush_entry_continuous"),
+      "brush_entry",
+      "fixed continuous spectrometer lift, pour, shake and brush approach");
+    if (!result.success) {
+      return result;
+    }
   }
 
   result = setCleaningMotor(true, "start cleaning motor before fixed brush insertion");

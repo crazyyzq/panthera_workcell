@@ -186,10 +186,10 @@ This file contains durable repository context and operating rules for future age
 
 ## Safety invariants
 
-- The commissioned original Home joint vector is
-  `[-0.006, 0.0, 0.012, -0.072, -0.006, 0.034]`. Do not overwrite it from a
-  post-power-loss/random pose. On a recoverable runtime error, return to this Home
-  while enabled before disabling or restarting hardware.
+- Since the vendor absolute-zero maintenance on 2026-07-29, the commissioned
+  Home joint vector is exactly `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]`. Do not infer
+  or overwrite it from a post-power-loss/random pose. On a recoverable runtime
+  error, return to this Home while enabled before disabling or restarting hardware.
 - Production gripper close is a retained position target of `0.0 m`; it must remain
   commanded until an explicit release/open operation. Do not auto-release because
   contact prevents the encoder from reaching zero.
@@ -229,6 +229,12 @@ This file contains durable repository context and operating rules for future age
   the active `ros2 launch` process during a healthy idempotent start. Startup READY
   also requires fresh encoders and nontrivial J2+J3+J4 holding effort; controller
   lifecycle state alone is insufficient.
+- `INIT` must create the non-motion sensor, discharge, reset and detection
+  interfaces before applying the robot Home guard. Otherwise a deliberate Home
+  rejection also removes the only recovery services and latches an unrecoverable
+  startup ERROR. When one-key start safely moves a near-Home robot to the
+  commissioned Home, it performs one guarded control-stack restart instead of
+  chaining another ROS CLI reset call onto the long recovery call.
 - A 2026-07-27 maintenance test confirmed that a large direct interpolation from
   a gravity-loaded lowered pose to Home can initially lower joint4 further.
   After physical clearance is confirmed, manual maintenance recovery must first
@@ -315,14 +321,15 @@ This file contains durable repository context and operating rules for future age
   gains, a 2 mm +Z/-Z test achieved 0.42/0.13 mm final error. Debug
   motion compilation starts from
   the current measured joints/TCP, not the previous
-  nominal endpoint, and compiles one Cartesian line. Before and after a jog, accept
-  the TCP only after six samples at 0.2-second intervals stay within 0.5 mm and
-  0.25 degrees (maximum wait 8 seconds); use the six-sample mean XYZ rather than a
+  nominal endpoint, and compiles one Cartesian line. Before and after a
+  precision coordinate move, accept the TCP only after four samples at
+  0.05-second intervals stay within 0.5 mm and 0.25 degrees (maximum wait
+  8 seconds); use the four-sample mean XYZ rather than a
   noisy final frame. The trajectory always starts from measured
   joints. Apply the operator's physical target delta to the last command target,
   preserving the learned `commanded - measured` MIT load bias instead of resetting
   the command to the gravity-deflected measured TCP. Precision compensation then
-  accumulates on that command target. After settling, it may make at most eight
+  accumulates on that command target. After settling, it may make at most two
   same-direction six-DOF corrections. Above 3 mm use 70% of position residual capped
   at 3 mm; at or below 3 mm use 35%. Orientation uses 60% above one degree and 30%
   below it, capped at 0.75 degrees. Stop at the 0.5 mm/0.5 degree acceptance
@@ -338,12 +345,15 @@ This file contains durable repository context and operating rules for future age
   backend's settled sample are not simultaneous.
 - Entering a tunable point pauses the state machine, verifies or recovers to original
   Home, then runs `home_to_safe_center` and the point's validated
-  `debug_safe_to_<point>` route. Exiting must not replay inverse jogs: MIT endpoint
-  error accumulates and made that sequence diverge. Instead, align the measured
-  current state into `debug_<point>_to_safe` within its dedicated 0.50 rad limit,
-  then run `safe_center_to_home`; automatic mode remains paused. If either safe-exit
-  route fails, keep power enabled and use encoder-confirmed Home recovery as the
-  final fallback.
+  `debug_safe_to_<point>` route. Exiting must first replay every successful
+  commissioning jog in strict reverse order, removing a history entry only after
+  its inverse motion succeeds; then run `debug_<point>_to_safe` and
+  `safe_center_to_home`. This keeps a large operator-created offset on the exact
+  known path instead of misclassifying it as an unknown pose or widening the
+  global Home recovery envelope. A 2026-07-30 physical recovery reversed 34
+  accumulated jogs and returned Home, followed by a three-jog regression with
+  automatic rewind and final Home error `0.005655 rad`. Automatic mode remains
+  paused. If rewind or either safe-exit route fails, keep power enabled.
 - All commissioning operations are serialized. Gripper and brush commands are
   accepted only in an active, ready commissioning session. The brush remains owned
   by `panthera_spectrometer_cell` through the verified Modbus driver.
@@ -377,18 +387,10 @@ This file contains durable repository context and operating rules for future age
   enabled route, atomically replaces the real source path behind the install
   symlink, and reloads only on complete success. A compile/reload failure must
   restore the previous catalog.
-- The password-protected "zero" control sets only a temporary relative display
-  reference for the current commissioning session. It does not reset motor encoders,
-  alter the commissioned Home vector, or persist a hardware zero. Per the operator's
-  2026-07-28 decision, an incorrect password is rejected but repeated failures must
-  not lock the HMI or impose a retry delay.
-- The 2026-07-28 physical zero-control validation rejected an incorrect password,
-  accepted the configured password, preserved Home and the point catalog, and
-  returned all six relative values to zero after re-zeroing. The first reference
-  residual was within 0.36 mm and 0.11 degrees. A subsequent base `+Z 2.0 mm` jog
-  measured `+2.41 mm` on the requested axis with 2.27 mm cross-axis elastic drift;
-  the command completed safely, the UI reports that drift, and exit returned to
-  encoder-confirmed Home.
+- The HMI deliberately exposes no motor-zero operation or relative-zero control.
+  Absolute zero maintenance is performed with the vendor
+  `ros2 run hightorque_robot 0_robot_set_zero` tool while production control is
+  stopped; never add a second SDK/serial owner beside ros2_control.
 - The 2026-07-28 compensated-coordinate commissioning validation at
   `outlet_1_grasp` proved the durable MIT load-bias rule. A combined
   `(+1,-1,+1) mm` plus `+0.5 degree yaw` target finished at 0.70 mm position and
@@ -526,6 +528,15 @@ fallback. Camera startup is also optional and excluded from READY. Never restore
 the legacy MoveIt/workflow startup chain to
 these production scripts. `--force` is an explicit maintenance escape hatch,
 not a normal shutdown path.
+- Both lifecycle scripts may be invoked normally or with shell `source`/`.`.
+  A sourced invocation must immediately delegate to an isolated Bash process
+  before setting traps, redirecting file descriptors, acquiring locks, or
+  calling `exit`; otherwise the operator shell can inherit cleanup and stop a
+  healthy workcell.
+- Normal HMI client cancellation, refresh, timeout, or camera/SSE disconnect is
+  not a server fault. The request-handler boundary must absorb
+  `BrokenPipeError` and `ConnectionResetError` without a traceback while keeping
+  real application exceptions visible.
 - Production ROS control is local to the IPC: `ROS_LOCALHOST_ONLY=1` and
   `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` restrict DDS to UDP loopback while avoiding
   stale Fast DDS shared-memory locks. Remote operation uses HTTP/SSH. Never run

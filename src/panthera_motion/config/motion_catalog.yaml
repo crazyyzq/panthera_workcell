@@ -67,14 +67,14 @@ commissioning:
       axes: xyz
 points:
   home_near:
-    description: 机械臂近零位，仅用于维护和关机回位。
+    description: 厂商绝对零点；用于启动校验、异常恢复和关机回位。
     joints:
-    - -0.006
     - 0.0
-    - 0.012
-    - -0.072
-    - -0.006
-    - 0.034
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
     tags:
     - system
     - recovery
@@ -220,6 +220,21 @@ points:
     - spectrometer
     - safety
     - advanced
+  spectrometer_sensor_hover_template:
+    description: 激光偏置连续退杯路线的内部高位模板；不作为可调工艺点。
+    pose:
+      xyz:
+      - 0.132
+      - 0.595
+      - 0.45
+      rpy:
+      - 0.0
+      - 0.0
+      - 1.5708
+    ik_seed: spectrometer_hover
+    tags:
+    - internal
+    - spectrometer
   spectrometer_pick_hover:
     description: 光谱仪取杯点正上方；独立于放杯上方点，保证取杯垂直进出。
     pose:
@@ -838,6 +853,30 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  spectrometer_sensor_place_to_nominal_hover_template:
+    start: spectrometer_place
+    segments:
+    - name: precision_leave_adjusted_place
+      type: linear
+      to: spectrometer_preplace
+      velocity_scale: 0.30
+      acceleration_scale: 0.25
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: vertical_leave_adjusted_place
+      type: linear
+      to: spectrometer_sensor_hover_template
+      velocity_scale: 0.55
+      acceleration_scale: 0.45
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: align_nominal_hover_at_clearance
+      type: joint
+      to: spectrometer_hover
+      velocity_scale: 0.35
+      acceleration_scale: 0.30
   spectrometer_hover_to_place:
     start: spectrometer_hover
     segments:

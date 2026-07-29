@@ -1,4 +1,6 @@
 from copy import deepcopy
+from http.server import BaseHTTPRequestHandler
+import inspect
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -7,6 +9,7 @@ import pytest
 import yaml
 
 from panthera_web_hmi.web_hmi_node import WebHmiNode
+from panthera_web_hmi.web_hmi_node import HmiRequestHandler
 from panthera_web_hmi.web_hmi_node import _validate_motion_catalog_document
 from panthera_web_hmi.web_hmi_node import cartesian_pose_delta
 from panthera_web_hmi.web_hmi_node import cartesian_pose_target
@@ -25,6 +28,26 @@ CATALOG_PATH = (
 def load_catalog():
     with CATALOG_PATH.open(encoding='utf-8') as stream:
         return yaml.safe_load(stream)
+
+
+@pytest.mark.parametrize('disconnect', [BrokenPipeError, ConnectionResetError])
+def test_http_client_disconnect_is_ignored(monkeypatch, disconnect):
+    handler = HmiRequestHandler.__new__(HmiRequestHandler)
+    monkeypatch.setattr(
+        BaseHTTPRequestHandler,
+        'handle',
+        lambda _self: (_ for _ in ()).throw(disconnect()))
+
+    handler.handle()
+
+
+def test_hmi_exposes_no_zero_control():
+    static_root = Path(__file__).parents[1] / 'static'
+    assert 'reference_zero' not in inspect.getsource(HmiRequestHandler.do_POST)
+    assert 'debugReferenceZero' not in (
+        static_root / 'index.html').read_text(encoding='utf-8')
+    assert 'reference_zero' not in (
+        static_root / 'assets' / 'app.js').read_text(encoding='utf-8')
 
 
 def test_every_tunable_point_has_a_safe_round_trip():
@@ -290,6 +313,38 @@ def test_debug_jog_rejects_unrepeatable_one_millimeter_step():
 
     assert result['success'] is False
     assert '2mm' in result['message']
+
+
+def test_debug_exit_rewinds_successful_jogs_in_reverse_order():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'phase': 'error',
+        'history': [
+            [0.005, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.020, 0.0, 0.0, 0.0, 0.0],
+        ],
+    }
+    calls = []
+
+    def execute(delta):
+        calls.append(delta)
+        return {
+            'success': True,
+            'target_xyz_m': [0.0, 0.0, 0.0],
+            'target_rpy_rad': [0.0, 0.0, 0.0],
+        }
+
+    node._stage_and_execute_jog = execute
+
+    result = node._rewind_debug_history()
+
+    assert result['success'] is True
+    assert calls == [
+        [0.0, -0.020, 0.0, 0.0, 0.0, 0.0],
+        [-0.005, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ]
+    assert node._debug['history'] == []
 
 
 def test_debug_jog_executes_one_route_without_hidden_corrections():

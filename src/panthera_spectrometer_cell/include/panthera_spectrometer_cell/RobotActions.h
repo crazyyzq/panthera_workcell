@@ -71,6 +71,12 @@ private:
     const Vec3 & offset_xyz,
     const std::string & expected_end_point,
     const std::string & label);
+  ActionResult stageAndExecuteProcessRoute(
+    const std::string & route_name,
+    const std::vector<std::string> & offset_point_names,
+    const Vec3 & offset_xyz,
+    const std::string & expected_end_point,
+    const std::string & label);
   ActionResult computeSpectrometerOffset(double axis_position_mm, Vec3 & offset_xyz) const;
   ActionResult executeFixedCleaning();
   bool usesFixedMotion() const;

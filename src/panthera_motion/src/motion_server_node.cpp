@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -483,6 +484,7 @@ private:
       request.point_offset_xyz_m[1],
       request.point_offset_xyz_m[2]};
     const bool uses_catalog_point = !request.base_point_name.empty();
+    const bool uses_catalog_route = !request.base_route_name.empty();
     if (busy_.load() ||
       !std::all_of(deltas.begin(), deltas.end(), [](double value) {return std::isfinite(value);}) ||
       !std::all_of(
@@ -497,16 +499,28 @@ private:
       response.message = busy_.load() ? "motion server is busy" : "Cartesian target must be finite";
       return;
     }
-    if (uses_catalog_point && request.use_absolute_target) {
+    if ((uses_catalog_point && uses_catalog_route) ||
+      ((uses_catalog_point || uses_catalog_route) && request.use_absolute_target))
+    {
       response.success = false;
-      response.message = "catalog point and absolute target are mutually exclusive";
+      response.message = "catalog point, catalog route and absolute target are mutually exclusive";
       return;
     }
     const auto nonzero = std::count_if(
       deltas.begin(), deltas.end(), [](double value) {return std::abs(value) > 1e-9;});
-    if (!uses_catalog_point && !request.use_absolute_target && nonzero == 0) {
+    if (!uses_catalog_point && !uses_catalog_route &&
+      !request.use_absolute_target && nonzero == 0)
+    {
       response.success = false;
       response.message = "at least one Cartesian delta must be non-zero";
+      return;
+    }
+    if (uses_catalog_route &&
+      (!request.process_profile || nonzero != 0 || request.offset_point_names.empty()))
+    {
+      response.success = false;
+      response.message =
+        "catalog route staging requires process_profile, offset points and zero jog deltas";
       return;
     }
 
@@ -532,6 +546,163 @@ private:
     if (!result.success) {
       response.success = false;
       response.message = "cannot stage jog FK: " + result.message;
+      return;
+    }
+
+    if (uses_catalog_route) {
+      const auto source_route = candidate.findRoute(request.base_route_name);
+      if (!source_route) {
+        response.success = false;
+        response.message = "catalog route is missing: " + request.base_route_name;
+        return;
+      }
+      if (Eigen::Vector3d(point_offset[0], point_offset[1], point_offset[2]).norm() >
+        process_stage_max_translation_m_ + 1e-12)
+      {
+        response.success = false;
+        response.message = "catalog route offset exceeds process translation limit";
+        return;
+      }
+
+      const auto route_id = jog_sequence_.fetch_add(1);
+      const std::string route_name = kStagedJogPrefix + std::to_string(route_id);
+      RouteDefinition route = *source_route;
+      route.name = route_name;
+
+      const std::set<std::string> offset_names(
+        request.offset_point_names.begin(), request.offset_point_names.end());
+      std::set<std::string> used_offset_names;
+      const bool offsets_start = offset_names.count(source_route->start) != 0;
+      Eigen::Vector3d offset_start_residual = Eigen::Vector3d::Zero();
+      if (offsets_start) {
+        const auto source_start = candidate.findPoint(source_route->start);
+        if (!source_start || !source_start->pose) {
+          response.success = false;
+          response.message = "offset route start is missing Cartesian pose";
+          return;
+        }
+        const Eigen::Vector3d expected_start(
+          source_start->pose->xyz[0] + point_offset[0],
+          source_start->pose->xyz[1] + point_offset[1],
+          source_start->pose->xyz[2] + point_offset[2]);
+        offset_start_residual =
+          Eigen::Vector3d(
+          measured_pose.xyz[0], measured_pose.xyz[1], measured_pose.xyz[2]) -
+          expected_start;
+        if (offset_start_residual.norm() > 0.015) {
+          response.success = false;
+          response.message = "measured TCP does not match laser-adjusted route start";
+          return;
+        }
+        used_offset_names.insert(source_route->start);
+      } else {
+        std::vector<double> expected_start;
+        {
+          std::lock_guard<std::mutex> lock(catalog_mutex_);
+          const auto compiled_source = compiled_routes_.find(request.base_route_name);
+          if (compiled_source == compiled_routes_.end()) {
+            response.success = false;
+            response.message = "compiled catalog route is missing: " + request.base_route_name;
+            return;
+          }
+          expected_start = compiled_source->second.start_joints;
+        }
+        if (expected_start.size() != current.size()) {
+          response.success = false;
+          response.message = "compiled catalog route start has invalid joint count";
+          return;
+        }
+        double max_error = 0.0;
+        for (std::size_t index = 0; index < current.size(); ++index) {
+          max_error = std::max(max_error, std::abs(current[index] - expected_start[index]));
+        }
+        if (max_error > start_tolerance_rad_) {
+          response.success = false;
+          std::ostringstream out;
+          out << "catalog route start mismatch: max_error=" << max_error
+              << "rad limit=" << start_tolerance_rad_ << "rad";
+          response.message = out.str();
+          return;
+        }
+      }
+
+      PointDefinition measured_start;
+      measured_start.name = route_name + "_start";
+      measured_start.joints = current;
+      candidate.points[measured_start.name] = measured_start;
+      route.start = measured_start.name;
+      std::string previous_point = measured_start.name;
+      for (auto & segment : route.segments) {
+        if (offset_names.count(segment.to) != 0) {
+          const auto source_point = candidate.findPoint(segment.to);
+          if (!source_point || !source_point->pose) {
+            response.success = false;
+            response.message = "offset route point is missing Cartesian pose: " + segment.to;
+            return;
+          }
+          PointDefinition adjusted = *source_point;
+          const std::string source_name = segment.to;
+          adjusted.name = route_name + "_" + source_name;
+          adjusted.pose->xyz[0] += point_offset[0];
+          adjusted.pose->xyz[1] += point_offset[1];
+          adjusted.pose->xyz[2] += point_offset[2];
+          if (offsets_start) {
+            adjusted.pose->xyz[0] += offset_start_residual.x();
+            adjusted.pose->xyz[1] += offset_start_residual.y();
+            adjusted.pose->xyz[2] += offset_start_residual.z();
+          }
+          adjusted.ik_seed = previous_point;
+          candidate.points[adjusted.name] = adjusted;
+          segment.to = adjusted.name;
+          used_offset_names.insert(source_name);
+        }
+        previous_point = segment.to;
+      }
+      if (used_offset_names != offset_names) {
+        response.success = false;
+        response.message = "offset point list contains a point not used by the route";
+        return;
+      }
+
+      const auto compile_started = std::chrono::steady_clock::now();
+      CompiledRoute compiled;
+      {
+        std::lock_guard<std::mutex> lock(compiler_mutex_);
+        result = compiler_->compileRoute(candidate, route, compiled);
+      }
+      if (!result.success) {
+        response.success = false;
+        response.message = "offset route validation failed: " + result.message;
+        return;
+      }
+      RCLCPP_INFO(
+        logger_,
+        "staged continuous offset route=%s source=%s offset=[%.4f,%.4f,%.4f] "
+        "duration=%.3fs compile=%.3fs",
+        route_name.c_str(), request.base_route_name.c_str(),
+        point_offset[0], point_offset[1], point_offset[2],
+        compiled.duration_sec,
+        std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - compile_started).count());
+      const auto final_point = candidate.findPoint(route.segments.back().to);
+      {
+        std::lock_guard<std::mutex> lock(catalog_mutex_);
+        for (auto it = compiled_routes_.begin(); it != compiled_routes_.end(); ) {
+          if (it->first.rfind(kStagedJogPrefix, 0) == 0) {
+            it = compiled_routes_.erase(it);
+          } else {
+            ++it;
+          }
+        }
+        compiled_routes_[route_name] = std::move(compiled);
+      }
+      response.success = true;
+      response.message = "continuous laser-adjusted process route validated and staged";
+      response.route_name = route_name;
+      if (final_point && final_point->pose) {
+        response.target_xyz_m = final_point->pose->xyz;
+        response.target_rpy_rad = final_point->pose->rpy;
+      }
       return;
     }
 

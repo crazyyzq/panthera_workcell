@@ -510,13 +510,9 @@ void StateMachine::updateInit(const Event &)
   outlet_status_[OutletId::OUTLET_2] = OutletStatus::WAITING_FILL;
   context_.clearTask(0, State::INIT, nowMs());
 
-  auto result = robot_->initialize();
-  if (!result.success) {
-    fail("INIT robot failed: " + result.message);
-    return;
-  }
-
-  result = sensors_->initialize();
+  // Bring up non-motion I/O first so reset, discharge and detection services
+  // remain available when the robot's Home guard deliberately rejects INIT.
+  auto result = sensors_->initialize();
   if (!result.success) {
     fail("INIT sensors failed: " + result.message);
     return;
@@ -525,6 +521,12 @@ void StateMachine::updateInit(const Event &)
   result = spectrometer_->initialize();
   if (!result.success) {
     fail("INIT spectrometer failed: " + result.message);
+    return;
+  }
+
+  result = robot_->initialize();
+  if (!result.success) {
+    fail("INIT robot failed: " + result.message);
     return;
   }
 

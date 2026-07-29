@@ -222,7 +222,7 @@ curl -I http://127.0.0.1:18080/api/camera/depth.bmp
 
 MIT 示教会保留上一命令点与实测 TCP 之间的负载偏置，再把操作员输入的物理位移叠加到命令点；这样小步进不会因重新使用重力下沉后的实测坐标而丢失补偿。页面会显示位置误差、姿态误差、负载补偿量和稳定修正次数，保存的是最终补偿后的命令点。
 
-密码保护的 `设置相对显示零点` 只改变当前会话的相对读数，不写电机编码器、不修改原始 Home。高级目录维护仍可编辑 `motion_catalog.yaml`，但不应作为日常点位微调入口。
+HMI 不提供电机零点设置。绝对零点维护使用厂商独立工具，不与生产控制进程并行运行。高级目录维护仍可编辑 `motion_catalog.yaml`，但不应作为日常点位微调入口。
 
 示教 API：
 
@@ -234,5 +234,4 @@ POST /api/debug/save
 POST /api/debug/exit
 POST /api/debug/gripper
 POST /api/debug/brush
-POST /api/debug/reference_zero
 ```

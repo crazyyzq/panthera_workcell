@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+
+# Keep traps, file descriptors, and `exit` inside this script even when an
+# operator stops the workcell with `. stop_workcell.sh` or `source stop_workcell.sh`.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  if bash "${BASH_SOURCE[0]}" "$@"; then
+    return 0
+  else
+    return $?
+  fi
+fi
+
 set -Eeuo pipefail
 
 WS="${WS:-/home/b1/panthera_workcell_ws}"

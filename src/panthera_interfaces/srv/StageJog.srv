@@ -11,6 +11,11 @@ bool process_profile
 # Optional canonical catalog point plus XYZ offset. Production uses this so
 # station geometry remains owned by motion_catalog.yaml.
 string base_point_name
+# Optional canonical route with selected destination points translated by the
+# same XYZ offset. This preserves one continuous controller goal for a
+# laser-adjusted production path.
+string base_route_name
+string[] offset_point_names
 float64[3] point_offset_xyz_m
 bool use_absolute_target
 float64[3] absolute_target_xyz_m

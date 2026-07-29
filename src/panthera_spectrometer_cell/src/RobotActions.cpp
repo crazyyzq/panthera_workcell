@@ -330,17 +330,17 @@ ActionResult RobotActions::initialize()
     config_.motion.velocityScale,
     config_.motion.accelerationScale);
 
-  const auto motor_stop = setCleaningMotor(false, "initialize brush motor stopped");
-  if (!motor_stop.success) {
-    return motor_stop;
-  }
-
   if (usesFixedMotion() || !config_.simulation.enabled) {
     const auto init_result = usesFixedMotion() ?
       initializeFixedMotionInterface() : initializeRealInterfaces();
     if (!init_result.success) {
       return init_result;
     }
+  }
+
+  const auto motor_stop = setCleaningMotor(false, "initialize brush motor stopped");
+  if (!motor_stop.success) {
+    return motor_stop;
   }
 
   const auto collision_result = applyCollisionObjects();
@@ -1485,15 +1485,15 @@ ActionResult RobotActions::initializeFixedMotionInterface()
       std::string("initialize fixed motion interface failed: ") + exc.what());
   }
 
+  const auto gripper_result = initializeGripperAndJointStateInterfaces();
+  if (!gripper_result.success) {
+    return gripper_result;
+  }
   if (!motion_client_->wait_for_action_server(
       std::chrono::duration<double>(config_.motion.motionServerWaitSec)))
   {
     return ActionResult::fail(
       "fixed motion server unavailable at " + std::string(kMotionAction));
-  }
-  const auto gripper_result = initializeGripperAndJointStateInterfaces();
-  if (!gripper_result.success) {
-    return gripper_result;
   }
   if (!config_.simulation.enabled) {
     std::vector<double> current;

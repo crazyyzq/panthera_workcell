@@ -49,6 +49,9 @@ using SetSpeedScale = panthera_interfaces::srv::SetSpeedScale;
 using StageJog = panthera_interfaces::srv::StageJog;
 
 constexpr char kStagedJogPrefix[] = "__debug_jog_";
+constexpr double kTeachJogMinimumDurationSec = 0.45;
+constexpr double kTeachJogIkTimeoutSec = 0.02;
+constexpr int kTeachJogIkAttempts = 2;
 
 std::string defaultCatalogPath()
 {
@@ -621,6 +624,13 @@ private:
     segment.constraints.keep_orientation = request.process_profile;
     route.segments.push_back(segment);
 
+    if (!request.process_profile) {
+      candidate.defaults.ik_timeout_sec = std::min(
+        candidate.defaults.ik_timeout_sec, kTeachJogIkTimeoutSec);
+      candidate.defaults.ik_attempts = std::min(
+        candidate.defaults.ik_attempts, kTeachJogIkAttempts);
+    }
+    const auto compile_started = std::chrono::steady_clock::now();
     CompiledRoute compiled;
     {
       std::lock_guard<std::mutex> lock(compiler_mutex_);
@@ -631,6 +641,14 @@ private:
       response.message = "jog validation failed: " + result.message;
       return;
     }
+    if (!request.process_profile &&
+      compiled.duration_sec < kTeachJogMinimumDurationSec)
+    {
+      compiled.trajectory = scaleTrajectory(
+        compiled.trajectory,
+        compiled.duration_sec / kTeachJogMinimumDurationSec);
+      compiled.duration_sec = trajectoryDurationSec(compiled.trajectory);
+    }
     double max_joint_delta = 0.0;
     for (std::size_t index = 0; index < compiled.start_joints.size(); ++index) {
       max_joint_delta = std::max(
@@ -640,9 +658,12 @@ private:
     RCLCPP_INFO(
       logger_,
       "staged Cartesian jog route=%s delta=[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f] "
-      "duration=%.3fs max_joint_delta=%.4frad",
+      "duration=%.3fs compile=%.3fs max_joint_delta=%.4frad",
       route_name.c_str(), deltas[0], deltas[1], deltas[2], deltas[3], deltas[4], deltas[5],
-      compiled.duration_sec, max_joint_delta);
+      compiled.duration_sec,
+      std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - compile_started).count(),
+      max_joint_delta);
     {
       std::lock_guard<std::mutex> lock(catalog_mutex_);
       for (auto it = compiled_routes_.begin(); it != compiled_routes_.end(); ) {

@@ -484,8 +484,9 @@ struct TrajectoryCompiler::Impl
 
   ValidationResult configure(const MotionCatalog & catalog)
   {
-    joint_group = model->getJointModelGroup(catalog.group_name);
-    if (!joint_group) {
+    const auto * requested_joint_group =
+      model->getJointModelGroup(catalog.group_name);
+    if (!requested_joint_group) {
       return ValidationResult::fail(
         "robot model does not contain joint group '" + catalog.group_name + "'");
     }
@@ -494,7 +495,7 @@ struct TrajectoryCompiler::Impl
         "robot model does not contain tool link '" + catalog.tool_frame + "'");
     }
 
-    const auto model_joint_names = joint_group->getVariableNames();
+    const auto model_joint_names = requested_joint_group->getVariableNames();
     if (model_joint_names != catalog.joint_names) {
       std::ostringstream out;
       out << "catalog joint_names do not match robot group order; model=[";
@@ -505,20 +506,26 @@ struct TrajectoryCompiler::Impl
       return ValidationResult::fail(out.str());
     }
 
-    joint_velocity_limits.clear();
-    joint_acceleration_limits.clear();
-    for (const auto & joint_name : model_joint_names) {
-      const auto & bounds = model->getVariableBounds(joint_name);
-      if (!bounds.velocity_bounded_ || !bounds.acceleration_bounded_ ||
-        !std::isfinite(bounds.max_velocity_) || bounds.max_velocity_ <= 0.0 ||
-        !std::isfinite(bounds.max_acceleration_) || bounds.max_acceleration_ <= 0.0)
-      {
-        return ValidationResult::fail(
-          "robot model is missing positive velocity/acceleration limits for '" +
-          joint_name + "'");
+    if (!scene || requested_joint_group != joint_group) {
+      std::vector<double> requested_velocity_limits;
+      std::vector<double> requested_acceleration_limits;
+      for (const auto & joint_name : model_joint_names) {
+        const auto & bounds = model->getVariableBounds(joint_name);
+        if (!bounds.velocity_bounded_ || !bounds.acceleration_bounded_ ||
+          !std::isfinite(bounds.max_velocity_) || bounds.max_velocity_ <= 0.0 ||
+          !std::isfinite(bounds.max_acceleration_) || bounds.max_acceleration_ <= 0.0)
+        {
+          return ValidationResult::fail(
+            "robot model is missing positive velocity/acceleration limits for '" +
+            joint_name + "'");
+        }
+        requested_velocity_limits.push_back(bounds.max_velocity_);
+        requested_acceleration_limits.push_back(bounds.max_acceleration_);
       }
-      joint_velocity_limits.push_back(bounds.max_velocity_);
-      joint_acceleration_limits.push_back(bounds.max_acceleration_);
+      joint_group = requested_joint_group;
+      joint_velocity_limits = std::move(requested_velocity_limits);
+      joint_acceleration_limits = std::move(requested_acceleration_limits);
+      scene = std::make_shared<planning_scene::PlanningScene>(model);
     }
 
     if (catalog.base_frame != model->getModelFrame()) {
@@ -529,7 +536,6 @@ struct TrajectoryCompiler::Impl
         model->getModelFrame().c_str());
     }
 
-    scene = std::make_shared<planning_scene::PlanningScene>(model);
     point_joints.clear();
     resolving_points.clear();
     return ValidationResult::ok();

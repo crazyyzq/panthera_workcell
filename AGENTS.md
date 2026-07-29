@@ -7,8 +7,8 @@ This file contains durable repository context and operating rules for future age
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
 - Current controller address: `192.168.137.186`. The Windows share is
   `\\192.168.137.186\b1s_share\panthera_workcell_ws` and maps to the canonical
-  workspace. Treat older `10.89.*`, `192.168.8.*`, and `192.168.137.*`
-  addresses as stale.
+  workspace. Treat older `10.89.*`, `192.168.8.*`, and other previously used
+  controller addresses as stale.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -45,6 +45,16 @@ This file contains durable repository context and operating rules for future age
 - The arm controller is `joint_trajectory_controller/JointTrajectoryController` at 100 Hz.
 - Arm joints are `joint1` through `joint6`; gripper command joint is `L_finger_joint`; `R_finger_joint` is mimic/passive.
 - The controller exposes standard `FollowJointTrajectory` and can execute deterministic precompiled trajectories without MoveIt planning at production runtime.
+- HMI Cartesian jog buttons execute exactly one validated staged route per
+  click, with a minimum trajectory duration of 0.45 s and no hidden
+  stop-and-correct loop. Absolute coordinate entry retains at most two bounded
+  corrections because it is the precision-oriented path. Keep those interaction
+  semantics distinct.
+- `TrajectoryCompiler::configure()` must retain its `PlanningScene` while the
+  robot joint group is unchanged. Rebuilding the full MoveIt scene once for FK
+  and again for every short jog caused random 3.9-4.2 s staging stalls. After
+  caching the scene, 20 consecutive real ±2 mm jogs on 2026-07-29 completed in
+  0.574-0.594 s end-to-end (mean 0.586 s), with staging bounded to 17 ms.
 - Vendor MIT MoveIt support was integrated from upstream `humble` commit `3815fce`
   on 2026-07-24. The hardware mode is `mit_gravity_compensation`: trajectory
   position/velocity targets plus Pinocchio gravity feed-forward are sent through
@@ -248,6 +258,11 @@ This file contains durable repository context and operating rules for future age
   no active task, held cup, or occupied spectrometer. A guarded shutdown may bypass
   the unavailable recovery service only when Motion Server is settled and fresh
   encoders independently verify commissioned Home.
+- RobotActions must create its joint-state, gripper, and recovery clients before
+  checking Motion Server or brush-drive readiness. Otherwise an initialization
+  fault removes the very interfaces needed for recovery. One-key startup retries
+  brush communication and state reset only for an empty ERROR context; never
+  clear an ERROR that still owns a task, cup, or occupied spectrometer.
 
 ## Known high-risk issues in the pre-refactor baseline
 

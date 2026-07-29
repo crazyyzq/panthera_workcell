@@ -150,6 +150,25 @@ raise SystemExit(0 if ok else 1)
 '
 }
 
+recover_empty_startup_error()
+{
+  curl -fsS --max-time 2 "http://127.0.0.1:${HMI_PORT}/api/status" | python3 -c '
+import json, sys
+d=json.load(sys.stdin)
+cell=d.get("spectrometer_cell", {})
+context=cell.get("context") or {}
+empty=(not context.get("has_active_task") and not context.get("cup_in_gripper")
+       and not context.get("spectrometer_occupied"))
+raise SystemExit(0 if cell.get("state") == "ERROR" and empty else 1)
+' || return 1
+  timeout 12 ros2 service call /spectrometer_cell/restart_cleaning_motor \
+    std_srvs/srv/Trigger '{}' >"$LOG_DIR/startup_motor_recovery.log" 2>&1 &&
+    grep -q 'success=True' "$LOG_DIR/startup_motor_recovery.log" &&
+    timeout 8 ros2 service call /spectrometer_cell/request_reset \
+      std_srvs/srv/Trigger '{}' >"$LOG_DIR/startup_state_reset.log" 2>&1 &&
+    grep -q 'success=True' "$LOG_DIR/startup_state_reset.log"
+}
+
 cleanup_failed_attempt()
 {
   if [[ "$KEEP_RUNNING_ON_FAILURE" -eq 1 ]]; then
@@ -278,6 +297,9 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
           fi
         fi
       fi
+    fi
+    if (( second % 5 == 0 )) && recover_empty_startup_error; then
+      echo "[start] recovered empty startup ERROR without restarting hardware"
     fi
     if [[ "$home_checked" -eq 1 ]] &&
       hmi_ready >>"$LOG_DIR/health_wait.log" 2>&1 &&

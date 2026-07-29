@@ -1950,7 +1950,7 @@ class WebHmiNode(Node):
         return future.result()
 
     def _call_service_request(self, client, request, service_name, timeout_sec=10.0):
-        if not client.wait_for_service(timeout_sec=2.0):
+        if not client.service_is_ready() and not client.wait_for_service(timeout_sec=2.0):
             return None, f'ROS service not ready: {service_name}'
         try:
             return self._wait_future(client.call_async(request), timeout_sec), ''
@@ -2120,6 +2120,7 @@ class WebHmiNode(Node):
             self._debug_operation_lock.release()
 
     def _stage_and_execute_jog(self, deltas, absolute_target=None):
+        started = time.monotonic()
         request = StageJog.Request()
         request.delta_x_m, request.delta_y_m, request.delta_z_m = deltas[:3]
         request.delta_roll_rad, request.delta_pitch_rad, request.delta_yaw_rad = deltas[3:]
@@ -2132,9 +2133,12 @@ class WebHmiNode(Node):
             request.absolute_target_rpy_rad = list(absolute_target[1])
         response, error = self._call_service_request(
             self.stage_jog_client, request, '/motion/stage_jog', timeout_sec=20.0)
+        stage_elapsed = time.monotonic() - started
         if not response or not response.success:
             return {'success': False, 'message': error or response.message}
         result = self._execute_motion_route(response.route_name, speed_scale=1.0, timeout_sec=30.0)
+        result['stage_elapsed_sec'] = stage_elapsed
+        result['execute_elapsed_sec'] = time.monotonic() - started - stage_elapsed
         result['target_xyz_m'] = list(response.target_xyz_m)
         result['target_rpy_rad'] = list(response.target_rpy_rad)
         return result
@@ -2174,13 +2178,14 @@ class WebHmiNode(Node):
                     'success': False,
                     'message': 'rotation step must be between 0.1 and 10 degrees',
                 }
-            start_xyz, start_rpy = self._settled_tool_pose()
+            start_xyz, start_rpy = self._fresh_tool_pose()
             target_xyz, target_rpy = cartesian_pose_target(
                 start_xyz, start_rpy, deltas)
             with self._debug_lock:
                 self._debug.update(phase='jogging', last_message='正在执行点动')
             return self._execute_debug_target(
-                start_xyz, start_rpy, target_xyz, target_rpy, deltas)
+                start_xyz, start_rpy, target_xyz, target_rpy, deltas,
+                max_corrections=0)
         except Exception as exc:
             with self._debug_lock:
                 self._debug.update(phase='error', last_message=f'点动失败: {exc}')
@@ -2227,7 +2232,8 @@ class WebHmiNode(Node):
             self._debug_operation_lock.release()
 
     def _execute_debug_target(
-            self, start_xyz, start_rpy, target_xyz, target_rpy, requested_delta):
+            self, start_xyz, start_rpy, target_xyz, target_rpy, requested_delta,
+            max_corrections=2):
         translation_distance = math.sqrt(sum(value * value for value in requested_delta[:3]))
         rotation_distance = rpy_orientation_error(start_rpy, target_rpy)
         if translation_distance > 0.0205:
@@ -2264,7 +2270,11 @@ class WebHmiNode(Node):
             raise RuntimeError(result.get('message', 'Cartesian motion failed'))
         commanded_xyz = list(result['target_xyz_m'])
         commanded_rpy = list(result['target_rpy_rad'])
-        measured_xyz, measured_rpy = self._settled_tool_pose()
+        if max_corrections:
+            measured_xyz, measured_rpy = self._settled_tool_pose()
+        else:
+            time.sleep(0.05)
+            measured_xyz, measured_rpy = self._fresh_tool_pose()
         position_error = math.sqrt(sum(
             (target - measured) ** 2
             for measured, target in zip(measured_xyz, target_xyz)))
@@ -2279,11 +2289,14 @@ class WebHmiNode(Node):
                 for measured, target in zip(measured_xyz, target_xyz)],
         }]
 
-        for _ in range(8):
+        for _ in range(max_corrections):
             if (
                     position_error <= DEBUG_POSITION_TOLERANCE_M and
                     orientation_error <= math.radians(0.5)):
                 break
+            previous_normalized_error = max(
+                position_error / DEBUG_POSITION_TOLERANCE_M,
+                orientation_error / math.radians(0.5))
             correction = cartesian_pose_delta(
                 measured_xyz, measured_rpy, target_xyz, target_rpy)
             if position_error > DEBUG_POSITION_TOLERANCE_M:
@@ -2326,6 +2339,12 @@ class WebHmiNode(Node):
                     target - measured
                     for measured, target in zip(measured_xyz, target_xyz)],
             })
+            normalized_error = max(
+                position_error / DEBUG_POSITION_TOLERANCE_M,
+                orientation_error / math.radians(0.5))
+            if normalized_error >= previous_normalized_error:
+                convergence_stopped = True
+                break
 
         within_tolerance = (
             position_error <= DEBUG_POSITION_TOLERANCE_M and
@@ -2390,8 +2409,8 @@ class WebHmiNode(Node):
         while time.monotonic() < deadline:
             xyz, rpy = self._fresh_tool_pose()
             samples.append((xyz, rpy))
-            samples = samples[-6:]
-            if len(samples) == 6:
+            samples = samples[-4:]
+            if len(samples) == 4:
                 position_span = max(
                     max(sample[0][axis] for sample in samples) -
                     min(sample[0][axis] for sample in samples)
@@ -2405,7 +2424,7 @@ class WebHmiNode(Node):
                         for axis in range(3)
                     ]
                     return averaged_xyz, samples[-1][1]
-            time.sleep(0.2)
+            time.sleep(0.05)
         raise ValueError('TCP is still settling; wait a moment and retry')
 
     def save_debug_point(self):

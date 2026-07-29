@@ -216,7 +216,7 @@ def test_direct_coordinate_move_accepts_current_pose_without_motion():
     assert node._debug['phase'] == 'ready'
 
 
-def test_debug_target_corrects_submillimeter_residual():
+def test_debug_target_corrects_residual_once_when_it_converges():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_lock = threading.Lock()
     node._debug = {
@@ -225,8 +225,7 @@ def test_debug_target_corrects_submillimeter_residual():
     }
     measured = iter([
         ([0.42, -0.08, 0.19025], [0.0, 0.0, 0.0]),
-        ([0.42, -0.08, 0.190], [0.0, 0.0, 0.0]),
-        ([0.42, -0.08, 0.191], [0.0, 0.0, 0.0]),
+        ([0.42, -0.08, 0.1907], [0.0, 0.0, 0.0]),
     ])
     node._settled_tool_pose = lambda: next(measured)
     node._stage_and_execute_jog = lambda _delta, target: {
@@ -243,8 +242,38 @@ def test_debug_target_corrects_submillimeter_residual():
         [0.0, 0.0, 0.001, 0.0, 0.0, 0.0],
     )
 
-    assert result['correction_count'] == 2
+    assert result['correction_count'] == 1
     assert result['within_step_tolerance'] is True
+
+
+def test_debug_target_stops_correction_when_error_gets_worse():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'commanded_pose': {'xyz': [0.42, -0.08, 0.19], 'rpy': [0.0, 0.0, 0.0]},
+        'history': [],
+    }
+    measured = iter([
+        ([0.42, -0.08, 0.19025], [0.0, 0.0, 0.0]),
+        ([0.42, -0.08, 0.1900], [0.0, 0.0, 0.0]),
+    ])
+    node._settled_tool_pose = lambda: next(measured)
+    node._stage_and_execute_jog = lambda _delta, target: {
+        'success': True,
+        'target_xyz_m': list(target[0]),
+        'target_rpy_rad': list(target[1]),
+    }
+
+    result = node._execute_debug_target(
+        [0.42, -0.08, 0.19],
+        [0.0, 0.0, 0.0],
+        [0.42, -0.08, 0.191],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.001, 0.0, 0.0, 0.0],
+    )
+
+    assert result['correction_count'] == 1
+    assert result['convergence_stopped'] is True
 
 
 def test_debug_jog_rejects_unrepeatable_one_millimeter_step():
@@ -261,6 +290,27 @@ def test_debug_jog_rejects_unrepeatable_one_millimeter_step():
 
     assert result['success'] is False
     assert '2mm' in result['message']
+
+
+def test_debug_jog_executes_one_route_without_hidden_corrections():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': True, 'phase': 'ready'}
+    node._debug_require_paused = lambda: (True, 'ready')
+    node._fresh_tool_pose = lambda: ([0.42, -0.08, 0.19], [0.0, 0.0, 0.0])
+    calls = []
+    node._execute_debug_target = lambda *args, **kwargs: (
+        calls.append((args, kwargs)) or {'success': True})
+
+    result = node.debug_jog({
+        'translation_m': [0.002, 0.0, 0.0],
+        'rotation_rad': [0.0, 0.0, 0.0],
+    })
+
+    assert result['success'] is True
+    assert len(calls) == 1
+    assert calls[0][1]['max_corrections'] == 0
 
 
 def test_direct_coordinate_move_rejects_more_than_20mm():

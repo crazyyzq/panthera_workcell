@@ -1626,6 +1626,9 @@ class WebHmiNode(Node):
             'request_reset': self.declare_parameter(
                 'service_request_reset',
                 '/spectrometer_cell/request_reset').value,
+            'restart_cleaning_motor': self.declare_parameter(
+                'service_restart_cleaning_motor',
+                '/spectrometer_cell/restart_cleaning_motor').value,
             'manual_mode': self.declare_parameter(
                 'service_manual_mode',
                 '/spectrometer_cell/manual_mode').value,
@@ -3050,7 +3053,8 @@ class WebHmiNode(Node):
             return self.call_emergency_stop()
 
         if self._debug_session_active() and command not in (
-                'manual_mode', 'clear_estop', 'request_reset'):
+                'manual_mode', 'clear_estop', 'request_reset',
+                'restart_cleaning_motor'):
             return {
                 'success': False,
                 'message': 'production commands are locked during an active point-debug session',
@@ -3062,6 +3066,9 @@ class WebHmiNode(Node):
 
         if command in self.workflow_commands:
             return self.call_workflow(self.workflow_commands[command])
+
+        if command == 'restart_cleaning_motor':
+            return self.restart_cleaning_motor()
 
         if command not in self.command_clients:
             return {'success': False, 'message': f'unknown command: {command}'}
@@ -3103,6 +3110,36 @@ class WebHmiNode(Node):
             }
 
         return result_holder['result']
+
+    def restart_cleaning_motor(self):
+        result = self._call_trigger_client(
+            self.command_clients['restart_cleaning_motor'],
+            self.command_service_names['restart_cleaning_motor'],
+            timeout_sec=10.0)
+        if not result.get('success'):
+            return result
+
+        cell = self.state_store.snapshot().get('spectrometer_cell', {})
+        context = cell.get('context') or {}
+        empty_error = (
+            cell.get('state') == 'ERROR' and
+            not context.get('has_active_task') and
+            not context.get('cup_in_gripper') and
+            not context.get('spectrometer_occupied'))
+        if not empty_error:
+            return result
+
+        reset = self._call_trigger_client(
+            self.command_clients['request_reset'],
+            self.command_service_names['request_reset'],
+            timeout_sec=5.0)
+        return {
+            'success': bool(reset.get('success')),
+            'message': (
+                f"{result.get('message', 'cleaning motor restored')}; "
+                f"{reset.get('message', 'state reset failed')}"),
+            'service': result.get('service'),
+        }
 
     def external_command_authorized(self, supplied_token):
         required = str(self.external_command_token)

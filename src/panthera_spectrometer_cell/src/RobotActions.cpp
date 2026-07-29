@@ -2623,6 +2623,30 @@ ActionResult RobotActions::setBrush(bool enabled, double speed_percent)
   return setCleaningMotorDuty(enabled, duty, enabled ? "manual brush start/update" : "manual brush stop");
 }
 
+ActionResult RobotActions::restartCleaningMotor()
+{
+  {
+    std::lock_guard<std::mutex> lock(cleaning_motor_mutex_);
+    cleaning_motor_modbus_.reset();
+  }
+  const auto result = setCleaningMotor(false, "restart cleaning motor communication");
+  if (!result.success) {
+    return result;
+  }
+
+  // A missing brush drive fails initialize() before any arm/gripper client is
+  // created. Once power is restored, finish that same initialization in place.
+  if (!config_.simulation.enabled && !motion_client_ && !arm_) {
+    const auto initialize_result = initialize();
+    if (!initialize_result.success) {
+      return ActionResult::fail(
+        "cleaning motor communication restored, but robot interfaces failed to initialize: " +
+        initialize_result.message);
+    }
+  }
+  return ActionResult::ok("cleaning motor communication restored and stopped");
+}
+
 ActionResult RobotActions::setCleaningMotorDuty(
   bool enabled, int duty_permille, const std::string & label)
 {

@@ -151,6 +151,29 @@ int main(int argc, char ** argv)
     },
     rmw_qos_profile_services_default,
     debug_callback_group);
+  auto cleaning_motor_restart_service = node->create_service<std_srvs::srv::Trigger>(
+    "/spectrometer_cell/restart_cleaning_motor",
+    [robot, state_machine](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+      const auto state = state_machine->currentState();
+      if (state != panthera_spectrometer_cell::State::INIT &&
+        state != panthera_spectrometer_cell::State::IDLE &&
+        state != panthera_spectrometer_cell::State::WAIT_DISCHARGE &&
+        state != panthera_spectrometer_cell::State::PAUSED &&
+        state != panthera_spectrometer_cell::State::ERROR)
+      {
+        response->success = false;
+        response->message =
+          "cleaning motor restart requires INIT/IDLE/WAIT_DISCHARGE/PAUSED/ERROR state";
+        return;
+      }
+      const auto result = robot->restartCleaningMotor();
+      response->success = result.success;
+      response->message = result.message;
+    },
+    rmw_qos_profile_services_default,
+    debug_callback_group);
 
   auto stop_callback_group = node->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   auto stop_motion_service = node->create_service<std_srvs::srv::Trigger>(

@@ -360,7 +360,7 @@ function commandRule(command, services, state, context) {
   }
 
   if (latestSnapshot?.debug?.active &&
-      !['manual_mode', 'clear_estop', 'request_reset'].includes(command)) {
+      !['manual_mode', 'clear_estop', 'request_reset', 'restart_cleaning_motor'].includes(command)) {
     return {enabled: false, reason: '点位调试中，生产命令已锁定'};
   }
 
@@ -377,9 +377,13 @@ function commandRule(command, services, state, context) {
   }
 
   if (isError(state)) {
-    return command === 'request_reset'
-      ? {enabled: true, reason: '错误状态允许人工复位'}
-      : {enabled: false, reason: 'ERROR 中只允许复位'};
+    if (command === 'request_reset') {
+      return {enabled: true, reason: '错误状态允许人工复位'};
+    }
+    if (command === 'restart_cleaning_motor') {
+      return {enabled: true, reason: '清洁电机重新上电后，重连驱动并恢复空任务错误'};
+    }
+    return {enabled: false, reason: 'ERROR 中只允许复位或恢复清洁电机'};
   }
 
   if (command === 'clear_estop') {

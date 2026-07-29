@@ -46,6 +46,7 @@ public:
   ActionResult setSpeedScale(double scale);
   double speedScale() const;
   ActionResult setBrush(bool enabled, double speed_percent);
+  ActionResult restartCleaningMotor();
   ActionResult openGripper();
   ActionResult closeGripper();
 

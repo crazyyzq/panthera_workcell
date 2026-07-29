@@ -190,8 +190,14 @@ if [[ "$FORCE" -eq 0 && "$hardware_running" -eq 1 ]]; then
   fi
   if ! timeout 45 ros2 service call /spectrometer_cell/recover_home std_srvs/srv/Trigger '{}' \
     >"$LOG_DIR/recover_home.log" 2>&1 || ! grep -q 'success=True' "$LOG_DIR/recover_home.log"; then
-    echo "[stop] ERROR: explicit Home recovery failed; processes remain running"
-    exit 5
+    if motion_idle_and_settled &&
+      python3 "$WS/scripts/check_home.py" --timeout 5 --tolerance 0.05 \
+        >"$LOG_DIR/recover_home_fallback.log" 2>&1; then
+      echo "[stop] recovery service unavailable, but Motion Server is settled and original Home is encoder-verified"
+    else
+      echo "[stop] ERROR: explicit Home recovery failed and original Home was not verified; processes remain running"
+      exit 5
+    fi
   fi
   if ! python3 "$WS/scripts/check_home.py" --timeout 5 --tolerance 0.05 | tee "$LOG_DIR/home_check.log"; then
     echo "[stop] ERROR: commissioned Home was not verified; processes remain running"

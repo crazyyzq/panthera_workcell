@@ -5,8 +5,8 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- Current controller address: `172.20.10.2`. The Windows share is
-  `\\172.20.10.2\b1s_share\panthera_workcell_ws` and maps to the canonical
+- Current controller address: `192.168.137.186`. The Windows share is
+  `\\192.168.137.186\b1s_share\panthera_workcell_ws` and maps to the canonical
   workspace. Treat older `10.89.*`, `192.168.8.*`, and `192.168.137.*`
   addresses as stale.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
@@ -241,6 +241,13 @@ This file contains durable repository context and operating rules for future age
 - Brush motor commands must use verified Modbus replies, enable nonzero communication-loss
   braking through register `0x008e`, and fail closed during application initialization.
   Do not restore the removed raw ASCII `1`/`0` USB-serial protocol.
+- If the brush drive was not powered during startup, use
+  `/spectrometer_cell/restart_cleaning_motor`: it drops the stale Modbus object,
+  verifies a zero-speed reply, and completes the RobotActions initialization that
+  failed early. The HMI may automatically request state reset only when ERROR has
+  no active task, held cup, or occupied spectrometer. A guarded shutdown may bypass
+  the unavailable recovery service only when Motion Server is settled and fresh
+  encoders independently verify commissioned Home.
 
 ## Known high-risk issues in the pre-refactor baseline
 

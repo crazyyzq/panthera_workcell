@@ -151,6 +151,7 @@ Content-Type: application/json
 | `simulate_estop` | `/spectrometer_cell/simulate_estop` |
 | `clear_estop` | `/spectrometer_cell/clear_estop` |
 | `request_reset` | `/spectrometer_cell/request_reset` |
+| `restart_cleaning_motor` | `/spectrometer_cell/restart_cleaning_motor` |
 | `manual_mode` | `/spectrometer_cell/manual_mode` |
 | `auto_mode` | `/spectrometer_cell/auto_mode` |
 

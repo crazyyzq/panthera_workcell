@@ -81,6 +81,74 @@ def test_hmi_rejects_speed_outside_operator_range(scale):
     assert result['success'] is False
 
 
+def test_cleaning_motor_restart_resets_empty_error():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node.command_clients = {
+        'restart_cleaning_motor': object(),
+        'request_reset': object(),
+    }
+    node.command_service_names = {
+        'restart_cleaning_motor': '/spectrometer_cell/restart_cleaning_motor',
+        'request_reset': '/spectrometer_cell/request_reset',
+    }
+    node.state_store = SimpleNamespace(snapshot=lambda: {
+        'spectrometer_cell': {
+            'state': 'ERROR',
+            'context': {
+                'has_active_task': False,
+                'cup_in_gripper': False,
+                'spectrometer_occupied': False,
+            },
+        },
+    })
+    calls = []
+
+    def call(_client, service, timeout_sec):
+        calls.append((service, timeout_sec))
+        return {'success': True, 'message': f'{service} ok', 'service': service}
+
+    node._call_trigger_client = call
+
+    result = node.restart_cleaning_motor()
+
+    assert result['success'] is True
+    assert calls == [
+        ('/spectrometer_cell/restart_cleaning_motor', 10.0),
+        ('/spectrometer_cell/request_reset', 5.0),
+    ]
+
+
+def test_cleaning_motor_restart_preserves_active_cycle_error():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node.command_clients = {
+        'restart_cleaning_motor': object(),
+        'request_reset': object(),
+    }
+    node.command_service_names = {
+        'restart_cleaning_motor': '/spectrometer_cell/restart_cleaning_motor',
+        'request_reset': '/spectrometer_cell/request_reset',
+    }
+    node.state_store = SimpleNamespace(snapshot=lambda: {
+        'spectrometer_cell': {
+            'state': 'ERROR',
+            'context': {
+                'has_active_task': True,
+                'cup_in_gripper': True,
+                'spectrometer_occupied': False,
+            },
+        },
+    })
+    calls = []
+    node._call_trigger_client = lambda _client, service, timeout_sec: (
+        calls.append((service, timeout_sec)) or
+        {'success': True, 'message': 'motor restored', 'service': service})
+
+    result = node.restart_cleaning_motor()
+
+    assert result['success'] is True
+    assert calls == [('/spectrometer_cell/restart_cleaning_motor', 10.0)]
+
+
 def test_equivalent_rpy_representations_have_no_orientation_error():
     assert rpy_orientation_error(
         (0.0, 0.0, 0.0),

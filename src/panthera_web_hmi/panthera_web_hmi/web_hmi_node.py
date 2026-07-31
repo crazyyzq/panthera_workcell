@@ -2424,6 +2424,7 @@ class WebHmiNode(Node):
             xyz = [float(value) for value in commanded_pose['xyz']]
             rpy = [float(value) for value in commanded_pose['rpy']]
             old_xyz = [float(value) for value in point['pose']['xyz']]
+            old_rpy = [float(value) for value in point['pose']['rpy']]
             delta = [new - old for new, old in zip(xyz, old_xyz)]
             point['pose']['xyz'] = xyz
             point['pose']['rpy'] = rpy
@@ -2436,11 +2437,13 @@ class WebHmiNode(Node):
                     raise ValueError(f'invalid calibration follower: {follower}')
                 axes = str(follower.get('axes', ''))
                 follower_xyz = [float(value) for value in follower_point['pose']['xyz']]
+                follower_rpy = [float(value) for value in follower_point['pose']['rpy']]
                 for index, axis in enumerate('xyz'):
                     if axis in axes:
                         follower_xyz[index] += delta[index]
                 follower_point['pose']['xyz'] = follower_xyz
-                follower_point['pose']['rpy'] = list(rpy)
+                if rpy_orientation_error(follower_rpy, old_rpy) <= 0.02:
+                    follower_point['pose']['rpy'] = list(rpy)
                 pose_updates[follower['point']] = follower_point['pose']
             result = self.save_motion_catalog(
                 {'catalog': catalog},

@@ -347,6 +347,62 @@ def test_debug_exit_rewinds_successful_jogs_in_reverse_order():
     assert node._debug['history'] == []
 
 
+def test_debug_save_preserves_translation_follower_orientation():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'active': True,
+        'phase': 'ready',
+        'selected_point': 'clean_dump',
+        'commanded_pose': {
+            'xyz': [0.10, -0.34, 0.26],
+            'rpy': [0.1, 0.0, -1.57],
+        },
+    }
+    catalog = {
+        'points': {
+            'clean_dump': {
+                'pose': {'xyz': [0.09, -0.34, 0.25], 'rpy': [0.0, 0.0, -1.57]},
+            },
+            'clean_dump_pour': {
+                'pose': {'xyz': [0.09, -0.34, 0.25], 'rpy': [-2.5, 0.0, -1.57]},
+            },
+            'clean_dump_hover': {
+                'pose': {'xyz': [0.09, -0.34, 0.45], 'rpy': [0.0, 0.0, -1.57]},
+            },
+        },
+        'commissioning': {
+            'translation_followers': {
+                'clean_dump': [
+                    {'point': 'clean_dump_pour', 'axes': 'xyz'},
+                    {'point': 'clean_dump_hover', 'axes': 'xy'},
+                ],
+            },
+        },
+    }
+    node._debug_catalog_target = lambda _name: (
+        deepcopy(catalog), None,
+        deepcopy(catalog['points']['clean_dump']), None, None)
+    saved = {}
+
+    def save(body, **kwargs):
+        saved.update(body['catalog'])
+        return {'success': True, 'message': 'saved'}
+
+    node.save_motion_catalog = save
+
+    result = node.save_debug_point()
+
+    assert result['success'] is True
+    follower = saved['points']['clean_dump_pour']['pose']
+    assert follower['xyz'] == pytest.approx([0.10, -0.34, 0.26])
+    assert follower['rpy'] == pytest.approx([-2.5, 0.0, -1.57])
+    hover = saved['points']['clean_dump_hover']['pose']
+    assert hover['xyz'] == pytest.approx([0.10, -0.34, 0.45])
+    assert hover['rpy'] == pytest.approx([0.1, 0.0, -1.57])
+
+
 def test_debug_jog_executes_one_route_without_hidden_corrections():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_operation_lock = threading.Lock()

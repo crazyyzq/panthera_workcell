@@ -53,6 +53,7 @@ constexpr char kStagedJogPrefix[] = "__debug_jog_";
 constexpr double kTeachJogMinimumDurationSec = 0.45;
 constexpr double kTeachJogIkTimeoutSec = 0.02;
 constexpr int kTeachJogIkAttempts = 2;
+constexpr double kMeasuredJointLimitToleranceRad = 0.005;
 
 std::string defaultCatalogPath()
 {
@@ -541,7 +542,11 @@ private:
     ValidationResult result;
     {
       std::lock_guard<std::mutex> lock(compiler_mutex_);
-      result = compiler_->forwardKinematics(candidate, current, measured_pose);
+      result = compiler_->normalizeMeasuredJoints(
+        candidate, current, kMeasuredJointLimitToleranceRad);
+      if (result.success) {
+        result = compiler_->forwardKinematics(candidate, current, measured_pose);
+      }
     }
     if (!result.success) {
       response.success = false;

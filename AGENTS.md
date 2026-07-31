@@ -387,6 +387,19 @@ This file contains durable repository context and operating rules for future age
   enabled route, atomically replaces the real source path behind the install
   symlink, and reloads only on complete success. A compile/reload failure must
   restore the previous catalog.
+- Commissioning `translation_followers` follow only the explicitly declared XYZ
+  axes. A follower inherits a saved RPY only when its previous orientation
+  matched the tuned point; deliberately offset followers such as
+  `clean_dump_pour` and `clean_dump_shake_relief` must retain their flipped pour
+  orientation. This bug was physically regressed on 2026-07-31: a zero-delta
+  `clean_dump` save compiled and hot-reloaded all 71 routes successfully.
+- A measured start may exceed a URDF joint soft limit by at most `0.005 rad` due
+  to encoder quantization and MIT following error; commissioning jog staging may
+  clamp only that measured seed back to the limit before FK/IK. Catalog targets,
+  generated samples, and production trajectories remain strictly bounded. This
+  was physically validated at `brush_center` with measured J6 `-2.5007 rad`:
+  bidirectional 2 mm Z jogs succeeded, safe reverse-path exit returned Home, and
+  final maximum Home error was `0.004398 rad`.
 - The HMI deliberately exposes no motor-zero operation or relative-zero control.
   Absolute zero maintenance is performed with the vendor
   `ros2 run hightorque_robot 0_robot_set_zero` tool while production control is

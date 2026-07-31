@@ -47,6 +47,11 @@ public:
     const std::vector<double> & joints,
     PoseDefinition & output);
 
+  ValidationResult normalizeMeasuredJoints(
+    const MotionCatalog & catalog,
+    std::vector<double> & joints,
+    double tolerance_rad);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -1052,6 +1052,36 @@ ValidationResult TrajectoryCompiler::forwardKinematics(
   return ValidationResult::ok();
 }
 
+ValidationResult TrajectoryCompiler::normalizeMeasuredJoints(
+  const MotionCatalog & catalog,
+  std::vector<double> & joints,
+  double tolerance_rad)
+{
+  auto result = impl_->configure(catalog);
+  if (!result.success) {
+    return result;
+  }
+  if (joints.size() != catalog.joint_names.size() ||
+    !std::all_of(
+      joints.begin(), joints.end(),
+      [](double value) {return std::isfinite(value);}) ||
+    !std::isfinite(tolerance_rad) || tolerance_rad < 0.0)
+  {
+    return ValidationResult::fail("measured joints and tolerance must be valid");
+  }
+
+  moveit::core::RobotState state(impl_->model);
+  state.setToDefaultValues();
+  state.setJointGroupPositions(impl_->joint_group, joints);
+  state.update();
+  if (!state.satisfiesBounds(impl_->joint_group, tolerance_rad)) {
+    return ValidationResult::fail("measured joint state exceeds limit tolerance");
+  }
+  state.enforceBounds(impl_->joint_group);
+  state.copyJointGroupPositions(impl_->joint_group, joints);
+  return ValidationResult::ok();
+}
+
 ValidationResult TrajectoryCompiler::compileAll(
   const MotionCatalog & catalog,
   std::map<std::string, CompiledRoute> & output)

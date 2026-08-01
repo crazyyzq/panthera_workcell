@@ -185,12 +185,12 @@ class StressRunner(Node):
 
     def cycle(self):
         self.route('home_to_outlet_1_grasp_smooth')
-        self.grip(0.0)
+        self.grip(0.015)
         self.route('outlet_1_grasp_to_spectrometer_place_continuous')
         self.grip(0.05)
-        self.route('spectrometer_place_to_hover')
-        self.route('spectrometer_hover_to_pick')
-        self.grip(0.0)
+        self.route('spectrometer_place_to_wait')
+        self.route('spectrometer_wait_to_pick')
+        self.grip(0.015)
         self.route('spectrometer_pick_to_brush_entry_continuous')
         self.set_brush(True)
         self.route('brush_entry_to_center')

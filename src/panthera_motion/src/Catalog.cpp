@@ -244,6 +244,7 @@ MotionCatalog MotionCatalog::loadFromFile(const std::string & path)
         segment.acceleration_scale = finiteDouble(
           segment_node, "acceleration_scale", route.acceleration_scale, context);
       }
+      segment.stop_at_end = readBool(segment_node, "stop_at_end", false);
       segment.joint_step_rad = finiteDouble(
         segment_node, "joint_step_rad", catalog.defaults.joint_step_rad, context);
       segment.cartesian_step_m = finiteDouble(

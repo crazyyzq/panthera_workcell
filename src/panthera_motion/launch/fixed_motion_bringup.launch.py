@@ -80,7 +80,7 @@ def generate_launch_description():
             default_value=default_hardware_config),
         DeclareLaunchArgument(
             'control_mode',
-            default_value='mit_gravity_compensation'),
+            default_value='position_velocity'),
         DeclareLaunchArgument(
             'mit_kp',
             default_value='75.0,105.0,135.0,135.0,75.0,75.0'),

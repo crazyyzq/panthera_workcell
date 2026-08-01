@@ -20,6 +20,7 @@ const flowStates = [
 ];
 
 const flowLabels = {
+  STOPPED: '工作站已停止',
   INIT: '初始化',
   IDLE: '空闲',
   WAIT_DISCHARGE: '等待出料',
@@ -41,6 +42,7 @@ const flowLabels = {
 };
 
 const modeLabels = {
+  OFFLINE: '未启动',
   AUTO: '自动',
   MANUAL: '人工',
   PAUSED: '已暂停',
@@ -96,6 +98,7 @@ let lastCameraRefreshMs = 0;
 let estopClearAcknowledged = false;
 let speedScalePercent = 100;
 let speedScaleDirty = false;
+let controlModeDirty = false;
 let speedScalePendingPercent = null;
 let speedScalePendingUntilMs = 0;
 let motionCatalog = null;
@@ -223,13 +226,16 @@ function stateClass(state) {
   if (state === 'PAUSED' || state === 'WAIT_DISCHARGE' || state === 'WAIT_DETECTION_DONE') {
     return 'badge badge-warn';
   }
-  if (state && state !== 'UNKNOWN') {
+  if (state && state !== 'UNKNOWN' && state !== 'STOPPED') {
     return 'badge badge-ok';
   }
   return 'badge';
 }
 
 function deriveMode(context, state) {
+  if (state === 'STOPPED') {
+    return 'OFFLINE';
+  }
   if (state === 'ESTOP') {
     return 'ESTOP';
   }
@@ -443,6 +449,62 @@ function renderServices(services, state, context) {
     button.title = rule.reason || button.title || '';
     button.setAttribute('aria-disabled', String(button.disabled));
   });
+}
+
+function renderWorkcellControl(control = {}) {
+  const running = !!control.running;
+  const busy = !!control.busy;
+  const available = control.available !== false;
+  const status = $('workcellStatus');
+  if (status) {
+    const operationLabel = {
+      start: '启动',
+      stop: '安全停止',
+      restart: '安全重启',
+    }[control.operation] || '操作';
+    status.textContent = busy
+      ? `${operationLabel}中…`
+      : (running ? '工作站运行中' : '工作站已停止');
+    status.className = `pill ${busy ? 'pill-warn' : (running ? 'pill-ok' : 'pill-warn')}`;
+  }
+  const logHint = control.last_exit_code && control.last_log
+    ? `；日志：${control.last_log}`
+    : '';
+  setText('workcellMessage', `${control.message || 'HMI 常驻运行'}${logHint}`);
+  const modeSelect = $('controlModeSelect');
+  const activeMode = control.active_control_mode || '';
+  const selectedMode = control.selected_control_mode || 'position_velocity';
+  if (modeSelect) {
+    if (!controlModeDirty) {
+      modeSelect.value = selectedMode;
+    }
+    if (activeMode && modeSelect.value === activeMode) {
+      controlModeDirty = false;
+    }
+    modeSelect.disabled = busy;
+  }
+  const modeLabels = {
+    position_velocity: '速度位置模式',
+    mit_gravity_compensation: 'MIT 重力补偿模式',
+  };
+  setText(
+    'activeControlMode',
+    activeMode ? `当前：${modeLabels[activeMode] || activeMode}` : '当前：工作站未启动');
+  const start = $('startWorkcell');
+  const stop = $('stopWorkcell');
+  const restart = $('restartWorkcell');
+  if (start) {
+    start.disabled = !available || busy || running;
+    start.title = !available ? '工作站脚本不可用' : (running ? '工作站已经运行' : '启动全部生产服务');
+  }
+  if (stop) {
+    stop.disabled = !available || busy || !running;
+    stop.title = running ? '等待安全状态、回 Home 后停止生产服务' : '工作站已经停止';
+  }
+  if (restart) {
+    restart.disabled = !available || busy;
+    restart.title = '先安全停止并回 Home，再重新启动全部生产服务';
+  }
 }
 
 function setMotionCatalogResult(text, ok = true) {
@@ -1070,6 +1132,38 @@ async function postJson(path, body = {}) {
   return result;
 }
 
+async function runWorkcellOperation(action, button) {
+  const labels = {start: '启动', stop: '安全停止', restart: '安全重启'};
+  const confirmations = {
+    start: '确认机械臂和清洁电机已经上电、现场安全。现在启动全部工作站服务？',
+    stop: '系统会等待当前任务结束并将机械臂回到 Home，然后关闭生产服务；HMI 会继续运行。确认安全停止？',
+    restart: '系统会先安全回 Home 并关闭生产服务，再按所选控制模式完整重新启动。确认安全重启？',
+  };
+  if (!(await confirmAction(confirmations[action], `${labels[action]}工作站`))) {
+    return;
+  }
+  setButtonFeedback(button, 'loading');
+  try {
+    const controlMode = $('controlModeSelect')?.value || 'position_velocity';
+    const result = await postJson(
+      `/api/workcell/${action}`,
+      action === 'stop' ? {} : {control_mode: controlMode});
+    setText('workcellMessage', result.message || `${labels[action]}已受理`);
+    appendLog(`WORKCELL ${action}: ${result.message || '--'}`, 'log-ok');
+  } catch (error) {
+    setText('workcellMessage', String(error));
+    appendLog(`WORKCELL ${action}: ${error}`, 'log-error');
+    setButtonFeedback(button, 'failed');
+  } finally {
+    button?.classList.remove('loading');
+    try {
+      render(await fetchSnapshot());
+    } catch (_) {
+      // The always-on HMI refreshes operation state on the next poll.
+    }
+  }
+}
+
 async function runDebugRequest(path, body, button) {
   if (debugBusy) {
     return null;
@@ -1227,6 +1321,7 @@ function render(snapshot) {
   renderJoints(snapshot.joint_state || {});
   setText('jointAge', formatAge((snapshot.joint_state || {}).age_sec));
   renderServices(snapshot.services || {}, state, context);
+  renderWorkcellControl(snapshot.workcell_control || {});
   renderMotion(snapshot.motion || {}, snapshot.services || {});
   renderDebug(snapshot);
 }
@@ -1424,6 +1519,26 @@ async function restartCamera(button) {
 }
 
 function wireButtons() {
+  const controlModeSelect = $('controlModeSelect');
+  controlModeSelect?.addEventListener('change', () => {
+    controlModeDirty = true;
+    setText(
+      'workcellMessage',
+      '控制模式将在下一次启动或安全重启时生效；调试与生产共用该模式。');
+  });
+  const workcellButtons = {
+    start: $('startWorkcell'),
+    stop: $('stopWorkcell'),
+    restart: $('restartWorkcell'),
+  };
+  Object.entries(workcellButtons).forEach(([action, button]) => {
+    button?.addEventListener('click', () => {
+      if (!button.disabled) {
+        runWorkcellOperation(action, button);
+      }
+    });
+  });
+
   document.querySelectorAll('[data-page-target]').forEach((button) => {
     button.addEventListener('click', () => setActivePage(button.dataset.pageTarget));
   });

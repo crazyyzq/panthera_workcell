@@ -77,7 +77,6 @@ PROCESS_PATTERNS=(
   'fixed_motion_bringup\.launch\.py'
   'motion_server_node'
   'spectrometer_cell_node'
-  'web_hmi_node'
   'controller_manager/ros2_control_node'
   'robot_state_publisher'
   'static_transform_publisher'
@@ -90,6 +89,7 @@ PROCESS_PATTERNS=(
   'move_group'
   'gemini305_grasp_max\.launch\.py'
   'orbbec_camera'
+  'auto_recover_camera\.sh'
 )
 
 related_pids()
@@ -257,10 +257,9 @@ fi
 rm -f "$PID_FILE" "$RUNTIME_DIR"/*.pid
 rm -f "$RUNTIME_DIR/active_log"
 reset_ros2_daemon
-if ss -ltn 2>/dev/null | grep -qE "[:.]${HMI_PORT}[[:space:]]"; then
-  echo "[stop] ERROR: port ${HMI_PORT} is still listening"
-  exit 8
-fi
 
-echo "[stop] STOPPED Home=$HOME_STATUS brush=stop processes=clean"
+hmi_status=offline
+curl -fsS --max-time 2 "http://127.0.0.1:${HMI_PORT}/api/status" >/dev/null 2>&1 &&
+  hmi_status=online
+echo "[stop] STOPPED Home=$HOME_STATUS brush=stop processes=clean HMI=$hmi_status"
 [[ "$FOR_RESTART" -eq 1 ]] || echo "[stop] logs: $LOG_DIR"

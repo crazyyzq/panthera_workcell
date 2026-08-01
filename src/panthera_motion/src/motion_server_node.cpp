@@ -355,13 +355,18 @@ public:
         std::ostringstream out;
         out << "busy=" << (busy_.load() ? "true" : "false")
             << " controller=" << (controller_ok ? "ready" : "unavailable")
-            << " state=" << (state_ok ? "settled" : state_error);
+            << " state=" << (state_ok ? "settled" : state_error)
+            << " mode=" << (commissioning_only_.load() ? "commissioning_only" : "production");
         response->message = out.str();
       });
 
     std::string compile_message;
     if (!loadAndCompile(compile_message)) {
-      throw std::runtime_error(compile_message);
+      const std::string strict_error = compile_message;
+      if (!loadCommissioningCatalog(compile_message)) {
+        throw std::runtime_error(strict_error + "; " + compile_message);
+      }
+      RCLCPP_WARN(logger_, "%s; %s", strict_error.c_str(), compile_message.c_str());
     }
 
     RCLCPP_INFO(
@@ -457,6 +462,7 @@ private:
         catalog_ = std::move(candidate_catalog);
         compiled_routes_ = std::move(candidate_routes);
       }
+      commissioning_only_.store(false);
       message = result.message;
       RCLCPP_INFO(logger_, "%s", message.c_str());
       return true;
@@ -468,8 +474,66 @@ private:
     }
   }
 
+  bool loadCommissioningCatalog(std::string & message)
+  {
+    try {
+      MotionCatalog candidate_catalog = MotionCatalog::loadFromFile(catalog_file_);
+      std::map<std::string, CompiledRoute> candidate_routes;
+      std::vector<std::string> skipped;
+      for (const auto & item : candidate_catalog.routes) {
+        const auto & route = item.second;
+        const bool commissioning_route =
+          route.name.rfind("debug_", 0) == 0 ||
+          route.name == "home_to_safe_center" ||
+          route.name == "safe_center_to_home";
+        if (!route.enabled || !commissioning_route) {
+          continue;
+        }
+        CompiledRoute compiled;
+        ValidationResult result;
+        {
+          std::lock_guard<std::mutex> lock(compiler_mutex_);
+          result = compiler_->compileRoute(candidate_catalog, route, compiled);
+        }
+        if (!result.success) {
+          skipped.push_back(route.name + ": " + result.message);
+          continue;
+        }
+        candidate_routes.emplace(route.name, std::move(compiled));
+      }
+      if (candidate_routes.count("home_to_safe_center") == 0 ||
+        candidate_routes.count("safe_center_to_home") == 0)
+      {
+        message = "commissioning fallback rejected: Home/safe routes are unavailable";
+        return false;
+      }
+      {
+        std::lock_guard<std::mutex> lock(catalog_mutex_);
+        catalog_ = std::move(candidate_catalog);
+        compiled_routes_ = std::move(candidate_routes);
+      }
+      commissioning_only_.store(true);
+      std::ostringstream out;
+      out << "commissioning-only catalog loaded routes=" << compiled_routes_.size()
+          << " skipped=" << skipped.size();
+      if (!skipped.empty()) {
+        out << " first=" << skipped.front();
+      }
+      message = out.str();
+      return true;
+    } catch (const std::exception & error) {
+      message = std::string("commissioning fallback failed: ") + error.what();
+      return false;
+    }
+  }
+
   void stageJog(const StageJog::Request & request, StageJog::Response & response)
   {
+    if (commissioning_only_.load() && request.process_profile) {
+      response.success = false;
+      response.message = "production process moves are disabled until all routes compile";
+      return;
+    }
     const double max_translation_m =
       request.process_profile ? process_stage_max_translation_m_ : 0.021;
     constexpr double max_rotation_rad = 0.17453292519943295;
@@ -552,6 +616,30 @@ private:
       response.success = false;
       response.message = "cannot stage jog FK: " + result.message;
       return;
+    }
+
+    const bool relative_teach_jog =
+      !request.process_profile && !uses_catalog_point && !uses_catalog_route &&
+      !request.use_absolute_target;
+    std::vector<double> holding_offset(current.size(), 0.0);
+    if (relative_teach_jog) {
+      std::vector<double> commanded;
+      {
+        std::lock_guard<std::mutex> lock(commanded_state_mutex_);
+        commanded = last_commanded_joints_;
+      }
+      std::vector<double> holding_start;
+      result = selectHoldingCommandStart(
+        current, commanded, start_tolerance_rad_, holding_start);
+      if (!result.success) {
+        response.success = false;
+        response.message = "cannot preserve MIT holding command for single-axis jog: " +
+          result.message;
+        return;
+      }
+      for (std::size_t index = 0; index < current.size(); ++index) {
+        holding_offset[index] = holding_start[index] - current[index];
+      }
     }
 
     if (uses_catalog_route) {
@@ -825,6 +913,24 @@ private:
         compiled.duration_sec / kTeachJogMinimumDurationSec);
       compiled.duration_sec = trajectoryDurationSec(compiled.trajectory);
     }
+    if (relative_teach_jog) {
+      for (auto & point : compiled.trajectory.points) {
+        for (std::size_t index = 0; index < point.positions.size(); ++index) {
+          point.positions[index] += holding_offset[index];
+        }
+      }
+      {
+        std::lock_guard<std::mutex> lock(compiler_mutex_);
+        result = compiler_->validateTrajectoryStates(candidate, compiled.trajectory);
+      }
+      if (!result.success) {
+        response.success = false;
+        response.message = "holding-compensated jog validation failed: " + result.message;
+        return;
+      }
+      compiled.start_joints = compiled.trajectory.points.front().positions;
+      compiled.end_joints = compiled.trajectory.points.back().positions;
+    }
     double max_joint_delta = 0.0;
     for (std::size_t index = 0; index < compiled.start_joints.size(); ++index) {
       max_joint_delta = std::max(
@@ -856,8 +962,21 @@ private:
       "Cartesian process move validated and staged" :
       "Cartesian jog validated and staged";
     response.route_name = route_name;
-    response.target_xyz_m = goal.pose->xyz;
-    response.target_rpy_rad = goal.pose->rpy;
+    if (relative_teach_jog) {
+      const Eigen::Matrix3d base_delta =
+        (Eigen::AngleAxisd(request.delta_yaw_rad, Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(request.delta_pitch_rad, Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(request.delta_roll_rad, Eigen::Vector3d::UnitX()))
+        .toRotationMatrix();
+      response.target_xyz_m = {
+        measured_pose.xyz[0] + request.delta_x_m,
+        measured_pose.xyz[1] + request.delta_y_m,
+        measured_pose.xyz[2] + request.delta_z_m};
+      response.target_rpy_rad = matrixToRpy(base_delta * measured_rotation);
+    } else {
+      response.target_xyz_m = goal.pose->xyz;
+      response.target_rpy_rad = goal.pose->rpy;
+    }
   }
 
   rclcpp_action::GoalResponse handleGoal(
@@ -1513,6 +1632,7 @@ private:
   std::shared_ptr<GoalHandleController> controller_goal_;
   std::mutex controller_goal_mutex_;
   std::atomic_bool busy_{false};
+  std::atomic_bool commissioning_only_{false};
   std::atomic_bool cancel_requested_{false};
   std::atomic<double> speed_scale_{1.0};
   std::atomic<std::uint64_t> jog_sequence_{1};

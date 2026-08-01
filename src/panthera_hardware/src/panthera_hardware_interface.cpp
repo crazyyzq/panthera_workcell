@@ -1023,30 +1023,34 @@ hardware_interface::return_type PantheraHardwareInterface::write(
         arm_efforts[index], -arm_max_torques[index], arm_max_torques[index]);
     }
 
-    // The CAN bridge supports one packet mode at a time. The gripper is most
-    // reliable in its native pos/vel/max-torque mode, so send it first and
-    // always finish the cycle with the six-axis command below. Reversing this
-    // order leaves the arm without refreshed MIT commands and can drop joints.
-    if (info_.joints.size() > 6)
-    {
+    const auto send_gripper_command = [&]() {
+      if (info_.joints.size() <= 6) {
+        return true;
+      }
       const double gripper_pos_m = hw_commands_positions_[6];
       if (!std::isfinite(gripper_pos_m) || gripper_rad_to_m_ <= 0.0) {
         RCLCPP_ERROR_THROTTLE(
           rclcpp::get_logger("PantheraHardwareInterface"),
           throttle_clock_, 1000,
           "Rejected invalid gripper command or conversion factor");
-        return hardware_interface::return_type::ERROR;
+        return false;
       }
       const double gripper_pos_rad = gripper_pos_m / gripper_rad_to_m_;
       constexpr double kProtocolVelocityLimitRad = 50.0;
       const double gripper_vel_rad = std::clamp(
         max_velocities_[6] / gripper_rad_to_m_,
         0.0, kProtocolVelocityLimitRad);
-      if (!robot_->gripperControl(
-          gripper_pos_rad, gripper_vel_rad, max_torques_[6]))
-      {
-        return hardware_interface::return_type::ERROR;
-      }
+      return robot_->gripperControl(
+        gripper_pos_rad, gripper_vel_rad, max_torques_[6]);
+    };
+
+    // MIT-style packet modes must finish each bridge cycle with the six-axis
+    // command so the arm keeps holding. Position/velocity mode uses the proven
+    // pre-MIT order instead: arm first, gripper second. Sending the gripper
+    // first in that mode delayed the 100 Hz arm refresh and produced jitter.
+    const bool gripper_before_arm = control_mode_ != "position_velocity";
+    if (gripper_before_arm && !send_gripper_command()) {
+      return hardware_interface::return_type::ERROR;
     }
 
     // Control 6 arm joints. Never report a successful hardware cycle when the
@@ -1114,6 +1118,10 @@ hardware_interface::return_type PantheraHardwareInterface::write(
         rclcpp::get_logger("PantheraHardwareInterface"),
         throttle_clock_, 1000,
         "Vendor SDK rejected an arm command in control mode '%s'", control_mode_.c_str());
+      return hardware_interface::return_type::ERROR;
+    }
+
+    if (!gripper_before_arm && !send_gripper_command()) {
       return hardware_interface::return_type::ERROR;
     }
 

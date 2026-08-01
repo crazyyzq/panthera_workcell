@@ -668,6 +668,11 @@ struct TrajectoryCompiler::Impl
         "route '" + route.name + "' segment '" + segment.name + "': " + result.message);
     }
 
+    if (maximumJointDelta(current, target) <= 1e-8) {
+      current = target;
+      return ValidationResult::ok();
+    }
+
     const std::size_t steps = interpolationSteps(
       maximumJointDelta(current, target), segment.joint_step_rad);
     const std::vector<double> start = current;
@@ -767,6 +772,9 @@ struct TrajectoryCompiler::Impl
     }
 
     const double distance = (target_pose.translation() - start_pose.translation()).norm();
+    if (distance <= 1e-8 && orientation_distance <= 1e-8) {
+      return ValidationResult::ok();
+    }
     const std::size_t translation_steps = interpolationSteps(distance, segment.cartesian_step_m);
     const std::size_t rotation_steps = interpolationSteps(orientation_distance, 0.05);
     const std::size_t steps = std::max(translation_steps, rotation_steps);
@@ -872,6 +880,7 @@ struct TrajectoryCompiler::Impl
       std::size_t end_index;
       double velocity_scale;
       double acceleration_scale;
+      bool stop_at_end;
     };
     std::vector<SegmentProfile> profiles;
 
@@ -893,7 +902,8 @@ struct TrajectoryCompiler::Impl
           start_index,
           trajectory.getWayPointCount() - 1,
           segment.velocity_scale.value_or(route.velocity_scale),
-          segment.acceleration_scale.value_or(route.acceleration_scale)});
+          segment.acceleration_scale.value_or(route.acceleration_scale),
+          segment.stop_at_end});
     }
 
     if (trajectory.getWayPointCount() < 2) {
@@ -960,7 +970,12 @@ struct TrajectoryCompiler::Impl
       const double incoming = index == 0 ? interval_stretch[1] : interval_stretch[index];
       const double outgoing = index + 1 < interval_stretch.size() ?
         interval_stretch[index + 1] : incoming;
-      if (index == 0 || index + 1 == interval_stretch.size()) {
+      const bool explicit_stop = std::any_of(
+        profiles.begin(), profiles.end(),
+        [index](const SegmentProfile & profile) {
+          return profile.stop_at_end && profile.end_index == index;
+        });
+      if (index == 0 || index + 1 == interval_stretch.size() || explicit_stop) {
         std::fill(point.velocities.begin(), point.velocities.end(), 0.0);
         std::fill(point.accelerations.begin(), point.accelerations.end(), 0.0);
       } else {
@@ -1082,6 +1097,39 @@ ValidationResult TrajectoryCompiler::normalizeMeasuredJoints(
   return ValidationResult::ok();
 }
 
+ValidationResult TrajectoryCompiler::validateTrajectoryStates(
+  const MotionCatalog & catalog,
+  const trajectory_msgs::msg::JointTrajectory & trajectory)
+{
+  auto result = impl_->configure(catalog);
+  if (!result.success) {
+    return result;
+  }
+  if (trajectory.joint_names != catalog.joint_names || trajectory.points.empty()) {
+    return ValidationResult::fail("trajectory joint names or points are invalid");
+  }
+  moveit::core::RobotState state(impl_->model);
+  state.setToDefaultValues();
+  for (std::size_t index = 0; index < trajectory.points.size(); ++index) {
+    const auto & positions = trajectory.points[index].positions;
+    if (positions.size() != catalog.joint_names.size() ||
+      !std::all_of(
+        positions.begin(), positions.end(), [](double value) {
+          return std::isfinite(value);
+        }))
+    {
+      return ValidationResult::fail("trajectory position vector is invalid");
+    }
+    state.setJointGroupPositions(impl_->joint_group, positions);
+    result = impl_->checkState(
+      state, catalog, "trajectory state " + std::to_string(index));
+    if (!result.success) {
+      return result;
+    }
+  }
+  return ValidationResult::ok();
+}
+
 ValidationResult TrajectoryCompiler::compileAll(
   const MotionCatalog & catalog,
   std::map<std::string, CompiledRoute> & output)
@@ -1176,6 +1224,39 @@ double alignTrajectoryStart(
     }
   }
   return maximum_correction;
+}
+
+ValidationResult selectHoldingCommandStart(
+  const std::vector<double> & measured_positions,
+  const std::vector<double> & commanded_positions,
+  double maximum_error_rad,
+  std::vector<double> & output)
+{
+  if (measured_positions.empty() ||
+    measured_positions.size() != commanded_positions.size() ||
+    !std::isfinite(maximum_error_rad) || maximum_error_rad <= 0.0)
+  {
+    return ValidationResult::fail("holding command reference is unavailable");
+  }
+  double maximum_error = 0.0;
+  for (std::size_t index = 0; index < measured_positions.size(); ++index) {
+    if (!std::isfinite(measured_positions[index]) ||
+      !std::isfinite(commanded_positions[index]))
+    {
+      return ValidationResult::fail("holding command reference is not finite");
+    }
+    maximum_error = std::max(
+      maximum_error,
+      std::abs(measured_positions[index] - commanded_positions[index]));
+  }
+  if (maximum_error > maximum_error_rad) {
+    std::ostringstream message;
+    message << "holding command differs from measured state by " << maximum_error
+            << "rad (limit " << maximum_error_rad << "rad)";
+    return ValidationResult::fail(message.str());
+  }
+  output = commanded_positions;
+  return ValidationResult::ok();
 }
 
 trajectory_msgs::msg::JointTrajectory makeResumeTrajectory(

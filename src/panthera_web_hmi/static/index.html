@@ -106,6 +106,28 @@
         <span id="commandMode" class="muted">人工触发</span>
       </div>
 
+      <div class="command-section workcell-control-section">
+        <div class="section-title">工作站服务</div>
+        <div class="workcell-control-status">
+          <span id="workcellStatus" class="pill pill-warn">工作站状态检查中</span>
+          <span id="workcellMessage" class="muted">HMI 常驻运行</span>
+        </div>
+        <label class="workcell-mode-control">
+          <span>机械臂控制模式</span>
+          <select id="controlModeSelect">
+            <option value="position_velocity" selected>速度位置模式（默认）</option>
+            <option value="mit_gravity_compensation">MIT 重力补偿模式</option>
+          </select>
+          <small id="activeControlMode" class="muted">当前：工作站未启动</small>
+        </label>
+        <div class="button-grid">
+          <button id="startWorkcell" class="cmd primary" type="button">启动工作站</button>
+          <button id="stopWorkcell" class="cmd neutral" type="button">安全停止</button>
+          <button id="restartWorkcell" class="cmd warn" type="button">安全重启</button>
+        </div>
+        <div class="software-stop-note">安全停止会等待任务结束、回到 Home 并清理硬件进程；HMI 始终在线。</div>
+      </div>
+
       <div class="command-section safety-section">
         <div class="section-title">安全</div>
         <div class="estop-zone" id="estopZone">

@@ -18,11 +18,14 @@ LOG_ROOT="$WS/validation_logs"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="$LOG_ROOT/${STAMP}_start_workcell"
 PID_FILE="$RUNTIME_DIR/workcell.pid"
+MODE_FILE="$RUNTIME_DIR/workcell.control_mode"
 START_TIMEOUT_SEC="${START_TIMEOUT_SEC:-45}"
 START_ATTEMPTS="${START_ATTEMPTS:-2}"
 START_RETRY_DELAY_SEC="${START_RETRY_DELAY_SEC:-5}"
 SPEED_SCALE="${SPEED_SCALE:-1.0}"
+CONTROL_MODE="${CONTROL_MODE:-position_velocity}"
 HMI_PORT="${HMI_PORT:-8080}"
+CAMERA_AUTO_RECOVER="${CAMERA_AUTO_RECOVER:-1}"
 MIT_KP="${MIT_KP:-75.0,105.0,135.0,135.0,75.0,75.0}"
 MIT_KD="${MIT_KD:-5.5,5.5,5.5,5.5,5.5,5.5}"
 MIT_GRAVITY_SCALE="${MIT_GRAVITY_SCALE:-0.0,1.04,1.10,1.52,0.0,0.0}"
@@ -99,9 +102,29 @@ launcher_alive()
   [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 
+control_mode_matches()
+{
+  [[ -r "$MODE_FILE" ]] && [[ "$(<"$MODE_FILE")" == "$CONTROL_MODE" ]]
+}
+
 related_processes()
 {
-  pgrep -f 'fixed_spectrometer_cell\.launch\.py|motion_server_node|spectrometer_cell_node|web_hmi_node|ros2_control_node|laser_distance_node|panthera_task_framework.*application_bringup|workflow_executor_node|pose_tuner_node|move_group' || true
+  pgrep -f 'fixed_spectrometer_cell\.launch\.py|motion_server_node|spectrometer_cell_node|ros2_control_node|laser_distance_node|auto_recover_camera\.sh|panthera_task_framework.*application_bringup|workflow_executor_node|pose_tuner_node|move_group' || true
+}
+
+start_camera_recovery()
+{
+  [[ "$CAMERA_AUTO_RECOVER" == "1" ]] || return 0
+  local pid_file="$RUNTIME_DIR/camera_auto_recovery.pid"
+  if [[ -s "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+    echo "[start] camera auto-recovery is already running"
+    return 0
+  fi
+  nohup env WS="$WS" HMI_PORT="$HMI_PORT" \
+    bash "$WS/scripts/auto_recover_camera.sh" \
+    >"$LOG_DIR/camera_auto_recovery.log" 2>&1 < /dev/null 9>&- &
+  printf '%s\n' "$!" >"$pid_file"
+  echo "[start] camera auto-recovery started asynchronously"
 }
 
 controllers_ready()
@@ -151,11 +174,12 @@ names=joint.get("names", [])
 efforts=joint.get("efforts", [])
 age=joint.get("age_sec")
 by_name=dict(zip(names, efforts))
-# At the commissioned Home pose these gravity-loaded joints are well above
-# 6 Nm combined. A braked-but-readable SDK connection reports approximately
-# zero while every ROS controller still appears active.
+# A braked-but-readable SDK connection reports approximately zero while every
+# ROS controller still appears active. At the current all-zero Home, however,
+# the healthy measured sum can be only 0.2-0.4 Nm, so this is a liveness check
+# rather than a payload/gravity threshold.
 gravity_effort=sum(abs(float(by_name.get(name, 0.0))) for name in ("joint2", "joint3", "joint4"))
-ok=isinstance(age, (int, float)) and age < 1.0 and gravity_effort > 0.5
+ok=isinstance(age, (int, float)) and age < 1.0 and gravity_effort > 0.05
 print(f"joint_age={age} gravity_effort={gravity_effort:.3f}")
 raise SystemExit(0 if ok else 1)
 '
@@ -193,7 +217,7 @@ trap 'rc=$?; if [[ $rc -ne 0 ]]; then ln -sfn "$LOG_DIR" "$RUNTIME_DIR/latest_lo
 trap 'echo "[start] interrupted; performing guarded cleanup"; exit 130' INT
 trap 'echo "[start] terminated; performing guarded cleanup"; exit 143' HUP TERM
 
-echo "[start] preflight workspace=$WS speed=${SPEED_SCALE} hmi_port=${HMI_PORT}"
+echo "[start] preflight workspace=$WS speed=${SPEED_SCALE} control_mode=${CONTROL_MODE} hmi_port=${HMI_PORT}"
 [[ -r /opt/ros/humble/setup.bash ]] || fail "ROS 2 Humble is not installed"
 [[ -r "$WS/install/setup.bash" ]] || fail "workspace is not built; run colcon build first"
 [[ -r "$ROBOT_CONFIG" ]] || fail "robot hardware config is missing: $ROBOT_CONFIG"
@@ -215,6 +239,8 @@ chrt -f 50 true >/dev/null 2>&1 ||
 [[ -c /dev/ttyS8 && -r /dev/ttyS8 && -w /dev/ttyS8 ]] || fail "/dev/ttyS8 is missing or inaccessible"
 [[ -c /dev/ttyS4 && -r /dev/ttyS4 && -w /dev/ttyS4 ]] || fail "/dev/ttyS4 is missing or inaccessible"
 [[ "$SPEED_SCALE" =~ ^(0\.[0-9]+|1(\.0+)?)$ ]] || fail "SPEED_SCALE must be in (0,1]"
+[[ "$CONTROL_MODE" =~ ^(mit_gravity_compensation|position_velocity)$ ]] ||
+  fail "CONTROL_MODE must be mit_gravity_compensation or position_velocity"
 [[ "$HMI_PORT" =~ ^[0-9]+$ ]] || fail "HMI_PORT must be numeric"
 
 for package in panthera_hardware panthera_motion panthera_spectrometer_cell panthera_web_hmi; do
@@ -234,12 +260,13 @@ require_fresh_artifact \
   panthera_spectrometer_cell
 python3 "$WS/scripts/check_home.py" --self-test >/dev/null
 
-if launcher_alive && hmi_ready >/dev/null && motion_ready &&
+if launcher_alive && control_mode_matches && hmi_ready >/dev/null && motion_ready &&
   python3 "$WS/scripts/check_home.py" --timeout 3 --tolerance 0.05 >/dev/null 2>&1 &&
   actuators_holding >/dev/null; then
   [[ -L "$RUNTIME_DIR/active_log" ]] && ln -sfn "$(readlink -f "$RUNTIME_DIR/active_log")" "$RUNTIME_DIR/latest_log"
   echo "[start] workcell is already healthy (pid=$(cat "$PID_FILE"))"
   echo "[start] HMI: http://$(hostname -I | awk '{print $1}'):${HMI_PORT}"
+  start_camera_recovery
   exit 0
 fi
 
@@ -257,6 +284,7 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
   echo "[start] launch attempt $attempt/$START_ATTEMPTS"
   setsid --wait ros2 launch panthera_motion fixed_spectrometer_cell.launch.py \
     default_speed_scale:="$SPEED_SCALE" \
+    control_mode:="$CONTROL_MODE" \
     hardware_config_file:="$ROBOT_CONFIG" \
     cell_config_file:="$CELL_CONFIG" \
     mit_kp:="$MIT_KP" \
@@ -265,7 +293,7 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
     payload_mass_kg:="$PAYLOAD_MASS_KG" \
     payload_com_xyz_m:="$PAYLOAD_COM_XYZ_M" \
     payload_frame:="$PAYLOAD_FRAME" \
-    start_hardware:=true simulation:=false start_hmi:=true hmi_port:="$HMI_PORT" \
+    start_hardware:=true simulation:=false start_hmi:=false hmi_port:="$HMI_PORT" \
     >"$LOG_DIR/launch_attempt_${attempt}.log" 2>&1 < /dev/null 9>&- &
   launch_pid=$!
   printf '%s\n' "$launch_pid" >"$PID_FILE.tmp"
@@ -326,6 +354,9 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
       echo "[start] logs: $LOG_DIR"
       ln -sfn "$LOG_DIR" "$RUNTIME_DIR/active_log"
       ln -sfn "$LOG_DIR" "$RUNTIME_DIR/latest_log"
+      printf '%s\n' "$CONTROL_MODE" >"$MODE_FILE.tmp"
+      mv "$MODE_FILE.tmp" "$MODE_FILE"
+      start_camera_recovery
       trap - EXIT
       exit 0
     fi

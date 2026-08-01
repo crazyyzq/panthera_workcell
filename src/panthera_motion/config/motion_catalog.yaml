@@ -48,6 +48,8 @@ commissioning:
       axes: xyz
     - point: spectrometer_hover
       axes: xy
+    - point: spectrometer_sensor_hover_template
+      axes: xy
     spectrometer_pick:
     - point: spectrometer_prepick
       axes: xyz
@@ -61,6 +63,8 @@ commissioning:
     - point: clean_hover
       axes: xy
     - point: clean_dump_hover
+      axes: xy
+    - point: brush_clear_high
       axes: xy
     brush_center:
     - point: brush_entry
@@ -116,9 +120,9 @@ points:
       - -0.089945
       - 0.35
       rpy:
-      - -0.017043
-      - 0.038451
-      - 0.010248
+      - 0.0
+      - 0.0
+      - 0.0
     ik_seed: outlet_wait
     tags:
     - outlet
@@ -130,11 +134,11 @@ points:
       xyz:
       - 0.484046
       - -0.089945
-      - 0.201873
+      - 0.210
       rpy:
-      - -0.017043
-      - 0.038451
-      - 0.010248
+      - 0.0
+      - 0.0
+      - 0.0
     ik_seed: outlet_1_hover
     tags:
     - process
@@ -146,11 +150,11 @@ points:
       xyz:
       - 0.484046
       - -0.089945
-      - 0.211873
+      - 0.220
       rpy:
-      - -0.017043
-      - 0.038451
-      - 0.010248
+      - 0.0
+      - 0.0
+      - 0.0
     ik_seed: outlet_1_hover
     tags:
     - outlet
@@ -164,9 +168,9 @@ points:
       - 0.085769
       - 0.35
       rpy:
-      - -0.003107
-      - 0.053997
-      - 0.041148
+      - 0.00
+      - 0.00
+      - 0.00
     ik_seed: outlet_wait
     tags:
     - outlet
@@ -178,11 +182,11 @@ points:
       xyz:
       - 0.484102
       - 0.085769
-      - 0.202967
+      - 0.210
       rpy:
-      - -0.003107
-      - 0.053997
-      - 0.041148
+      - 0.00
+      - 0.00
+      - 0.00
     ik_seed: outlet_2_hover
     tags:
     - process
@@ -194,23 +198,23 @@ points:
       xyz:
       - 0.484102
       - 0.085769
-      - 0.212967
+      - 0.220
       rpy:
-      - -0.003107
-      - 0.053997
-      - 0.041148
+      - 0.00
+      - 0.00
+      - 0.00
     ik_seed: outlet_2_hover
     tags:
     - outlet
     - precision_approach
     - advanced
   spectrometer_hover:
-    description: 光谱仪工艺点正上方；放杯后直接在这里等待检测。
+    description: 光谱仪工艺点正上方的垂直进退点；不作为检测等待位。
     pose:
       xyz:
-      - 0.132
-      - 0.595
-      - 0.45
+      - 0.21600
+      - 0.48000
+      - 0.45000
       rpy:
       - 0.0
       - 0.0
@@ -220,13 +224,30 @@ points:
     - spectrometer
     - safety
     - advanced
+  spectrometer_wait:
+    description: 光谱仪检测期间的安全等待位；可独立示教，不改变取杯/放杯垂直点。
+    pose:
+      xyz:
+      - 0.21600
+      - 0.19000
+      - 0.45000
+      rpy:
+      - 0.0
+      - 0.0
+      - 1.5708
+    ik_seed: spectrometer_hover
+    tags:
+    - process
+    - spectrometer
+    - safety
+    - tunable
   spectrometer_sensor_hover_template:
     description: 激光偏置连续退杯路线的内部高位模板；不作为可调工艺点。
     pose:
       xyz:
-      - 0.132
-      - 0.595
-      - 0.45
+      - 0.21600
+      - 0.48000
+      - 0.45000
       rpy:
       - 0.0
       - 0.0
@@ -239,13 +260,13 @@ points:
     description: 光谱仪取杯点正上方；独立于放杯上方点，保证取杯垂直进出。
     pose:
       xyz:
-      - 0.131644
-      - 0.598167
+      - 0.21600
+      - 0.48000
       - 0.45
       rpy:
-      - -0.002968
-      - -0.00861
-      - 1.570615
+      - -0.006065
+      - 0.021503
+      - 1.567819
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
@@ -255,9 +276,9 @@ points:
     description: 固定工位光谱仪放杯点。
     pose:
       xyz:
-      - 0.132
-      - 0.595
-      - 0.33
+      - 0.21600
+      - 0.48000
+      - 0.32000
       rpy:
       - 0.0
       - 0.0
@@ -271,9 +292,9 @@ points:
     description: 光谱仪放杯点正上方10mm；最终精确放置的起点。
     pose:
       xyz:
-      - 0.132
-      - 0.595
-      - 0.34
+      - 0.21600
+      - 0.48000
+      - 0.33000
       rpy:
       - 0.0
       - 0.0
@@ -284,16 +305,16 @@ points:
     - precision_approach
     - advanced
   spectrometer_pick:
-    description: 光谱仪取杯点；比放杯点低10mm。
+    description: 光谱仪取杯点；比放杯点低3mm。
     pose:
       xyz:
-      - 0.131644
-      - 0.598167
-      - 0.330652
+      - 0.21600
+      - 0.48000
+      - 0.31700
       rpy:
-      - -0.002968
-      - -0.00861
-      - 1.570615
+      - -0.006065
+      - 0.021503
+      - 1.567819
     ik_seed: spectrometer_hover
     tags:
     - process
@@ -303,13 +324,13 @@ points:
     description: 光谱仪取杯点正上方10mm；最终精确夹取的起点。
     pose:
       xyz:
-      - 0.131644
-      - 0.598167
-      - 0.340652
+      - 0.21600
+      - 0.48000
+      - 0.32700
       rpy:
-      - -0.002968
-      - -0.00861
-      - 1.570615
+      - -0.006065
+      - 0.021503
+      - 1.567819
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
@@ -331,8 +352,8 @@ points:
     description: 清洗区域共享进退点。
     pose:
       xyz:
-      - 0.09126
-      - -0.34374
+      - -0.05874
+      - -0.39374
       - 0.45
       rpy:
       - 0.0
@@ -347,8 +368,8 @@ points:
     description: 新倒料点正上方200mm的垂直进退点。
     pose:
       xyz:
-      - 0.09126
-      - -0.34374
+      - -0.05874
+      - -0.39374
       - 0.45
       rpy:
       - 0.0
@@ -363,9 +384,9 @@ points:
     description: 杯子倒料工艺点。
     pose:
       xyz:
-      - 0.09126
-      - -0.34374
-      - 0.25
+      - -0.05874
+      - -0.39374
+      - 0.20500
       rpy:
       - 0.0
       - 0.0
@@ -379,9 +400,9 @@ points:
     description: 倒料点保持位置并将杯子转到已验证的负向倒料姿态。
     pose:
       xyz:
-      - 0.09126
-      - -0.34374
-      - 0.25
+      - -0.05874
+      - -0.39374
+      - 0.20500
       rpy:
       - -2.5
       - 0.0
@@ -395,9 +416,9 @@ points:
     description: 倒料限位回退0.4rad的单次抖料点。
     pose:
       xyz:
-      - 0.09126
-      - -0.34374
-      - 0.25
+      - -0.05874
+      - -0.39374
+      - 0.20500
       rpy:
       - -2.1
       - 0.0
@@ -408,12 +429,12 @@ points:
     - fixed_sequence
     - advanced
   brush_entry:
-    description: 倒料完成后保持姿态沿base_link正X移动150mm的毛刷入口。
+    description: 倒料完成后保持姿态沿base_link正X移动100mm的毛刷入口。
     pose:
       xyz:
-      - 0.24126
-      - -0.34374
-      - 0.25000
+      - 0.04126
+      - -0.39374
+      - 0.20500
       rpy:
       - -2.5
       - 0.0
@@ -427,8 +448,8 @@ points:
     description: 毛刷退出后在倒料点上方200mm的跨区返回点。
     pose:
       xyz:
-      - 0.09126
-      - -0.34374
+      - -0.05874
+      - -0.39374
       - 0.45000
       rpy:
       - 0.0
@@ -441,12 +462,12 @@ points:
     - safety
     - advanced
   brush_center:
-    description: 从正X偏置150mm入口沿翻腕后的杯口轴再套入100mm。
+    description: 从正X偏置100mm入口沿翻腕后的杯口轴再套入100mm。
     pose:
       xyz:
-      - 0.301107
-      - -0.343740
-      - 0.16988564
+      - 0.101107
+      - -0.393740
+      - 0.12488564
       rpy:
       - -2.5
       - 0.0
@@ -834,7 +855,7 @@ routes:
       to: spectrometer_hover
       velocity_scale: 0.85
       acceleration_scale: 0.85
-  spectrometer_place_to_hover:
+  spectrometer_place_to_wait:
     start: spectrometer_place
     segments:
     - name: precision_leave_after_place
@@ -853,7 +874,12 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
-  spectrometer_sensor_place_to_nominal_hover_template:
+    - name: enter_detection_wait
+      type: joint
+      to: spectrometer_wait
+      velocity_scale: 0.35
+      acceleration_scale: 0.30
+  spectrometer_sensor_place_to_wait:
     start: spectrometer_place
     segments:
     - name: precision_leave_adjusted_place
@@ -877,6 +903,11 @@ routes:
       to: spectrometer_hover
       velocity_scale: 0.35
       acceleration_scale: 0.30
+    - name: enter_detection_wait
+      type: joint
+      to: spectrometer_wait
+      velocity_scale: 0.35
+      acceleration_scale: 0.30
   spectrometer_hover_to_place:
     start: spectrometer_hover
     segments:
@@ -896,8 +927,8 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
-  spectrometer_hover_to_pick:
-    start: spectrometer_hover
+  spectrometer_wait_to_pick:
+    start: spectrometer_wait
     segments:
     - name: align_above_spectrometer_pick
       type: joint
@@ -971,6 +1002,7 @@ routes:
     - name: vertical_enter_dump
       type: linear
       to: clean_dump
+      stop_at_end: true
       velocity_scale: 1.00
       acceleration_scale: 1.00
       constraints:
@@ -1004,6 +1036,7 @@ routes:
     - name: vertical_enter_dump
       type: linear
       to: clean_dump
+      stop_at_end: true
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -1040,29 +1073,32 @@ routes:
     - name: vertical_enter_dump
       type: linear
       to: clean_dump
+      stop_at_end: true
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: rotate_wrist_to_pour
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.75
-      acceleration_scale: 0.55
+      velocity_scale: 0.40
+      acceleration_scale: 0.35
     - name: pour_shake_relief
       type: joint
       to: clean_dump_shake_relief
-      velocity_scale: 0.55
-      acceleration_scale: 0.45
+      velocity_scale: 0.40
+      acceleration_scale: 0.30
     - name: pour_shake_back
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.55
-      acceleration_scale: 0.45
-    - name: transfer_to_brush_entry
-      type: joint
+      velocity_scale: 0.40
+      acceleration_scale: 0.30
+    - name: translate_positive_x_100mm_to_brush_entry
+      type: linear
       to: brush_entry
       velocity_scale: 0.60
       acceleration_scale: 0.50
+      constraints:
+        keep_orientation: true
   spectrometer_pick_hover_to_brush_entry_smooth:
     start: spectrometer_pick_hover
     velocity_scale: 1.00
@@ -1074,41 +1110,44 @@ routes:
     - name: vertical_enter_dump
       type: linear
       to: clean_dump
+      stop_at_end: true
       constraints:
         vertical_axis: z
         keep_orientation: true
     - name: rotate_wrist_to_pour
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.75
-      acceleration_scale: 0.55
+      velocity_scale: 0.40
+      acceleration_scale: 0.35
     - name: pour_shake_relief
       type: joint
       to: clean_dump_shake_relief
-      velocity_scale: 0.55
-      acceleration_scale: 0.45
+      velocity_scale: 0.40
+      acceleration_scale: 0.30
     - name: pour_shake_back
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.55
-      acceleration_scale: 0.45
-    - name: transfer_to_brush_entry
-      type: joint
+      velocity_scale: 0.40
+      acceleration_scale: 0.30
+    - name: translate_positive_x_100mm_to_brush_entry
+      type: linear
       to: brush_entry
       velocity_scale: 0.60
       acceleration_scale: 0.50
+      constraints:
+        keep_orientation: true
   clean_dump_to_pour:
     start: clean_dump
-    velocity_scale: 1.00
-    acceleration_scale: 0.45
+    velocity_scale: 0.40
+    acceleration_scale: 0.35
     segments:
     - name: rotate_wrist_to_pour_limit
       type: joint
       to: clean_dump_pour
   clean_dump_pour_shake_once:
     start: clean_dump_pour
-    velocity_scale: 0.45
-    acceleration_scale: 0.45
+    velocity_scale: 0.40
+    acceleration_scale: 0.30
     segments:
     - name: shake_relief
       type: joint
@@ -1124,6 +1163,8 @@ routes:
     - name: return_wrist_upright_at_dump
       type: joint
       to: clean_dump
+      velocity_scale: 0.40
+      acceleration_scale: 0.35
     - name: vertical_leave_dump
       type: linear
       to: clean_hover
@@ -1135,7 +1176,7 @@ routes:
     velocity_scale: 0.60
     acceleration_scale: 0.50
     segments:
-    - name: offset_positive_x_150mm
+    - name: offset_positive_x_100mm
       type: linear
       to: brush_entry
       constraints:
@@ -1145,15 +1186,15 @@ routes:
     velocity_scale: 1.00
     acceleration_scale: 0.60
     segments:
-    - name: return_negative_x_150mm_to_dump
+    - name: return_negative_x_100mm_to_dump
       type: linear
       to: clean_dump_pour
       constraints:
         keep_orientation: true
   clean_dump_pour_to_clean_dump:
     start: clean_dump_pour
-    velocity_scale: 1.00
-    acceleration_scale: 0.45
+    velocity_scale: 0.40
+    acceleration_scale: 0.35
     segments:
     - name: return_wrist_upright_in_place
       type: joint
@@ -1194,7 +1235,7 @@ routes:
     velocity_scale: 0.75
     acceleration_scale: 0.65
     segments:
-    - name: return_negative_x_150mm_to_dump
+    - name: return_negative_x_100mm_to_dump
       type: linear
       to: clean_dump_pour
       constraints:
@@ -1238,7 +1279,7 @@ routes:
   brush_entry_to_clean_hover:
     start: brush_entry
     segments:
-    - name: return_negative_x_150mm_to_dump
+    - name: return_negative_x_100mm_to_dump
       type: linear
       to: clean_dump_pour
       velocity_scale: 1.00
@@ -1268,7 +1309,7 @@ routes:
       to: brush_entry
       constraints:
         keep_orientation: true
-    - name: return_negative_x_150mm_to_dump
+    - name: return_negative_x_100mm_to_dump
       type: linear
       to: clean_dump_pour
       constraints:
@@ -1525,7 +1566,7 @@ routes:
     velocity_scale: 1.00
     acceleration_scale: 1.00
     segments:
-    - name: return_negative_x_150mm_to_dump
+    - name: return_negative_x_100mm_to_dump
       type: linear
       to: clean_dump_pour
       velocity_scale: 1.00
@@ -1665,6 +1706,18 @@ routes:
     segments:
     - {name: leave_pick, type: linear, to: spectrometer_prepick, constraints: {vertical_axis: z, keep_orientation: true}}
     - {name: rise_from_spectrometer, type: linear, to: spectrometer_pick_hover, constraints: {vertical_axis: z, keep_orientation: true}}
+    - {name: return_debug_safe, type: joint, to: safe_joint_center}
+  debug_safe_to_spectrometer_wait:
+    start: safe_joint_center
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
+    - {name: enter_detection_wait, type: joint, to: spectrometer_wait}
+  debug_spectrometer_wait_to_safe:
+    start: spectrometer_wait
+    velocity_scale: 0.50
+    acceleration_scale: 0.35
+    segments:
     - {name: return_debug_safe, type: joint, to: safe_joint_center}
   debug_safe_to_clean_dump:
     start: safe_joint_center

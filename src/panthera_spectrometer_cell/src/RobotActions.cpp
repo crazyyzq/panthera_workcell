@@ -962,17 +962,17 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     }
     if (!sensor_adjusted) {
       return executeFixedRoute(
-        "spectrometer_place_to_hover",
-        "spectrometer_hover",
-        "fixed route leave spectrometer after place");
+        "spectrometer_place_to_wait",
+        "spectrometer_wait",
+        "fixed route enter spectrometer detection wait");
     }
     return stageAndExecuteProcessRoute(
-      "spectrometer_sensor_place_to_nominal_hover_template",
+      "spectrometer_sensor_place_to_wait",
       {"spectrometer_place", "spectrometer_preplace",
         "spectrometer_sensor_hover_template"},
       sensor_offset,
-      "spectrometer_hover",
-      "continuous leave laser-adjusted spectrometer place");
+      "spectrometer_wait",
+      "continuous enter laser-adjusted spectrometer detection wait");
   }
 
   PoseConfig target;
@@ -1034,12 +1034,12 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
       [](double value) {return std::abs(value) > 1e-6;});
     if (!sensor_adjusted) {
       result = executeFixedRoute(
-        "spectrometer_hover_to_pick",
+        "spectrometer_wait_to_pick",
         "spectrometer_pick",
         "fixed route pick from spectrometer");
     } else {
       result = stageAndExecuteProcessRoute(
-        "spectrometer_hover_to_pick",
+        "spectrometer_wait_to_pick",
         {"spectrometer_pick_hover", "spectrometer_prepick", "spectrometer_pick"},
         sensor_offset,
         "spectrometer_sensor_pick",

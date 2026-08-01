@@ -1,0 +1,23 @@
+[Unit]
+Description=Panthera always-on Web HMI
+After=local-fs.target network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=b1
+Group=b1
+WorkingDirectory=/home/b1/panthera_workcell_ws
+Environment=ROS_LOCALHOST_ONLY=1
+Environment=FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+Environment=RCUTILS_COLORIZED_OUTPUT=0
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source /home/b1/panthera_workcell_ws/install/setup.bash && exec /home/b1/panthera_workcell_ws/install/panthera_web_hmi/lib/panthera_web_hmi/web_hmi_node --ros-args -p host:=0.0.0.0 -p port:=8080 -p workcell_workspace:=/home/b1/panthera_workcell_ws'
+Restart=always
+RestartSec=2
+KillMode=process
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -52,6 +52,10 @@ public:
     std::vector<double> & joints,
     double tolerance_rad);
 
+  ValidationResult validateTrajectoryStates(
+    const MotionCatalog & catalog,
+    const trajectory_msgs::msg::JointTrajectory & trajectory);
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -64,6 +68,12 @@ trajectory_msgs::msg::JointTrajectory scaleTrajectory(
 double alignTrajectoryStart(
   trajectory_msgs::msg::JointTrajectory & trajectory,
   const std::vector<double> & current_positions);
+
+ValidationResult selectHoldingCommandStart(
+  const std::vector<double> & measured_positions,
+  const std::vector<double> & commanded_positions,
+  double maximum_error_rad,
+  std::vector<double> & output);
 
 trajectory_msgs::msg::JointTrajectory makeResumeTrajectory(
   const trajectory_msgs::msg::JointTrajectory & source,

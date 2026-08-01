@@ -1,6 +1,21 @@
 # Workcell Scripts
 
-## One-click start
+## Always-on HMI
+
+The Web HMI starts automatically with Ubuntu and remains available when the
+production workcell is stopped:
+
+```text
+http://192.168.137.186:8080
+```
+
+Use the **启动工作站**, **安全停止**, and **安全重启** buttons in the HMI.
+Operations are serialized, show live progress, and reuse the lifecycle scripts
+below. Safe stop returns the arm to Home and clears production processes without
+stopping the HMI. The boot service source is
+`config/system/panthera-hmi.service`.
+
+## Command-line fallback start
 
 ```bash
 cd /home/b1/panthera_workcell_ws
@@ -8,8 +23,9 @@ scripts/start_workcell.sh
 ```
 
 This starts the commissioned production chain only: MIT hardware, ros2_control,
-Motion Server, the fixed-cache spectrometer state machine, laser adapter, and the
-Web HMI. It does not start MoveGroup, the legacy workflow executor, pose tuner,
+Motion Server, the fixed-cache spectrometer state machine, and laser adapter.
+The HMI is a separate always-on service. Production does not start MoveGroup,
+the legacy workflow executor, pose tuner,
 or camera. Startup is idempotent and requires active controllers, a settled Motion
 Server, fresh encoder positions at the commissioned Home, and ready HMI services.
 Laser data is optional: fresh valid data applies the calibrated spectrometer Y
@@ -17,13 +33,7 @@ offset, while missing/stale data falls back to the canonical 150 mm position.
 Failed startup is retried only after a guarded cleanup; an unknown/non-Home pose
 is left powered and holding rather than being disabled.
 
-HMI default URL:
-
-```text
-http://192.168.137.186:8080
-```
-
-## One-click stop
+## Command-line fallback stop
 
 ```bash
 cd /home/b1/panthera_workcell_ws
@@ -35,6 +45,7 @@ Motion Server is idle and settled, verifies the original Home from fresh encoder
 sends an explicit brush/motion stop, terminates the owned launch process group,
 and removes any related legacy or production process left behind. It refuses to
 disable the arm from an unknown pose or while a cup is still in process.
+The always-on HMI is deliberately excluded from cleanup and remains accessible.
 
 Emergency maintenance shutdown without motion:
 

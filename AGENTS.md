@@ -38,10 +38,12 @@ This file contains durable repository context and operating rules for future age
   `300 rad/s^3`. Nearby process transitions use lower per-route scaling; the final
   10 mm pick/place segment remains at 40%. Do not restore the previous 4 rad/s^2
   acceleration profile, which produced visible overshoot.
-- The commissioned spectrometer pickup column is `x=0.600 m`, `y=-0.132 m`;
-  `spectrometer_pick`, `spectrometer_prepick`, and `spectrometer_pick_hover` must
-  keep the same x/y so pickup and lift remain vertical. Pickup z is `0.312 m`,
-  10 mm below the commissioned placement point.
+- The current spectrometer pick/place column is `x=0.216 m`, `y=0.480 m`;
+  `spectrometer_pick`, `spectrometer_place`, both 10 mm pre-approach points, both
+  high hover points, and the laser hover template must keep the same x/y so all
+  physical pick/place motion remains vertical. Pick and place are both at
+  `z=0.320 m`; their pre-approach points are at `z=0.330 m`. The independently
+  tunable detection wait point remains at `y=0.190 m` and must not move this column.
 - The arm controller is `joint_trajectory_controller/JointTrajectoryController` at 100 Hz.
 - Arm joints are `joint1` through `joint6`; gripper command joint is `L_finger_joint`; `R_finger_joint` is mimic/passive.
 - The controller exposes standard `FollowJointTrajectory` and can execute deterministic precompiled trajectories without MoveIt planning at production runtime.
@@ -50,6 +52,10 @@ This file contains durable repository context and operating rules for future age
   stop-and-correct loop. Absolute coordinate entry retains at most two bounded
   corrections because it is the precision-oriented path. Keep those interaction
   semantics distinct.
+- Button jog staging is relative to the freshly measured TCP and preserves the
+  current per-joint `last_commanded - measured` MIT holding offset across every
+  waypoint. It must fail closed if that holding reference is missing, non-finite,
+  outside the start envelope, or makes any shifted state invalid/colliding.
 - `TrajectoryCompiler::configure()` must retain its `PlanningScene` while the
   robot joint group is unchanged. Rebuilding the full MoveIt scene once for FK
   and again for every short jog caused random 3.9-4.2 s staging stalls. After
@@ -149,8 +155,9 @@ This file contains durable repository context and operating rules for future age
   Provisional measured process coordinates are outlet1
   `(0.46853,-0.095,0.190)m`, outlet2 `(0.46853,0.085,0.190)m`, and dump
   `(0.09126,-0.34374,0.250)m`. Dump z=0.250 m is an intentionally raised
-  commissioning value, not final calibration. The transformed spectrometer pickup
-  column is `(0.132,0.600)m`.
+  commissioning value, not final calibration. The former transformed spectrometer
+  pickup column `(0.132,0.600)m` is obsolete; the current commissioned column is
+  `(0.216,0.480)m`.
 - The revised cleaning branch keeps the gripper pointing toward base `-Y`
   (yaw `-1.5708 rad`) and uses pour roll `-2.5 rad`. After pouring at
   `(0.09126,-0.34374,0.250)m`, move in a straight line along base `+X` by 150 mm
@@ -430,6 +437,20 @@ This file contains durable repository context and operating rules for future age
   0.490 mm/0.360 degrees. If bounded correction exhausts while
   `within_step_tolerance` is false, the API and browser must not present the
   command as an ordinary green success merely because the trajectory executed.
+- A 2026-08-01 clean-dump retest after later station/catalog edits found that the
+  command target remained mathematically single-axis but physical `+Y` motion
+  showed load/backlash coupling: a 5 mm request produced about 3.76 mm Y and
+  2.13 mm orthogonal drift even with the joint holding offset. Absolute bounded
+  correction reduced the endpoint error to about 0.85-1.11 mm but did not make
+  the physical path single-axis. Do not claim the XY jog issue fixed or hide it
+  by increasing the minimum step. The arm was returned to encoder-confirmed Home
+  and stopped; the next powered session must diagnose/validate a Cartesian outer
+  loop or controller-level compensation at `clean_dump` only.
+- `spectrometer_wait` is the independently tunable detection safety point.
+  `spectrometer_hover` remains the vertical process clearance above pick/place;
+  place routes lift vertically before entering the wait point, and pick routes
+  leave the wait point before descending. Never make wait-point tuning silently
+  move the physical pick/place column.
 
 ## Build and validation
 
@@ -541,6 +562,28 @@ fallback. Camera startup is also optional and excluded from READY. Never restore
 the legacy MoveIt/workflow startup chain to
 these production scripts. `--force` is an explicit maintenance escape hatch,
 not a normal shutdown path.
+- `scripts/auto_recover_camera.sh` is the single camera watchdog. Start launches
+  it asynchronously after READY without inheriting the lifecycle flock. It checks
+  fresh HMI RGB telemetry every 5 seconds, restarts only after three consecutive
+  failures, retries at most three times per incident, and backs off 300 seconds
+  when the optional camera is absent. Stop must terminate the watchdog. Camera
+  failure or recovery exhaustion must never change workcell READY or arm state.
+- The production Web HMI is an always-on systemd service sourced from
+  `config/system/panthera-hmi.service`, enabled as `panthera-hmi.service` and
+  served on port 8080. It starts at Ubuntu boot and is deliberately outside the
+  workcell launch group. Production launch uses `start_hmi:=false`; start/stop
+  process matching must never include `web_hmi_node`, and a successful workcell
+  stop must leave the HMI accessible.
+- HMI endpoints `POST /api/workcell/start`, `/stop`, and `/restart` invoke the
+  existing lifecycle scripts as the sole implementation of those operations.
+  The HMI owns one child-process handle, rejects concurrent clicks with HTTP 409,
+  exposes progress/exit code/log path in `/api/status`, and stays responsive while
+  the script runs. Do not duplicate Home recovery or process cleanup in the HMI.
+- The HMI systemd unit must execute the installed `web_hmi_node` directly after
+  sourcing ROS, not through a lingering `ros2 run` wrapper. Keep
+  `LimitRTPRIO=99`, `LimitMEMLOCK=infinity`, and `KillMode=process`: lifecycle
+  scripts launched from the HMI need the commissioned realtime limits, while an
+  HMI-only restart must not terminate a healthy workcell launch group.
 - Both lifecycle scripts may be invoked normally or with shell `source`/`.`.
   A sourced invocation must immediately delegate to an isolated Bash process
   before setting traps, redirecting file descriptors, acquiring locks, or

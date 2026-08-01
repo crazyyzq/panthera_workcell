@@ -1333,6 +1333,9 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path not in (
             '/api/command',
+            '/api/workcell/start',
+            '/api/workcell/stop',
+            '/api/workcell/restart',
             '/api/speed_scale',
             '/api/camera/restart',
             '/api/point_config',
@@ -1369,6 +1372,11 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             self._send_json({'success': False, 'message': 'json body must be an object'}, status=400)
             return
 
+        if parsed.path.startswith('/api/workcell/'):
+            action = parsed.path.rsplit('/', 1)[-1]
+            result = self.server.bridge_node.request_workcell_operation(action, body)
+            self._send_json(result, status=202 if result.get('success') else 409)
+            return
         if parsed.path == '/api/external/command':
             if not self.server.bridge_node.external_command_authorized(
                     self.headers.get('X-Panthera-Token', '')):
@@ -1508,6 +1516,23 @@ class WebHmiNode(Node):
     def __init__(self):
         super().__init__('panthera_web_hmi')
         self.state_store = HmiStateStore()
+
+        default_workspace = os.path.join(
+            os.path.expanduser('~'), 'panthera_workcell_ws')
+        self.workcell_workspace = self.declare_parameter(
+            'workcell_workspace', default_workspace).value
+        self._workcell_control_lock = threading.Lock()
+        self._workcell_process = None
+        self._workcell_control = {
+            'busy': False,
+            'operation': '',
+            'message': 'HMI 常驻服务已就绪',
+            'last_exit_code': None,
+            'last_log': '',
+            'started_at': None,
+            'completed_at': None,
+            'control_mode': 'position_velocity',
+        }
 
         self.host = self.declare_parameter('host', '0.0.0.0').value
         self.port = int(self.declare_parameter('port', 8080).value)
@@ -1716,6 +1741,7 @@ class WebHmiNode(Node):
             'dirty': False,
             'history': [],
             'commanded_pose': None,
+            'target_reached': False,
             'last_message': '',
             'brush_enabled': False,
             'brush_speed_percent': 50.0,
@@ -1915,7 +1941,151 @@ class WebHmiNode(Node):
         data = self.state_store.snapshot()
         data['camera']['debug'] = self.camera_store.stats()
         data['debug'] = self.debug_snapshot()
+        control = self.workcell_control_snapshot()
+        data['workcell_control'] = control
+        if not control['running'] and not control['busy']:
+            data['spectrometer_cell']['state'] = 'STOPPED'
         return data
+
+    def _workcell_launcher_running(self):
+        pid_path = os.path.join(self.workcell_workspace, '.runtime', 'workcell.pid')
+        try:
+            with open(pid_path, 'r', encoding='utf-8') as stream:
+                pid = int(stream.read().strip())
+            os.kill(pid, 0)
+            return True, pid
+        except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, OSError):
+            return False, None
+
+    def workcell_control_snapshot(self):
+        with self._workcell_control_lock:
+            self._refresh_workcell_operation_locked()
+            result = dict(self._workcell_control)
+        result['running'], result['pid'] = self._workcell_launcher_running()
+        result['active_control_mode'] = ''
+        if result['running']:
+            mode_path = os.path.join(
+                self.workcell_workspace, '.runtime', 'workcell.control_mode')
+            try:
+                with open(mode_path, 'r', encoding='utf-8') as stream:
+                    active_mode = stream.read().strip()
+                if active_mode in ('position_velocity', 'mit_gravity_compensation'):
+                    result['active_control_mode'] = active_mode
+            except OSError:
+                pass
+        result['selected_control_mode'] = result.get(
+            'control_mode', 'position_velocity')
+        scripts_dir = os.path.join(self.workcell_workspace, 'scripts')
+        result['available'] = all(
+            os.path.isfile(os.path.join(scripts_dir, name))
+            for name in (
+                'start_workcell.sh', 'stop_workcell.sh', 'restart_workcell.sh'))
+        return result
+
+    def request_workcell_operation(self, action, body=None):
+        if action not in ('start', 'stop', 'restart'):
+            return {'success': False, 'message': f'不支持的工作站操作: {action}'}
+        body = body or {}
+        control_mode = str(body.get(
+            'control_mode',
+            self._workcell_control.get('control_mode', 'position_velocity'))).strip()
+        if action in ('start', 'restart') and control_mode not in (
+                'position_velocity', 'mit_gravity_compensation'):
+            return {'success': False, 'message': '不支持的机械臂控制模式'}
+        scripts_dir = os.path.join(self.workcell_workspace, 'scripts')
+        missing = [
+            name for name in (
+                'start_workcell.sh', 'stop_workcell.sh', 'restart_workcell.sh')
+            if not os.path.isfile(os.path.join(scripts_dir, name))
+        ]
+        if missing:
+            return {
+                'success': False,
+                'message': f'工作站脚本不存在: {", ".join(missing)}',
+            }
+        with self._workcell_control_lock:
+            self._refresh_workcell_operation_locked()
+            if self._workcell_control['busy']:
+                current = self._workcell_control['operation']
+                return {'success': False, 'message': f'正在执行 {current}，请勿重复操作'}
+            stamp = time.strftime('%Y%m%d_%H%M%S')
+            log_dir = os.path.join(
+                self.workcell_workspace, 'validation_logs', f'{stamp}_hmi_{action}')
+            log_path = os.path.join(log_dir, 'operation.log')
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                stream = open(log_path, 'a', encoding='utf-8')
+                command = [
+                    '/usr/bin/bash',
+                    os.path.join(scripts_dir, f'{action}_workcell.sh'),
+                ]
+                stream.write(f'$ {" ".join(command)}\n')
+                stream.flush()
+                env = os.environ.copy()
+                env['WS'] = self.workcell_workspace
+                if action in ('start', 'restart'):
+                    env['CONTROL_MODE'] = control_mode
+                self._workcell_process = subprocess.Popen(
+                    command,
+                    cwd=self.workcell_workspace,
+                    env=env,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                stream.close()
+            except Exception as exc:
+                try:
+                    stream.close()
+                except (NameError, OSError):
+                    pass
+                self._workcell_process = None
+                return {
+                    'success': False,
+                    'message': f'{self._workcell_action_label(action)}无法启动: {exc}',
+                }
+            self._workcell_control.update({
+                'busy': True,
+                'operation': action,
+                'message': f'正在{self._workcell_action_label(action)}…',
+                'last_exit_code': None,
+                'last_log': log_path,
+                'started_at': time.time(),
+                'completed_at': None,
+                'control_mode': control_mode,
+            })
+        return {
+            'success': True,
+            'accepted': True,
+            'operation': action,
+            'control_mode': control_mode,
+            'message': f'已开始{self._workcell_action_label(action)}',
+        }
+
+    @staticmethod
+    def _workcell_action_label(action):
+        return {'start': '启动', 'stop': '安全停止', 'restart': '安全重启'}[action]
+
+    def _refresh_workcell_operation_locked(self):
+        if self._workcell_process is None:
+            return
+        exit_code = self._workcell_process.poll()
+        if exit_code is None:
+            return
+        action = self._workcell_control['operation']
+        if exit_code == 0:
+            message = f'{self._workcell_action_label(action)}完成'
+        else:
+            message = (
+                f'{self._workcell_action_label(action)}失败（退出码 {exit_code}），'
+                '机械臂保持当前安全状态，请查看操作日志')
+        self._workcell_control.update({
+            'busy': False,
+            'message': message,
+            'last_exit_code': exit_code,
+            'completed_at': time.time(),
+        })
+        self._workcell_process = None
 
     def debug_snapshot(self):
         with self._debug_lock:
@@ -2010,6 +2180,27 @@ class WebHmiNode(Node):
             return False, 'robot action is active'
         return True, 'debug interlock ready'
 
+    def _continue_debug_from_current_pose(self, point_name, failure):
+        message = failure.get('message', 'target entry failed')
+        try:
+            xyz, rpy = self._settled_tool_pose(timeout_sec=2.0)
+            commanded_pose = {'xyz': list(xyz), 'rpy': list(rpy)}
+        except Exception:
+            commanded_pose = None
+        warning = f'{message}；已停在当前位置，可继续点动调试'
+        with self._debug_lock:
+            self._debug.update(
+                active=True, phase='ready', selected_point=point_name,
+                dirty=False, history=[], commanded_pose=commanded_pose,
+                target_reached=False, last_message=warning)
+        return {
+            'success': True,
+            'warning': True,
+            'target_reached': False,
+            'message': warning,
+            'point_name': point_name,
+        }
+
     def enter_debug(self, body):
         if not self._debug_operation_lock.acquire(blocking=False):
             return {'success': False, 'message': 'another debug operation is running'}
@@ -2060,10 +2251,10 @@ class WebHmiNode(Node):
                     self.spectrometer_recover_home_service_name,
                     timeout_sec=45.0)
                 if not recovery.get('success'):
-                    return fail(recovery)
+                    return self._continue_debug_from_current_pose(point_name, recovery)
                 at_home, home_message = self._debug_verify_home(catalog)
                 if not at_home:
-                    return fail({
+                    return self._continue_debug_from_current_pose(point_name, {
                         'success': False,
                         'message': f'Home verification failed: {home_message}',
                     })
@@ -2072,12 +2263,12 @@ class WebHmiNode(Node):
                 self._debug.update(phase='moving_safe', last_message='正在前往安全调试点')
             result = self._execute_motion_route('home_to_safe_center')
             if not result.get('success'):
-                return fail(result)
+                return self._continue_debug_from_current_pose(point_name, result)
             with self._debug_lock:
                 self._debug.update(phase='moving_target', last_message=f'正在前往 {point_name}')
             result = self._execute_motion_route(entry_route)
             if not result.get('success'):
-                return fail(result)
+                return self._continue_debug_from_current_pose(point_name, result)
             # The trajectory controller can finish before MIT position error
             # reaches its steady loaded value. Do not count that settling as
             # the operator's first Cartesian jog.
@@ -2093,6 +2284,7 @@ class WebHmiNode(Node):
                         'xyz': [float(value) for value in point['pose']['xyz']],
                         'rpy': [float(value) for value in point['pose']['rpy']],
                     },
+                    target_reached=True,
                     last_message='点位已到达，可以点动')
             return {'success': True, 'message': 'debug point reached', 'point_name': point_name}
         except Exception as exc:
@@ -2166,7 +2358,7 @@ class WebHmiNode(Node):
                 self._debug.update(phase='jogging', last_message='正在执行点动')
             return self._execute_debug_target(
                 start_xyz, start_rpy, target_xyz, target_rpy, deltas,
-                max_corrections=0)
+                max_corrections=0, strict_axis=True)
         except Exception as exc:
             with self._debug_lock:
                 self._debug.update(phase='error', last_message=f'点动失败: {exc}')
@@ -2214,7 +2406,7 @@ class WebHmiNode(Node):
 
     def _execute_debug_target(
             self, start_xyz, start_rpy, target_xyz, target_rpy, requested_delta,
-            max_corrections=2):
+            max_corrections=2, strict_axis=False):
         translation_distance = math.sqrt(sum(value * value for value in requested_delta[:3]))
         rotation_distance = rpy_orientation_error(start_rpy, target_rpy)
         if translation_distance > 0.0205:
@@ -2231,24 +2423,36 @@ class WebHmiNode(Node):
                 self._debug.update(phase='ready', last_message=message)
             return {'success': True, 'message': message, 'already_at_target': True}
 
-        with self._debug_lock:
-            previous_command = self._debug.get('commanded_pose')
-        if previous_command:
-            commanded_xyz, commanded_rpy = compensated_command_target(
-                start_xyz,
-                start_rpy,
-                previous_command['xyz'],
-                previous_command['rpy'],
-                target_xyz,
-                target_rpy)
-        else:
+        if strict_axis:
+            # Button jogs use Motion Server's measured-FK relative path, which
+            # preserves the current per-joint MIT holding offset across every
+            # waypoint. This avoids re-solving an absolute nominal pose whose
+            # loaded endpoint can sag differently after a small XY move.
+            result = self._stage_and_execute_jog(requested_delta)
+            if not result.get('success'):
+                raise RuntimeError(result.get('message', 'Cartesian motion failed'))
+            target_xyz = list(result['target_xyz_m'])
+            target_rpy = list(result['target_rpy_rad'])
             commanded_xyz, commanded_rpy = list(target_xyz), list(target_rpy)
-        measured_to_command = cartesian_pose_delta(
-            start_xyz, start_rpy, commanded_xyz, commanded_rpy)
-        result = self._stage_and_execute_jog(
-            measured_to_command, (commanded_xyz, commanded_rpy))
-        if not result.get('success'):
-            raise RuntimeError(result.get('message', 'Cartesian motion failed'))
+        else:
+            with self._debug_lock:
+                previous_command = self._debug.get('commanded_pose')
+            if previous_command:
+                commanded_xyz, commanded_rpy = compensated_command_target(
+                    start_xyz,
+                    start_rpy,
+                    previous_command['xyz'],
+                    previous_command['rpy'],
+                    target_xyz,
+                    target_rpy)
+            else:
+                commanded_xyz, commanded_rpy = list(target_xyz), list(target_rpy)
+            measured_to_command = cartesian_pose_delta(
+                start_xyz, start_rpy, commanded_xyz, commanded_rpy)
+            result = self._stage_and_execute_jog(
+                measured_to_command, (commanded_xyz, commanded_rpy))
+            if not result.get('success'):
+                raise RuntimeError(result.get('message', 'Cartesian motion failed'))
         commanded_xyz = list(result['target_xyz_m'])
         commanded_rpy = list(result['target_rpy_rad'])
         if max_corrections:
@@ -2262,6 +2466,7 @@ class WebHmiNode(Node):
         orientation_error = rpy_orientation_error(measured_rpy, target_rpy)
         correction_count = 0
         convergence_stopped = False
+        regression_count = 0
         error_trace = [{
             'position_error_m': position_error,
             'orientation_error_rad': orientation_error,
@@ -2285,7 +2490,9 @@ class WebHmiNode(Node):
                     min(0.70, 0.003 / position_error)
                     if position_error > 0.003 else 0.35)
                 correction[:3] = [
-                    value * translation_scale for value in correction[:3]]
+                    value * translation_scale
+                    if abs(value) > DEBUG_POSITION_TOLERANCE_M else 0.0
+                    for value in correction[:3]]
             else:
                 correction[:3] = [0.0, 0.0, 0.0]
             if orientation_error > math.radians(0.5):
@@ -2324,8 +2531,12 @@ class WebHmiNode(Node):
                 position_error / DEBUG_POSITION_TOLERANCE_M,
                 orientation_error / math.radians(0.5))
             if normalized_error >= previous_normalized_error:
-                convergence_stopped = True
-                break
+                regression_count += 1
+                if regression_count >= 2:
+                    convergence_stopped = True
+                    break
+            else:
+                regression_count = 0
 
         within_tolerance = (
             position_error <= DEBUG_POSITION_TOLERANCE_M and
@@ -2333,6 +2544,14 @@ class WebHmiNode(Node):
         command_bias = math.sqrt(sum(
             (commanded - target) ** 2
             for commanded, target in zip(commanded_xyz, target_xyz)))
+        translation_axis = next(
+            (index for index, value in enumerate(requested_delta[:3])
+             if abs(value) > 1e-9), None)
+        orthogonal_drift = 0.0
+        if strict_axis and translation_axis is not None:
+            orthogonal_drift = math.sqrt(sum(
+                (measured_xyz[index] - start_xyz[index]) ** 2
+                for index in range(3) if index != translation_axis))
         if within_tolerance:
             warning = ''
         elif convergence_stopped:
@@ -2344,6 +2563,8 @@ class WebHmiNode(Node):
             f'实测 [{", ".join(f"{value * 1000.0:.2f}" for value in measured_xyz)}] mm，'
             f'位置误差 {position_error * 1000.0:.2f} mm，'
             f'姿态误差 {math.degrees(orientation_error):.2f}°，'
+            + (f'非目标轴漂移 {orthogonal_drift * 1000.0:.2f} mm，'
+               if strict_axis and translation_axis is not None else '') +
             f'负载补偿 {command_bias * 1000.0:.2f} mm，'
             f'稳定修正 {correction_count} 次{warning}'
         )
@@ -2356,6 +2577,7 @@ class WebHmiNode(Node):
             'position_error_m': position_error,
             'orientation_error_rad': orientation_error,
             'command_bias_m': command_bias,
+            'orthogonal_drift_m': orthogonal_drift,
             'correction_count': correction_count,
             'convergence_stopped': convergence_stopped,
             'error_trace': error_trace,
@@ -2364,8 +2586,12 @@ class WebHmiNode(Node):
         })
         with self._debug_lock:
             self._debug['commanded_pose'] = {
-                'xyz': list(result['target_xyz_m'] if within_tolerance else measured_xyz),
-                'rpy': list(result['target_rpy_rad'] if within_tolerance else measured_rpy),
+                'xyz': list(
+                    result['target_xyz_m']
+                    if within_tolerance or strict_axis else measured_xyz),
+                'rpy': list(
+                    result['target_rpy_rad']
+                    if within_tolerance or strict_axis else measured_rpy),
             }
             self._debug['history'].append(list(requested_delta))
             self._debug['dirty'] = True
@@ -2453,6 +2679,7 @@ class WebHmiNode(Node):
                 if result.get('success'):
                     self._debug.update(
                         phase='ready', dirty=False, history=[],
+                        target_reached=True,
                         last_message='点位已保存并热重载')
                 else:
                     self._debug.update(phase='ready', last_message=result.get('message', '保存失败'))
@@ -2505,6 +2732,7 @@ class WebHmiNode(Node):
                 if not self._debug['active']:
                     return {'success': True, 'message': 'debug mode is already inactive'}
                 point_name = self._debug['selected_point']
+                target_reached = self._debug.get('target_reached', True)
                 self._debug.update(phase='returning', last_message='正在安全退出调试')
             stop = SetBrush.Request()
             stop.enabled = False
@@ -2516,6 +2744,11 @@ class WebHmiNode(Node):
                 with self._debug_lock:
                     self._debug.update(phase='error', last_message=rewind['message'])
                 return rewind
+            if not target_reached:
+                return recover_home({
+                    'success': False,
+                    'message': 'target entry was skipped',
+                })
             _, _, _, _, exit_route = self._debug_catalog_target(point_name)
             result = self._execute_motion_route(exit_route)
             if not result.get('success'):
@@ -2708,14 +2941,6 @@ class WebHmiNode(Node):
                 'message': f'motion catalog validation failed: {exc}',
             }
 
-        if not self.motion_reload_client.service_is_ready():
-            return {
-                'success': False,
-                'message': (
-                    'motion server reload service is not ready; '
-                    'catalog was not changed because compile validation is required'),
-            }
-
         try:
             write_path = os.path.realpath(self.motion_catalog_path)
             with open(write_path, 'r', encoding='utf-8') as file:
@@ -2749,6 +2974,16 @@ class WebHmiNode(Node):
                 self.motion_reload_client,
                 self.motion_reload_service_name,
                 timeout_sec=30.0)
+            if (
+                    not reload_result.get('success') and
+                    str(reload_result.get('message', '')).startswith((
+                        'ROS service not ready:',
+                        'ROS service call timeout:',
+                        'ROS service call failed:'))):
+                reload_result = self._call_trigger_client(
+                    self.motion_reload_client,
+                    self.motion_reload_service_name,
+                    timeout_sec=30.0)
             if not reload_result.get('success'):
                 self._atomic_write_text(write_path, previous_text)
                 rollback_result = self._call_trigger_client(

@@ -153,6 +153,27 @@ TEST(TrajectoryStart, RejectsDimensionMismatch)
     std::invalid_argument);
 }
 
+TEST(TrajectoryStart, PreservesCloseMitHoldingCommandForCartesianJog)
+{
+  std::vector<double> output;
+  const auto result = panthera_motion::selectHoldingCommandStart(
+    {1.000, 2.000}, {1.004, 1.997}, 0.05, output);
+
+  EXPECT_TRUE(result.success) << result.message;
+  EXPECT_EQ(output, (std::vector<double>{1.004, 1.997}));
+}
+
+TEST(TrajectoryStart, RejectsMissingOrDivergentHoldingCommand)
+{
+  std::vector<double> output;
+  EXPECT_FALSE(
+    panthera_motion::selectHoldingCommandStart(
+      {1.0, 2.0}, {}, 0.05, output).success);
+  EXPECT_FALSE(
+    panthera_motion::selectHoldingCommandStart(
+      {1.0, 2.0}, {1.0, 2.2}, 0.05, output).success);
+}
+
 TEST(TrajectoryResume, StartsSettledAtNearestRemainingPoint)
 {
   trajectory_msgs::msg::JointTrajectory source;
@@ -273,6 +294,7 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
     "outlet_2_grasp",
     "spectrometer_place",
     "spectrometer_pick",
+    "spectrometer_wait",
     "clean_dump",
     "brush_center",
   };
@@ -318,6 +340,9 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
     "outlet_2_grasp_to_spectrometer_place",
     "outlet_1_grasp_to_spectrometer_hover",
     "outlet_2_grasp_to_spectrometer_hover",
+    "spectrometer_place_to_wait",
+    "spectrometer_sensor_place_to_wait",
+    "spectrometer_wait_to_pick",
     "home_to_spectrometer_pick_hover_recovery",
     "spectrometer_pick_to_clean_dump",
     "spectrometer_pick_to_brush_entry_smooth",
@@ -369,6 +394,26 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_EQ(outlet_wait_to_home->start, "outlet_wait");
   ASSERT_FALSE(outlet_wait_to_home->segments.empty());
   EXPECT_EQ(outlet_wait_to_home->segments.back().to, "home_near");
+
+  const auto * clean_route =
+    catalog.findRoute("spectrometer_pick_to_brush_entry_smooth");
+  ASSERT_NE(clean_route, nullptr);
+  const auto dump_entry = std::find_if(
+    clean_route->segments.begin(), clean_route->segments.end(),
+    [](const auto & segment) {return segment.to == "clean_dump";});
+  ASSERT_NE(dump_entry, clean_route->segments.end());
+  EXPECT_TRUE(dump_entry->stop_at_end);
+  EXPECT_EQ(clean_route->segments.back().type, panthera_motion::SegmentType::LINEAR);
+  EXPECT_EQ(clean_route->segments.back().to, "brush_entry");
+
+  const auto * dump = catalog.findPoint("clean_dump");
+  const auto * brush_entry = catalog.findPoint("brush_entry");
+  ASSERT_NE(dump, nullptr);
+  ASSERT_NE(brush_entry, nullptr);
+  ASSERT_TRUE(dump->pose.has_value());
+  ASSERT_TRUE(brush_entry->pose.has_value());
+  EXPECT_NEAR(dump->pose->xyz[0], -0.05874, 1e-9);
+  EXPECT_NEAR(brush_entry->pose->xyz[0] - dump->pose->xyz[0], 0.100, 1e-9);
 }
 
 }  // namespace

@@ -47,6 +47,7 @@ struct SegmentDefinition
   std::string to;
   std::optional<double> velocity_scale;
   std::optional<double> acceleration_scale;
+  bool stop_at_end{false};
   double joint_step_rad{0.05};
   double cartesian_step_m{0.005};
   double max_joint_jump_rad{0.35};

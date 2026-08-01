@@ -216,6 +216,31 @@ h2 {
   top: 58px;
 }
 
+.workcell-control-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.workcell-control-status .muted {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workcell-mode-control {
+  display: grid;
+  grid-template-columns: auto minmax(190px, 1fr);
+  align-items: center;
+  gap: 6px 10px;
+  margin: 8px 0 10px;
+}
+
+.workcell-mode-control small {
+  grid-column: 2;
+}
+
 .layout.page-points .point-config-panel,
 .layout.page-logs .log-panel {
   grid-column: 1 / -1;

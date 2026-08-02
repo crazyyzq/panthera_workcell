@@ -38,12 +38,11 @@ This file contains durable repository context and operating rules for future age
   `300 rad/s^3`. Nearby process transitions use lower per-route scaling; the final
   10 mm pick/place segment remains at 40%. Do not restore the previous 4 rad/s^2
   acceleration profile, which produced visible overshoot.
-- The current spectrometer pick/place column is `x=0.216 m`, `y=0.480 m`;
-  `spectrometer_pick`, `spectrometer_place`, both 10 mm pre-approach points, both
-  high hover points, and the laser hover template must keep the same x/y so all
-  physical pick/place motion remains vertical. Pick and place are both at
-  `z=0.320 m`; their pre-approach points are at `z=0.330 m`. The independently
-  tunable detection wait point remains at `y=0.190 m` and must not move this column.
+- The current fixed spectrometer process baseline is `x=0.1575 m`. Place uses
+  `y=0.480 m`, `z=0.320 m`; pick uses `y=0.479497 m`, `z=0.316902 m`. Their
+  10 mm pre-approach and high-hover/template points must retain the matching x/y
+  so each physical approach remains vertical. The independently tunable detection
+  wait point remains at `(0.216,0.190,0.450)m` and must not follow this column.
 - The arm controller is `joint_trajectory_controller/JointTrajectoryController` at 100 Hz.
 - Arm joints are `joint1` through `joint6`; gripper command joint is `L_finger_joint`; `R_finger_joint` is mimic/passive.
 - The controller exposes standard `FollowJointTrajectory` and can execute deterministic precompiled trajectories without MoveIt planning at production runtime.
@@ -156,8 +155,8 @@ This file contains durable repository context and operating rules for future age
   `(0.46853,-0.095,0.190)m`, outlet2 `(0.46853,0.085,0.190)m`, and dump
   `(0.09126,-0.34374,0.250)m`. Dump z=0.250 m is an intentionally raised
   commissioning value, not final calibration. The former transformed spectrometer
-  pickup column `(0.132,0.600)m` is obsolete; the current commissioned column is
-  `(0.216,0.480)m`.
+  pickup column `(0.132,0.600)m` is obsolete; the current fixed process baseline
+  is `x=0.1575 m` (place `y=0.480 m`, pick `y=0.479497 m`).
 - The revised cleaning branch keeps the gripper pointing toward base `-Y`
   (yaw `-1.5708 rad`) and uses pour roll `-2.5 rad`. After pouring at
   `(0.09126,-0.34374,0.250)m`, move in a straight line along base `+X` by 150 mm
@@ -652,11 +651,11 @@ not a normal shutdown path.
   fresh encoders independently verify commissioned Home. Otherwise it must keep
   the hardware powered and refuse shutdown; never use task flags alone to infer
   physical safety.
-- `outlet_wait` is about 1.12 rad from Home and is outside the 0.5 rad unknown-pose
-  recovery envelope. When that logical start is known, `/recover_home` must run
-  the compiled `outlet_wait_to_home_continuous` route through `safe_joint_center`;
-  do not widen the unknown-pose envelope. Physical validation completed this
-  route in 1.80 seconds and encoder-confirmed Home within 0.00854 rad.
+- Explicit `/recover_home` has no distance-from-Home rejection. With fresh finite
+  six-axis encoder feedback it must generate a smooth trajectory from the measured
+  joints to absolute-zero Home, keep power enabled until completion, and require
+  final encoder confirmation. Never restore the former 0.5 rad near-Home gate.
+  A known `outlet_wait` start may still use its shorter compiled route.
 - A deferred pause request is one-shot: once `pauseRequested` is set, do not
   regenerate a higher-priority `PAUSE_AUTO` event every tick or action completion
   will be starved. At an action boundary, `pausedFromState` is the next unexecuted

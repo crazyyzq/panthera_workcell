@@ -424,17 +424,15 @@ ActionResult RobotActions::recoverHomeAfterError()
   if (!getLatestArmJointValues(current) || current.size() != home.size()) {
     return ActionResult::fail("error recovery refused: fresh six-joint encoder state unavailable");
   }
+  const bool current_valid = std::all_of(
+    current.begin(), current.end(),
+    [](double value) {return std::isfinite(value);});
+  if (!current_valid) {
+    return ActionResult::fail("error recovery refused: invalid arm encoder position");
+  }
   double initial_max_error = 0.0;
   for (std::size_t index = 0; index < home.size(); ++index) {
     initial_max_error = std::max(initial_max_error, std::abs(current[index] - home[index]));
-  }
-  if (initial_max_error > config_.motion.errorRecoveryPathToleranceRad) {
-    std::ostringstream error;
-    error << "automatic Home recovery refused: max_error=" << initial_max_error
-          << "rad exceeds safe near-Home envelope="
-          << config_.motion.errorRecoveryPathToleranceRad
-          << "rad; keep enabled";
-    return ActionResult::fail(error.str());
   }
 
   auto confirm_home = [this, &home, &joint_names, kSettledVelocityRadSec](
@@ -521,8 +519,9 @@ ActionResult RobotActions::recoverHomeAfterError()
 
       RCLCPP_ERROR(
         logger_,
-        "SAFETY_RECOVERY_START keep_enabled=true target=home_near duration=%.2fs",
-        config_.motion.errorRecoveryDurationSec);
+        "SAFETY_RECOVERY_START keep_enabled=true target=home_near "
+        "start_max_error=%.6frad duration=%.2fs",
+        initial_max_error, config_.motion.errorRecoveryDurationSec);
       const auto goal_future = arm_recovery_client_->async_send_goal(goal);
       if (goal_future.wait_for(
           std::chrono::duration<double>(config_.motion.motionServerWaitSec)) !=

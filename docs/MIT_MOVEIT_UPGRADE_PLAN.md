@@ -1,5 +1,10 @@
 # MIT MoveIt Upgrade Plan
 
+> Historical implementation plan. Production now defaults to the cached fixed
+> trajectory server with the selectable vendor controller mode. Current gains,
+> limits, routes, and commissioning rules are recorded in `AGENTS.md`; do not use
+> this plan as an instruction to switch production back to per-action planning.
+
 ## Goal
 
 Integrate the vendor's ROS 2 Humble MIT MoveIt mode into the commissioned

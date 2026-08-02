@@ -63,6 +63,17 @@ def test_hmi_separates_debug_entry_from_point_motion():
     assert "'/api/debug/goto', {point_name: point}" in javascript
 
 
+def test_hmi_exposes_hot_reloadable_process_timing():
+    static_root = Path(__file__).parents[1] / 'static'
+    html = (static_root / 'index.html').read_text(encoding='utf-8')
+    javascript = (static_root / 'assets' / 'app.js').read_text(encoding='utf-8')
+
+    assert 'id="debugBrushHoldSec"' in html
+    assert 'id="debugScanDurationSec"' in html
+    assert "'/api/debug/process_timing'" in javascript
+    assert "'/api/debug/process_timing'" in inspect.getsource(HmiRequestHandler.do_POST)
+
+
 def test_laser_filter_reports_stable_median_and_axis_offset():
     store = HmiStateStore()
     store.set_laser_reference(162.0)
@@ -222,6 +233,30 @@ def test_debug_tools_do_not_require_a_selected_point():
     assert node._debug_gripper_locked({'command': 'close'})['success'] is True
     assert node._debug_brush_locked(
         {'enabled': True, 'speed_percent': 50})['success'] is True
+
+
+def test_debug_process_timing_saves_and_hot_reloads_without_motion():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': True, 'phase': 'ready'}
+    saved = {}
+    node.save_point_config = lambda body, **kwargs: (
+        saved.update(body=body, kwargs=kwargs) or {'success': True})
+
+    result = node.debug_process_timing({
+        'brush_hold_sec': 6,
+        'scan_duration_sec': 40,
+    })
+
+    assert result['success'] is True
+    assert saved['body']['config'] == {
+        'cleaning': {'brush_hold_sec': 6.0},
+        'loop': {'scan_duration_sec': 40.0},
+    }
+    assert saved['kwargs'] == {'allow_debug': True}
+    assert node._debug['brush_hold_sec'] == 6.0
+    assert node._debug['scan_duration_sec'] == 40.0
 
 
 def test_debug_exit_without_a_point_does_not_move_the_arm():

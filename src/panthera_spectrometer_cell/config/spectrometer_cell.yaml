@@ -27,7 +27,7 @@
 # 1. 先确认 HMI 上 gripper_center 实时坐标和 base_link 坐标方向正确。
 # 2. 调 outlet_1_pick / outlet_2_pick，只让夹爪能稳定夹杯。
 # 3. 调 outlet_1_return / outlet_2_return，让杯子能准确放回原位置。
-# 4. 调 spectrometer_base，并用激光 150mm 作为基准确认放杯点。
+# 4. 调 spectrometer_base，并在标准品位置用 HMI 校准当前激光参考值后确认放杯点。
 # 5. 移动光谱仪后检查 spectrometer_axis.axis_scale_m_per_mm 正负方向。
 # 6. 调 clean_dump，再调 cleaning.pour_angle_rad / shake_*。
 # 7. 单点都通过后，再跑完整循环。
@@ -59,6 +59,9 @@ loop:
 
   # 发送光谱仪开始检测命令后的等待超时，单位 s。
   spectrometer_start_timeout_sec: 10.0
+
+  # 光谱仪到达最远扫描位置后，判定扫描完成的等待时间，单位 s；HMI 调试模式可热修改。
+  scan_duration_sec: 40.0
 
   # 等待光谱仪检测完成的超时，单位 s。
   # 标准品校准阶段可能较长；5 分钟前不产生超时告警，超过后仍安全等待。
@@ -298,7 +301,7 @@ positioning:
   # 未接入激光时使用固定基准；一旦收到有效激光，取杯/放杯都要求各自的新稳定样本。
   # 已接入的传感器若中途失联会安全等待，避免在随机扫描位置盲取。
   mode: sensor_optional
-  fixed_axis_position_mm: 162.1
+  fixed_axis_position_mm: 163.8
 spectrometer_axis:
   # ========== 光谱仪激光换算 ==========
   # 这个段落决定“激光读数 -> 光谱仪实际目标坐标”。
@@ -309,8 +312,8 @@ spectrometer_axis:
   laser_max_mm: 280.0
 
   # 光谱仪基准坐标对应的激光距离，单位 mm。
-  # 当前测试标定: 激光读数 162.1mm 时，对应固定标准品 X=162.0mm。
-  axis_zero_laser_mm: 162.1
+  # 机械标准品位置固定为 X=162.0mm；激光参考值以最近一次 HMI 校准为准。
+  axis_zero_laser_mm: 163.8
   # 激光每变化 1mm，目标坐标沿 axis 变化多少 m。
   # 0.001 表示激光增加 1mm，目标坐标增加 0.001m。
   # 如果方向反了，把它改成 -0.001。
@@ -356,10 +359,10 @@ cleaning:
 
   # 倒料翻转动作速度比例。想倒料更快可以加大，但要注意限位冲击。
   # 只影响倒料关节动作，不影响搬运路径速度。
-  pour_velocity_scale: 0.5
+  pour_velocity_scale: 0.7
 
   # 倒料翻转动作加速度比例。
-  pour_acceleration_scale: 0.1
+  pour_acceleration_scale: 0.5
 
   # 翻到倒料角度后的停留时间，单位 s。
   pour_hold_sec: 0.0
@@ -409,8 +412,8 @@ cleaning:
   # 毛刷内部往复偏移，单位 m，按 gripper_center 局部坐标解释。现场可按毛刷方向调整。
   brush_stroke_offset_xyz: [0.0, 0.0, 0.0]
 
-  # 每个毛刷往复端点的短暂停留，单位 s。
-  brush_hold_sec: 0.0
+  # 杯子套入毛刷中心后的持续清洁时间，单位 s；HMI 调试模式可热修改。
+  brush_hold_sec: 6.0
 
   # 杯子完全退出到 brush_upright_retreat_offset_xyz 后，电机继续转动的时间，单位 s。
   # 这段结束后才发送 Modbus 停止指令，并且之后才允许第六轴/夹爪回正。
@@ -504,7 +507,7 @@ named_poses:
   # 光谱仪基准放杯/取杯点。
   # 当激光读数等于 spectrometer_axis.axis_zero_laser_mm 时，目标点就是该点加 offset。
   # 激光变化后，只沿 spectrometer_axis.axis 指定轴修正。
-  # 先在激光约 150mm 时调准这个点，再调 axis_scale_m_per_mm。
+  # 先在光谱仪标准品位置校准激光并调准这个点，再调 axis_scale_m_per_mm。
   spectrometer_base:
     xyz: [0.57, -0.12, 0.33]
     rpy: [0.0, 0.0, 0.0]

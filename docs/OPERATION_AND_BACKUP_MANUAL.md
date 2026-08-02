@@ -40,13 +40,15 @@ scripts/start_workcell.sh
 - MIT 重力补偿硬件模式（Kp `75/105/135/135/75/75`、Kd `5.5`）
 - 固定轨迹 Motion Server（生产运行不实时规划）
 - C++ 光谱检测长期状态机
-- 激光传感器适配器（未连接时使用标定的 150 mm 默认位置）
+- 激光传感器适配器（启动时未连接则使用配置中的固定参考位置）
 - Gemini305 相机自动恢复 watchdog（相机未连接不阻塞工作站 READY）
 
 Web HMI 由独立的 `panthera-hmi.service` 常驻运行，不属于生产启停进程组。
 生产一键启动不会启动旧 MoveIt workflow 或点位调试节点，确保只有
 Motion Server 一个机械臂命令源。脚本只有在控制器 active、Motion Server 静止、
 编码器位于原 Home、HMI 服务全部就绪后才报告成功；默认工作速度为 100%。
+启动前会清理可能卡在 `!rclpy.ok()` 的旧 ROS CLI 守护进程；温和退出失败时只强制
+结束 CLI 守护进程和残留 CLI 客户端，不会结束控制器或机械臂硬件节点。
 
 启动日志保存到：
 
@@ -94,7 +96,7 @@ HMI 页面主要区域：
 - 相机图像：支持 RGB 和深度图切换。
 - 夹取中心实时位姿：显示 `base_link -> gripper_center` 的坐标和四元数。
 - 流程按钮：触发出料完成、检测完成、回安全位、手动调试流程。
-- 点位调试：打开调试模式后，可以先 `dry_run` 规划，再真实执行。
+- 点位调试：先点击“进入调试（不移动）”；夹爪、毛刷和工艺时间无需前往点位即可操作，需要示教时再点击“前往所选点位”。
 - 动作速度：运行时速度比例，范围 `20%~120%`，默认 `100%`。
 - 相机恢复：启动时自动恢复；运行中 RGB 连续 3 次失效会自动重启驱动。人工按钮保留为维护备用。
 
@@ -250,7 +252,8 @@ colcon build --packages-select panthera_interfaces panthera_spectrometer_cell pa
 
 | 目标 | 文件 |
 | --- | --- |
-| 光谱检测状态机点位、速度、倒料参数 | `src/panthera_spectrometer_cell/config/spectrometer_cell.yaml` |
+| 固定轨迹点位、路线和局部速度 | `src/panthera_motion/config/motion_catalog.yaml` |
+| 光谱状态机、扫描时间、毛刷时间和硬件参数 | `src/panthera_spectrometer_cell/config/spectrometer_cell.yaml` |
 | HMI 启动参数 | `src/panthera_web_hmi/launch/spectrometer_cell_hmi.launch.py` |
 | 一键启动/停止/备份脚本 | `scripts/` |
 | RS485 激光和流程信号 | `src/panthera_rs485/config/rs485_devices.yaml` |
@@ -258,106 +261,36 @@ colcon build --packages-select panthera_interfaces panthera_spectrometer_cell pa
 | MoveIt 和 ros2_control 配置 | `src/panthera_ht_config/` |
 | URDF 和机械臂模型 | `src/panthera_ht_ros_description/` |
 
-## 10. 点位微调位置
+## 10. 点位和工艺时间微调
 
-光谱检测长期状态机的主要点位都在：
+生产主数据源是 `src/panthera_motion/config/motion_catalog.yaml`。日常不要直接改旧
+`named_poses`；在 HMI 调试页选择带 `tunable` 标签的点位示教并保存。当前关键基准为：
 
-```bash
-/home/b1/panthera_workcell_ws/src/panthera_spectrometer_cell/config/spectrometer_cell.yaml
-```
+| 点位 | 当前 XYZ（m） |
+| --- | --- |
+| `outlet_1_grasp` | `[0.484046, -0.097, 0.211]` |
+| `outlet_2_grasp` | `[0.484102, 0.085769, 0.210]` |
+| `spectrometer_place` | `[0.162, 0.480, 0.320]` |
+| `spectrometer_pick` | `[0.162, 0.479497, 0.316902]` |
+| `clean_dump` | `[-0.05874, -0.39374, 0.205]` |
+| `brush_center` | `[0.101107, -0.39374, 0.12488564]` |
+| `spectrometer_wait` | `[0.216, 0.190, 0.450]` |
 
-单位规则：
+光谱仪标准品机械基准 X 为 `162 mm`。激光参考值会随现场重新校准而变化，以 HMI
+校准后写入 `axis_zero_laser_mm` 的值为准，不要在程序或操作中写死旧读数。放杯和取杯
+各自重新采集稳定激光值并修正 X，不要求光谱仪停在标准位。
 
-- `xyz` 单位是米，现场 mm 要除以 1000。
-- `rpy` 单位是弧度。
-- `yaw=1.5708` 约等于绕 Z 轴 90 度。
+HMI 点击“进入调试（不移动）”后，可直接修改：
 
-### 10.1 出料口取放杯
+- 毛刷清洁时间：`cleaning.brush_hold_sec`，默认 `6 s`，范围 `0..60 s`。
+- 光谱扫描完成时间：`loop.scan_duration_sec`，默认 `40 s`，范围 `1..300 s`。
 
-```yaml
-named_poses:
-  outlet_1_pick:
-    xyz: [-0.02500, -0.42853, 0.140]
-    rpy: [0.0, 0.0, -1.5708]
+保存会原子备份、热重载，失败自动回滚。固定轨迹目录保存还会编译全部路线；无需为
+普通点位或时间修改重启整机。倒料主翻腕使用 70% 速度/50% 加速度，摇料使用
+60%/45%；夹爪速度独立，不随这些参数变化。
 
-  outlet_2_pick:
-    xyz: [0.15500, -0.42853, 0.140]
-    rpy: [0.0, 0.0, -1.5708]
-```
-
-改法：
-
-- 杯子中心偏左/右/前/后：改对应点的 `xyz`。
-- 夹爪方向不对：改对应点的 `rpy`，通常先微调第三个值 `yaw`。
-- 取杯高度不对：改 `outlet_1_pick.xyz[2]` 或 `outlet_2_pick.xyz[2]`。
-
-### 10.2 取杯后先抬高避障
-
-夹完杯子后、去光谱仪前的安全抬升高度：
-
-```yaml
-motion:
-  outlet_transfer_z: 0.400
-```
-
-这里的 `0.400` 表示 `gripper_center` 先抬到 `Z=400mm`，再规划去光谱仪。现场如果还会碰障碍，继续加大；如果太高导致规划困难，再降低。
-
-### 10.3 光谱仪放杯/取杯基准
-
-```yaml
-named_poses:
-  spectrometer_base:
-    xyz: [0.58414, -0.12103, 0.290]
-    rpy: [0.0, 0.0, 0.0]
-```
-
-如果激光为 `150mm` 时光谱仪位置正确，只微调 `spectrometer_base`。
-
-激光轴补偿在：
-
-```yaml
-spectrometer_axis:
-  axis_zero_laser_mm: 150.0
-  axis_scale_m_per_mm: 0.001
-  axis: y
-```
-
-- 激光 150mm 对应基准位置：改 `axis_zero_laser_mm`。
-- 光谱仪移动方向反了：把 `axis_scale_m_per_mm` 改成负数。
-- 光谱仪实际沿其它轴动：改 `axis`。
-
-### 10.4 清理/倒料区
-
-```yaml
-named_poses:
-  clean_approach:
-    xyz: [0.250, 0.260, 0.240]
-    rpy: [0.0, 0.0, 1.5708]
-  clean_dump:
-    xyz: [0.250, 0.400, 0.120]
-    rpy: [0.0, 0.0, 1.5708]
-```
-
-倒料速度和摆动幅度：
-
-```yaml
-cleaning:
-  pour_velocity_scale: 0.10
-  pour_acceleration_scale: 0.10
-  shake_angle_rad: 0.40
-```
-
-### 10.5 修改后如何生效
-
-改完配置后重新编译并重启：
-
-```bash
-cd /home/b1/panthera_workcell_ws
-source /opt/ros/humble/setup.bash
-colcon build --packages-select panthera_spectrometer_cell
-scripts/stop_workcell.sh
-scripts/start_workcell.sh
-```
+清洗后路线为：沿杯口轴退出毛刷 → 保持倒料姿态垂直抬到 `z=0.45 m` → 高位回正
+→ 直接跨区放回原出料口。禁止低位直接横穿，也不再返回低位倒料点。
 
 ## 11. 推荐现场流程
 
@@ -365,7 +298,7 @@ scripts/start_workcell.sh
 2. 执行 `scripts/start_workcell.sh`。
 3. 打开 HMI：`http://192.168.137.186:8080`。
 4. 确认状态为 `WAIT_DISCHARGE`、速度 100%、机械臂和 HMI 服务正常。
-5. 点击 `OUTLET_1 真实循环`；光谱仪阶段完成后点击 `检测完成`。
+5. 点击 `OUTLET_1 真实循环`；光谱仪移动和稳定计时会自动判断检测完成，`检测完成`按钮只作为外部信号/维护备用。
 6. 本轮结束并回到 `WAIT_DISCHARGE` 后，才执行 `scripts/stop_workcell.sh`。
 7. 关闭脚本显示 `Home=verified ... processes=clean` 后再切断设备电源。
 8. 修改源码或文档后执行 `scripts/backup_source_docs.sh` 生成干净备份。

@@ -139,3 +139,26 @@ TEST(ScanDetection, RandomSamplePositionMustReturnToStandardBeforeScanStarts)
   }
   EXPECT_EQ(tracker.status(time).phase, ScanPhase::WAIT_STANDARD_EXIT);
 }
+
+TEST(ScanDetection, UsesConfiguredScanDuration)
+{
+  LaserFilter filter;
+  ScanDetectionTracker tracker;
+  tracker.start(162.0, 0.0, 0, 6.0);
+  double time = 0.0;
+  for (int i = 0; i < 10; ++i) {
+    time += 0.2;
+    filter.add(162.0, true, time);
+    tracker.update(filter.snapshot(time), time);
+  }
+  for (int i = 0; i < 24; ++i) {
+    time += 0.2;
+    filter.add(180.0, true, time);
+    tracker.update(filter.snapshot(time), time);
+  }
+  ASSERT_EQ(tracker.status(time).phase, ScanPhase::SCANNING);
+  const double remaining = tracker.status(time).remainingSec;
+  EXPECT_GT(remaining, 0.0);
+  EXPECT_FALSE(tracker.status(time + remaining - 0.1).done);
+  EXPECT_TRUE(tracker.status(time + remaining + 0.1).done);
+}

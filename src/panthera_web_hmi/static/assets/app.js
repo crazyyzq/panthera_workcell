@@ -1113,10 +1113,24 @@ function renderDebug(snapshot) {
     input.disabled = !pointReady;
   });
   ['debugGripperOpen', 'debugGripperClose', 'debugBrushStart', 'debugBrushStop',
-    'debugBrushSave'].forEach((id) => {
+    'debugBrushSave', 'debugProcessTimingSave'].forEach((id) => {
     const button = $(id);
     if (button) {
       button.disabled = !sessionReady;
+    }
+  });
+  const timingInputs = {
+    debugBrushHoldSec: debug.brush_hold_sec,
+    debugScanDurationSec: debug.scan_duration_sec,
+  };
+  Object.entries(timingInputs).forEach(([id, value]) => {
+    const input = $(id);
+    if (!input) {
+      return;
+    }
+    input.disabled = !sessionReady;
+    if (document.activeElement !== input && Number.isFinite(value)) {
+      input.value = String(value);
     }
   });
   ['debugSave', 'debugCopyPose', 'debugMoveTo'].forEach((id) => {
@@ -1695,6 +1709,13 @@ function wireButtons() {
       speed_percent: Number(brushSlider.value),
       persist_default: true,
     }, brushSave));
+
+  const processTimingSave = $('debugProcessTimingSave');
+  processTimingSave?.addEventListener('click', () => runDebugRequest(
+    '/api/debug/process_timing', {
+      brush_hold_sec: Number($('debugBrushHoldSec').value),
+      scan_duration_sec: Number($('debugScanDurationSec').value),
+    }, processTimingSave));
 
   const debugSave = $('debugSave');
   debugSave?.addEventListener('click', () => runDebugRequest('/api/debug/save', {}, debugSave));

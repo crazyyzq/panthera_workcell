@@ -137,6 +137,8 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readDouble(loop, "sensor_timeout_sec", config.loop.sensorTimeoutSec);
   config.loop.spectrometerStartTimeoutSec =
     readDouble(loop, "spectrometer_start_timeout_sec", config.loop.spectrometerStartTimeoutSec);
+  config.loop.scanDurationSec =
+    readDouble(loop, "scan_duration_sec", config.loop.scanDurationSec);
   config.loop.detectionTimeoutSec =
     readDouble(loop, "detection_timeout_sec", config.loop.detectionTimeoutSec);
   config.loop.resetTimeoutSec =
@@ -432,6 +434,11 @@ ActionResult WorkcellConfig::validate() const
   if (loop.spectrometerStartTimeoutSec <= 0.0) {
     return ActionResult::fail("loop.spectrometer_start_timeout_sec must be > 0");
   }
+  if (!std::isfinite(loop.scanDurationSec) || loop.scanDurationSec <= 0.0 ||
+    loop.scanDurationSec > 300.0)
+  {
+    return ActionResult::fail("loop.scan_duration_sec must be finite and in (0, 300]");
+  }
   if (positioning.mode != "fixed" && positioning.mode != "sensor_optional" &&
     positioning.mode != "sensor_offset")
   {
@@ -553,8 +560,10 @@ ActionResult WorkcellConfig::validate() const
     return ActionResult::fail(
       "fixed_cache brush supports center hold only; add compiled stroke routes before setting brush_stroke_offset_xyz");
   }
-  if (cleaning.brushHoldSec < 0.0) {
-    return ActionResult::fail("cleaning.brush_hold_sec must be >= 0");
+  if (!std::isfinite(cleaning.brushHoldSec) || cleaning.brushHoldSec < 0.0 ||
+    cleaning.brushHoldSec > 60.0)
+  {
+    return ActionResult::fail("cleaning.brush_hold_sec must be finite and in [0, 60]");
   }
   if (cleaning.brushMotorStopDelaySec < 0.0) {
     return ActionResult::fail("cleaning.brush_motor_stop_delay_sec must be >= 0");

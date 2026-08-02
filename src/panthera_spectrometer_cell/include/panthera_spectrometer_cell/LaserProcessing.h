@@ -69,7 +69,9 @@ struct ScanStatus
 class ScanDetectionTracker
 {
 public:
-  void start(double reference_mm, double now_sec, std::uint64_t initial_sequence = 0);
+  void start(
+    double reference_mm, double now_sec, std::uint64_t initial_sequence = 0,
+    double scan_duration_sec = kScanDurationSec);
   void update(const LaserSnapshot & laser, double now_sec);
   ScanStatus status(double now_sec) const;
 
@@ -86,6 +88,7 @@ private:
   int exit_count_{0};
   int return_count_{0};
   bool active_{false};
+  double scan_duration_sec_{kScanDurationSec};
 };
 
 const char * toString(ScanPhase phase);

@@ -1,140 +1,77 @@
-# 光谱检测工作站点位微调说明
+# 光谱检测工作站点位与工艺时间调试
 
-本文说明如何修改 `src/panthera_spectrometer_cell/config/spectrometer_cell.yaml`。
-
-## 基本规则
-
-- 所有 `xyz` 默认是 `base_link` 坐标系下的 `gripper_center` 目标点。
-- 坐标单位是 m，不是 mm。比如 428.53 mm 要写成 `0.42853`。
-- 姿态 `rpy` 单位是 rad。90 度是 `1.5708`，180 度是 `3.14159265`。
-- 修改 YAML 后，在 HMI 点位页点击“重载生效”即可让运行节点重新读取配置；如果重载失败，再重启节点或重新执行一键启动脚本。
-- 调点时建议每次只改 5 到 20 mm，也就是 `0.005` 到 `0.020`。
-
-## 想改什么，改哪里
-
-| 目标 | YAML 字段 |
-| --- | --- |
-| 出料口 1 取杯位置 | `named_poses.outlet_1_pick.xyz/rpy` |
-| 出料口 1 放回位置 | `named_poses.outlet_1_return.xyz/rpy` |
-| 出料口 2 取杯位置 | `named_poses.outlet_2_pick.xyz/rpy` |
-| 出料口 2 放回位置 | `named_poses.outlet_2_return.xyz/rpy` |
-| 出料口区域接近高度 | `motion.outlet_high_z` |
-| 出料口夹取高度 | `motion.outlet_grip_z` |
-| 取到杯子后抬高避障高度 | `motion.outlet_transfer_z` |
-| 出料口前方绕障 Y | `motion.outlet_approach_y` |
-| 出料口靠近杯子前的中间 Y | `motion.outlet_near_y` |
-| 光谱仪基准点 | `named_poses.spectrometer_base.xyz/rpy` |
-| 激光 150mm 对应的光谱仪基准 | `spectrometer_axis.axis_zero_laser_mm` |
-| 激光变化换算方向和比例 | `spectrometer_axis.axis_scale_m_per_mm` |
-| 光谱仪变化轴 | `spectrometer_axis.axis` |
-| 光谱仪放杯单独补偿 | `spectrometer_axis.place_offset_xyz` |
-| 光谱仪取杯单独补偿 | `spectrometer_axis.pick_offset_xyz` |
-| 光谱仪前方接近偏移 | `motion.spectrometer_approach_x_offset` |
-| 光谱仪区域高位过渡高度 | `motion.spectrometer_high_z` |
-| 清理/倒料点 | `named_poses.clean_dump.xyz/rpy` |
-| 清理区接近点 | `named_poses.clean_approach.xyz/rpy` |
-| 清理区离开点 | `named_poses.clean_leave.xyz/rpy` |
-| 倒料翻转角度 | `cleaning.pour_angle_rad` |
-| 倒料摆动幅度和次数 | `cleaning.shake_angle_rad` / `cleaning.shake_count` |
-| 机械臂回零/安全位 | `motion.safe_joint_pose` |
-
-## 出料口动作路径
-
-取杯时不是直接去杯子中心，而是走一组派生点：
+生产轨迹主数据源是：
 
 ```text
-open gripper
--> outlets.OUTLET_N.pick_approach_pose 指向的 named pose
--> (pick.x, motion.outlet_approach_y, motion.outlet_high_z)
--> (pick.x, motion.outlet_approach_y, motion.outlet_grip_z)
--> (pick.x, motion.outlet_near_y, motion.outlet_grip_z)
--> (pick.x, pick.y, motion.outlet_grip_z)
--> close gripper
--> (pick.x, pick.y, motion.outlet_transfer_z)
+src/panthera_motion/config/motion_catalog.yaml
 ```
 
-因此：
+`spectrometer_cell.yaml` 只保存状态机、激光换算、毛刷时间和硬件参数。固定轨迹运行时
+不要再通过旧 `named_poses` 调生产点位。
 
-- 左右位置不准，改 `named_poses.outlet_*_pick.xyz` 的 X/Y。
-- 进入取料口前的停靠点不合适，改 `named_poses.outlet_*_pick_approach.xyz/rpy`。
-- 夹得太高或太低，优先改 `motion.outlet_grip_z`。
-- 拿到杯子后容易被挡住，优先改高 `motion.outlet_transfer_z`。
-- 进出出料口路径容易撞挡板，调整 `motion.outlet_approach_y`、`motion.outlet_near_y`、`motion.outlet_high_z`。
+## HMI 标准操作
 
-放回杯子也使用同一组 `motion.outlet_*` 参数，只是目标点来自 `outlet_*_return`，并且会先走 `outlet_*_return_approach`。
+1. 点击“进入调试（不移动）”。系统暂停自动流程，但机械臂不移动。
+2. 此时即可开关夹爪、点动毛刷、保存毛刷默认速度，或修改工艺时间。
+3. 需要示教点位时，选择工艺点并点击“前往所选点位”。系统从 Home 经安全调试点进入。
+4. 使用 XYZ/RPY 点动或直接输入坐标；XYZ 单位 mm，角度单位 °。
+5. 保存点位会更新关联接近点、编译全部固定路线并热重载；失败自动恢复原文件。
+6. 退出调试：进入过点位时沿验证路线回 Home；未前往点位时不移动机械臂。
 
-## 光谱仪动作路径
+坐标约定：`+X=右`、`+Y=前`、`+Z=上`。单次平移范围 `2..20 mm`，单次旋转
+不超过 `10°`。
 
-光谱仪目标点由下面公式计算：
+## 当前关键点
+
+| 工艺点 | XYZ（m） | 用途 |
+| --- | --- | --- |
+| `outlet_1_grasp` | `[0.484046, -0.097, 0.211]` | 1 号出料口取放杯 |
+| `outlet_2_grasp` | `[0.484102, 0.085769, 0.210]` | 2 号出料口取放杯 |
+| `spectrometer_place` | `[0.162, 0.480, 0.320]` | 光谱仪放杯 |
+| `spectrometer_pick` | `[0.162, 0.479497, 0.316902]` | 光谱仪取杯，比放杯低约 3 mm |
+| `spectrometer_wait` | `[0.216, 0.190, 0.450]` | 扫描期间独立安全等待位 |
+| `clean_dump` | `[-0.05874, -0.39374, 0.205]` | 倒料点 |
+| `brush_center` | `[0.101107, -0.39374, 0.12488564]` | 毛刷套入中心 |
+
+关联的 hover/pregrasp 点由目录中的 `translation_followers` 自动跟随。不要只移动抓取点
+却留下旧接近点。
+
+## 光谱仪激光补偿
+
+标准品机械基准为 `X=162 mm`，激光参考使用 HMI 在标准品位置保存的最新校准值，
+有效量程 `120..280 mm`：
 
 ```text
-target = named_poses.spectrometer_base
-target += place_offset_xyz 或 pick_offset_xyz
-target[axis] += (laser_mm - axis_zero_laser_mm) * axis_scale_m_per_mm
+X目标 = 162.0 mm + (稳定激光值 - 激光参考值)
 ```
 
-例子：
+放杯和取杯前分别采集新的稳定窗口，均按光谱仪当时位置执行，不要求回标准位。校准激光
+时必须确认光谱仪处于标准品位置；HMI 会同时更新两个参考字段并热重载。
 
-- `axis: y`
-- `axis_zero_laser_mm: 150.0`
-- `axis_scale_m_per_mm: 0.001`
-- 激光读数 `160mm`
+## 扫描和毛刷时间
 
-则目标 Y 会在 `spectrometer_base.y` 基础上增加 `0.010m`。
+进入调试后无需前往任何点位，即可修改：
 
-如果实际运动方向反了，把 `axis_scale_m_per_mm` 改成 `-0.001`。
+| HMI 字段 | YAML | 默认 | 范围 |
+| --- | --- | --- | --- |
+| 毛刷清洁 | `cleaning.brush_hold_sec` | `6 s` | `0..60 s` |
+| 光谱扫描 | `loop.scan_duration_sec` | `40 s` | `1..300 s` |
 
-## 清理倒料动作路径
+扫描逻辑为：观察光谱仪回到标准品附近 → 离开基准至少 5 mm → 寻找最远点 → 最大值
+2 秒不再增加 → 按配置时间计时。外部 `DETECTION_DONE` 接口仍可直接完成等待阶段。
 
-清理时的路径大致是：
+## 倒料与清洗返程
 
-```text
--> cleaning.approach_pose 指向的 named pose
--> (clean_dump.x, motion.clean_approach_y, motion.clean_high_z)
--> (clean_dump.x, motion.clean_approach_y, motion.clean_pre_z)
--> (clean_dump.x, clean_dump.y, motion.clean_ready_z)
--> clean_dump
--> wrist pour and shake
--> clean ready
--> clean retreat
--> cleaning.leave_pose 指向的 named pose
-```
+生产固定路线的倒料主翻腕为 70% 速度/50% 加速度，短摇料段为 60%/45%。夹爪速度
+独立，不受影响。
 
-因此：
+清洗后必须沿杯口轴从 `brush_center` 退到 `brush_entry`，保持倒料姿态垂直抬升到
+`brush_entry_clear_high`（`z=0.45 m`），在高位 `brush_clear_high` 回正后直接跨区返回
+原出料口。禁止低位横穿光谱仪，也不再绕回 `clean_dump_pour`/`clean_dump`。
 
-- 倒料口位置不准，改 `named_poses.clean_dump.xyz/rpy`。
-- 进入清理区路径不合适，改 `motion.clean_approach_y`、`motion.clean_high_z`、`motion.clean_pre_z`。
-- 倒料不彻底，改 `cleaning.pour_angle_rad`、`cleaning.shake_angle_rad`、`cleaning.shake_count`。
+## 生效与故障处理
 
-## 推荐调试顺序
-
-1. 先单独调 `outlet_1_pick` 和 `outlet_2_pick`。
-2. 再调 `outlet_1_return` 和 `outlet_2_return`。
-3. 调 `spectrometer_base`，并确认激光 150mm 时目标点正确。
-4. 移动光谱仪后确认 `axis_scale_m_per_mm` 正负方向正确。
-5. 最后调 `clean_dump` 和倒料参数。
-6. 单点都通过后再跑完整流程。
-
-## 常见问题
-
-### 改了 YAML 没生效
-
-先确认 HMI 点位页已经点击“重载生效”，且状态机处于空闲、等待、暂停、错误或急停等允许重载的状态。若仍未生效，再重启节点或重新执行一键启动脚本。
-
-### 规划失败
-
-先把过渡高度调高，例如：
-
-- `motion.outlet_transfer_z`
-- `motion.spectrometer_high_z`
-- `motion.clean_high_z`
-
-再检查姿态 `rpy` 是否和实际夹爪方向一致。
-
-### 激光测距导致光谱仪目标点偏反方向
-
-只改 `spectrometer_axis.axis_scale_m_per_mm` 的正负号，不要同时乱改 `spectrometer_base`。
-
-### 出料口夹取时位置对但姿态不对
-
-改 `named_poses.outlet_*_pick.rpy` 和 `named_poses.outlet_*_return.rpy`。当前出料口默认 yaw 为 `-1.5708`。
+- 点位目录保存：完整编译全部路线，成功后原子替换；失败保留上一版缓存。
+- 工艺时间保存：调用状态机热重载；失败自动回滚 YAML。
+- 调试异常不要掉电或失能；保持使能并使用安全回 Home/重启流程。
+- HMI 不提供绝对零点修改。零点维护只能使用厂商工具，并且不能与生产进程并行。

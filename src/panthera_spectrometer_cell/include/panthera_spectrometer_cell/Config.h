@@ -34,6 +34,7 @@ struct LoopConfig
   double actionTimeoutSec{90.0};
   double sensorTimeoutSec{5.0};
   double spectrometerStartTimeoutSec{10.0};
+  double scanDurationSec{40.0};
   double detectionTimeoutSec{120.0};
   double resetTimeoutSec{30.0};
 };

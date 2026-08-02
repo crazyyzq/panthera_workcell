@@ -98,9 +98,13 @@ LaserSnapshot LaserFilter::snapshot(double now_sec, std::uint64_t capture_after)
 }
 
 void ScanDetectionTracker::start(
-  double reference_mm, double, std::uint64_t initial_sequence)
+  double reference_mm, double, std::uint64_t initial_sequence,
+  double scan_duration_sec)
 {
   reference_mm_ = reference_mm;
+  scan_duration_sec_ =
+    std::isfinite(scan_duration_sec) && scan_duration_sec > 0.0 ?
+    scan_duration_sec : kScanDurationSec;
   active_ = true;
   last_sequence_ = initial_sequence;
   last_sample_time_sec_ = 0.0;
@@ -178,7 +182,7 @@ void ScanDetectionTracker::update(const LaserSnapshot & laser, double now_sec)
     return_count_ = std::abs(value - reference_mm_) <= 2.0 ? return_count_ + 1 : 0;
     if (return_count_ >= 5) {
       waitForStandardExit();
-    } else if (now_sec - farthest_time_sec_ >= kScanDurationSec) {
+    } else if (now_sec - farthest_time_sec_ >= scan_duration_sec_) {
       phase_ = ScanPhase::COMPLETE;
     }
   }
@@ -188,13 +192,13 @@ ScanStatus ScanDetectionTracker::status(double now_sec) const
 {
   ScanStatus result;
   const bool timer_complete =
-    phase_ == ScanPhase::SCANNING && now_sec - farthest_time_sec_ >= kScanDurationSec;
+    phase_ == ScanPhase::SCANNING && now_sec - farthest_time_sec_ >= scan_duration_sec_;
   result.phase = timer_complete ? ScanPhase::COMPLETE : phase_;
   result.done = active_ && (phase_ == ScanPhase::COMPLETE || timer_complete);
   result.farthestMm = farthest_mm_;
   result.remainingSec = phase_ == ScanPhase::SCANNING ?
-    std::max(0.0, kScanDurationSec - (now_sec - farthest_time_sec_)) :
-    kScanDurationSec;
+    std::max(0.0, scan_duration_sec_ - (now_sec - farthest_time_sec_)) :
+    scan_duration_sec_;
   result.message = active_ ? toString(result.phase) : "inactive";
   return result;
 }

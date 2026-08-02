@@ -196,7 +196,8 @@ void Sensors::startScanTracking()
     std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),
     laser_filter_.snapshot(
       std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count())
-    .sequence);
+    .sequence,
+    config_.loop.scanDurationSec);
 }
 
 ScanStatus Sensors::pollScanTracking()

@@ -64,14 +64,18 @@ source_workspace()
 
 reset_ros2_daemon()
 {
+  local daemon_pattern='[f]rom ros2cli.daemon.daemonize import main'
   timeout 3 ros2 daemon stop >/dev/null 2>&1 || true
-  pkill -TERM -f '[f]rom ros2cli.daemon.daemonize import main' 2>/dev/null || true
+  pkill -TERM -f "$daemon_pattern" 2>/dev/null || true
   local cli_pattern='/opt/ros/humble/bin/ros2 (action|bag|control|doctor|interface|node|param|pkg|run|service|topic)( |$)'
   pkill -TERM -f "$cli_pattern" 2>/dev/null || true
   for _ in 1 2 3 4 5; do
-    pgrep -f "$cli_pattern" >/dev/null 2>&1 || break
+    if ! pgrep -f "$daemon_pattern|$cli_pattern" >/dev/null 2>&1; then
+      break
+    fi
     sleep 0.1
   done
+  pkill -KILL -f "$daemon_pattern" 2>/dev/null || true
   pkill -KILL -f "$cli_pattern" 2>/dev/null || true
 }
 

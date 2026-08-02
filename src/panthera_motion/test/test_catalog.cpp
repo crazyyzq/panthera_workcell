@@ -361,6 +361,7 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
     "brush_center_to_entry",
     "brush_entry_to_clean_hover",
     "brush_center_to_clean_hover_smooth",
+    "brush_entry_to_outlet_1_return_smooth",
   };
   for (const auto & name : required_routes) {
     EXPECT_NE(catalog.findRoute(name), nullptr) << name;
@@ -399,6 +400,21 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   ASSERT_FALSE(outlet_wait_to_home->segments.empty());
   EXPECT_EQ(outlet_wait_to_home->segments.back().to, "home_near");
 
+  const auto * direct_return =
+    catalog.findRoute("brush_entry_to_outlet_1_return_smooth");
+  ASSERT_NE(direct_return, nullptr);
+  ASSERT_GE(direct_return->segments.size(), 5u);
+  EXPECT_EQ(direct_return->segments[0].to, "brush_entry_clear_high");
+  EXPECT_EQ(direct_return->segments[0].type, panthera_motion::SegmentType::LINEAR);
+  EXPECT_EQ(direct_return->segments[0].constraints.vertical_axis, "z");
+  EXPECT_TRUE(direct_return->segments[0].constraints.keep_orientation);
+  EXPECT_EQ(direct_return->segments[1].to, "brush_clear_high");
+  EXPECT_EQ(direct_return->segments[2].to, "outlet_1_hover");
+  for (const auto & segment : direct_return->segments) {
+    EXPECT_NE(segment.to, "clean_dump_pour");
+    EXPECT_NE(segment.to, "clean_dump");
+  }
+
   const auto * clean_route =
     catalog.findRoute("spectrometer_pick_to_brush_entry_smooth");
   ASSERT_NE(clean_route, nullptr);
@@ -409,6 +425,14 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_TRUE(dump_entry->stop_at_end);
   EXPECT_EQ(clean_route->segments.back().type, panthera_motion::SegmentType::LINEAR);
   EXPECT_EQ(clean_route->segments.back().to, "brush_entry");
+  const auto pour_segment = std::find_if(
+    clean_route->segments.begin(), clean_route->segments.end(),
+    [](const auto & segment) {return segment.name == "rotate_wrist_to_pour";});
+  ASSERT_NE(pour_segment, clean_route->segments.end());
+  ASSERT_TRUE(pour_segment->velocity_scale.has_value());
+  ASSERT_TRUE(pour_segment->acceleration_scale.has_value());
+  EXPECT_DOUBLE_EQ(*pour_segment->velocity_scale, 0.70);
+  EXPECT_DOUBLE_EQ(*pour_segment->acceleration_scale, 0.50);
 
   const auto * dump = catalog.findPoint("clean_dump");
   const auto * brush_entry = catalog.findPoint("brush_entry");

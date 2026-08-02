@@ -14,6 +14,9 @@ Production execution does not call a MoveIt planner for every step.
 - A catalog reload is all-or-nothing; a failed compile retains the previous cache.
 - Runtime speed scaling can only slow a compiled trajectory.
 - Long-running motion uses a cancellable ROS action.
+- After brush exit, the production return lifts vertically to `z=0.45 m`, makes
+  the wrist upright at that safe height, and crosses directly to outlet 1. It
+  must not return through the low pour points.
 
 ## Interfaces
 
@@ -52,11 +55,16 @@ joint values, a TCP pose, or both. Pose-only points are solved deterministically
 from `ik_seed`. A route has one fixed start point and ordered `joint` or `linear`
 segments. `linear` segments may require a strict X/Y/Z vertical constraint.
 
-The catalog contains 6 operator-facing process points, shared safety hovers, and
-23 deterministic routes. Normal tuning should change only points tagged
+The catalog contains operator-facing process points, shared safety hovers, and
+the deterministic production, recovery, and commissioning routes. Normal tuning should change only points tagged
 `tunable`; points tagged `advanced` are recovery or clearance points. Every
 route compiles against the robot model, but real execution still requires the
 staged low-speed commissioning procedure.
+
+Production pour rotation uses local 70% velocity / 50% acceleration limits;
+the short shake segments use 60% / 45%. Precision pick/place segments and the
+gripper retain their own lower limits. Do not replace these local overrides with
+a global speed increase.
 
 The complete fixed-backend cell (hardware, Motion Server, state machine, and
 optional HMI, without MoveGroup) starts with:

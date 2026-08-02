@@ -82,6 +82,10 @@ POINT_CONFIG_POSITIONING_KEYS = {
     'fixed_axis_position_mm',
 }
 
+POINT_CONFIG_LOOP_KEYS = {
+    'scan_duration_sec',
+}
+
 POINT_CONFIG_CLEANING_KEYS = {
     'pour_wrist_joint_index',
     'pour_direction',
@@ -1429,6 +1433,7 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/debug/exit',
             '/api/debug/gripper',
             '/api/debug/brush',
+            '/api/debug/process_timing',
             '/api/external/command',
         ):
             self._send_json({'success': False, 'message': 'unknown endpoint'}, status=404)
@@ -1497,6 +1502,8 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.debug_gripper(body)
         elif parsed.path == '/api/debug/brush':
             result = self.server.bridge_node.debug_brush(body)
+        elif parsed.path == '/api/debug/process_timing':
+            result = self.server.bridge_node.debug_process_timing(body)
         else:
             command = body.get('command', '')
             result = self.server.bridge_node.call_command(command)
@@ -1837,7 +1844,17 @@ class WebHmiNode(Node):
             'last_message': '',
             'brush_enabled': False,
             'brush_speed_percent': 50.0,
+            'brush_hold_sec': 6.0,
+            'scan_duration_sec': 40.0,
         }
+        try:
+            _, process_config = self._load_point_config()
+            self._debug['brush_hold_sec'] = float(
+                process_config.get('cleaning', {}).get('brush_hold_sec', 6.0))
+            self._debug['scan_duration_sec'] = float(
+                process_config.get('loop', {}).get('scan_duration_sec', 40.0))
+        except Exception as exc:
+            self.get_logger().warn(f'failed to load debug process timing defaults: {exc}')
         default_camera_restart_script = os.path.join(
             os.path.expanduser('~'),
             'panthera_workcell_ws',
@@ -3032,6 +3049,39 @@ class WebHmiNode(Node):
                     result['message'] += f"; default save failed: {saved.get('message')}"
         return result
 
+    def debug_process_timing(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+        try:
+            with self._debug_lock:
+                if not self._debug['active'] or self._debug['phase'] != 'ready':
+                    return {'success': False, 'message': 'debug mode is not ready'}
+            try:
+                brush_hold_sec = float(body.get('brush_hold_sec'))
+                scan_duration_sec = float(body.get('scan_duration_sec'))
+            except (TypeError, ValueError):
+                return {'success': False, 'message': 'process timing values are invalid'}
+            if not math.isfinite(brush_hold_sec) or not 0.0 <= brush_hold_sec <= 60.0:
+                return {'success': False, 'message': 'brush cleaning time must be in [0, 60] seconds'}
+            if not math.isfinite(scan_duration_sec) or not 1.0 <= scan_duration_sec <= 300.0:
+                return {'success': False, 'message': 'scan completion time must be in [1, 300] seconds'}
+            result = self.save_point_config({
+                'config': {
+                    'cleaning': {'brush_hold_sec': brush_hold_sec},
+                    'loop': {'scan_duration_sec': scan_duration_sec},
+                },
+            }, allow_debug=True)
+            if result.get('success'):
+                with self._debug_lock:
+                    self._debug['brush_hold_sec'] = brush_hold_sec
+                    self._debug['scan_duration_sec'] = scan_duration_sec
+                result['message'] = (
+                    f'工艺时间已热重载：毛刷 {brush_hold_sec:g}s，'
+                    f'光谱扫描 {scan_duration_sec:g}s')
+            return result
+        finally:
+            self._debug_operation_lock.release()
+
     def _load_motion_catalog(self):
         if not os.path.isfile(self.motion_catalog_path):
             raise FileNotFoundError(self.motion_catalog_path)
@@ -3207,6 +3257,11 @@ class WebHmiNode(Node):
                 'path': self.point_config_path,
                 'config': {
                     'named_poses': config.get('named_poses', {}),
+                    'loop': {
+                        key: config.get('loop', {}).get(key)
+                        for key in sorted(POINT_CONFIG_LOOP_KEYS)
+                        if key in config.get('loop', {})
+                    },
                     'motion': {
                         key: config.get('motion', {}).get(key)
                         for key in sorted(POINT_CONFIG_MOTION_KEYS)
@@ -3269,6 +3324,21 @@ class WebHmiNode(Node):
                     rpy = _as_float_list(pose['rpy'], 3, f'named_poses.{pose_name}.rpy')
                     updated_text = _replace_yaml_value(updated_text, ['named_poses', pose_name, 'rpy'], rpy)
                     changed.append(f'named_poses.{pose_name}.rpy')
+
+            loop = updates.get('loop', {})
+            if loop is not None and not isinstance(loop, dict):
+                return {'success': False, 'message': 'loop must be an object'}
+            for key, value in (loop or {}).items():
+                if key not in POINT_CONFIG_LOOP_KEYS:
+                    return {'success': False, 'message': f'loop key is not editable from HMI: {key}'}
+                number = float(value)
+                if not math.isfinite(number) or number <= 0.0 or number > 300.0:
+                    return {
+                        'success': False,
+                        'message': f'loop.{key} must be finite and in (0, 300]',
+                    }
+                updated_text = _replace_yaml_value(updated_text, ['loop', key], number)
+                changed.append(f'loop.{key}')
 
             motion = updates.get('motion', {})
             if motion is not None and not isinstance(motion, dict):
@@ -3395,6 +3465,8 @@ class WebHmiNode(Node):
                         return {'success': False, 'message': f'cleaning.{key} must be > 0'}
                     if key in ('brush_hold_sec', 'brush_motor_stop_delay_sec') and value < 0:
                         return {'success': False, 'message': f'cleaning.{key} must be >= 0'}
+                    if key == 'brush_hold_sec' and value > 60.0:
+                        return {'success': False, 'message': 'cleaning.brush_hold_sec must be <= 60'}
                 updated_text = _replace_yaml_value(updated_text, ['cleaning', key], value)
                 changed.append(f'cleaning.{key}')
 

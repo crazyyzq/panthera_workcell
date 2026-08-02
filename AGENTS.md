@@ -155,7 +155,9 @@ This file contains durable repository context and operating rules for future age
   (possibly random) axis position; neither requires the standard pose. After place,
   scan detection must first observe five samples back at the calibrated standard
   position, then five samples at least 5 mm away, followed by a 2 s farthest-point
-  quiet period. The 40 s timer starts from the last farthest measurement.
+  quiet period. `loop.scan_duration_sec` starts from the last farthest measurement;
+  production defaults to 40 s and the HMI debug page can hot-reload it. The same page
+  edits `cleaning.brush_hold_sec`, whose production default is 6 s.
 - The 2026-07-24 bench revision rotated the robot base clockwise 90 degrees. In the
   current `base_link`, +X points toward the outlets and +Y toward the spectrometer.
   Provisional measured process coordinates are outlet1
@@ -205,6 +207,9 @@ This file contains durable repository context and operating rules for future age
   caused false aborts despite correct motion. Final position/velocity tolerances
   remain strict. After this correction, 50 consecutive 100%-speed empty
   full-flow cycles passed on 2026-07-28 with maximum Home error `0.007912 rad`.
+- Production pour wrist segments use 70% velocity / 50% acceleration; the short
+  shake relief/back segments use 60% / 45%. Keep these local overrides and the
+  compiler jerk limits instead of raising global motion dynamics.
 - Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
 - The cleaning brush motor driver is AQMD6030NS-A3 on `/dev/ttyS8`, Modbus RTU
   slave `0x02`, default `9600/8E1`. Its SW8 must be ON. The manual uses an
@@ -231,10 +236,11 @@ This file contains durable repository context and operating rules for future age
 - Gripper path tolerance must not include a nonzero velocity tolerance. The SDK reports
   quantized finger velocity while opening/closing, and applying the final settled
   velocity threshold to the whole path caused immediate false aborts.
-- After brush cleaning, first retract from `brush_center` to `brush_entry` along the
-  calibrated cup axis, then lift vertically to `brush_clear_high` (`z=0.45 m`) before
-  crossing to outlet 1. A direct low transfer from `brush_entry` toward the outlet can
-  collide with the spectrometer.
+- After brush cleaning, retract from `brush_center` to `brush_entry` along the
+  calibrated cup axis, lift vertically in the pour orientation to
+  `brush_entry_clear_high` (`z=0.45 m`), then make the wrist upright at
+  `brush_clear_high` before crossing directly to outlet 1. Do not return through the
+  low `clean_dump_pour`/`clean_dump` points, and never cross toward the outlet at low height.
 - Never execute real robot motion merely to test a code change. Use build, unit, simulation and dry-run validation first.
 - Current real HMI commissioning motion is restricted to the `clean_dump` point,
   which the operator has identified as the safe test area. Do not physically enter
@@ -630,6 +636,9 @@ not a normal shutdown path.
 - Start/stop must stop any stale ROS 2 CLI daemon before health queries.
   `ros2 control list_controllers` on this Humble install otherwise reuses a daemon
   left in `!rclpy.ok()` and falsely reports startup failure while controllers run.
+  A graceful TERM is not sufficient: wait briefly, then KILL only the stale CLI
+  daemon/CLI processes before creating a fresh health-query client. Never kill ROS
+  control nodes as part of this daemon reset.
 - The launch process must be tracked with `setsid --wait`; plain `setsid` can
   exit before its child and make startup retry a second complete ROS graph.
   Never retry until the previous launch has been proven cleanly stopped.
@@ -696,8 +705,10 @@ not a normal shutdown path.
 - Position units: metres.
 - Joint and RPY units: radians.
 - Laser distances: millimetres at adapter boundaries; convert explicitly to metres
-  inside calibrated transforms. The spectrometer correction axis is base-link Y
-  and 150 mm means zero correction.
+  inside calibrated transforms. The spectrometer correction axis is base-link X.
+  The mechanical standard position is X=162 mm, while the laser zero is the latest
+  HMI calibration value in `axis_zero_laser_mm`; never hard-code 150 mm or an old
+  sensor reading as zero correction.
 - Quaternion order when present: XYZW.
 - Base frame: `base_link`.
 - Tool/TCP frame: `gripper_center`.

@@ -15,6 +15,11 @@ below. Safe stop returns the arm to Home and clears production processes without
 stopping the HMI. The boot service source is
 `config/system/panthera-hmi.service`.
 
+The HMI debug page separates **进入调试（不移动）** from point motion. Once
+debug mode is ready, brush cleaning time (default 6 s) and spectrometer scan
+completion time (default 40 s) can be atomically saved and hot-reloaded without
+moving the arm.
+
 ## Command-line fallback start
 
 ```bash
@@ -28,10 +33,16 @@ The HMI is a separate always-on service. Production does not start MoveGroup,
 the legacy workflow executor, pose tuner,
 or camera. Startup is idempotent and requires active controllers, a settled Motion
 Server, fresh encoder positions at the commissioned Home, and ready HMI services.
-Laser data is optional: fresh valid data applies the calibrated spectrometer Y
-offset, while missing/stale data falls back to the canonical 150 mm position.
+Laser data is optional: fresh valid data applies the calibrated spectrometer X
+offset, while a sensor absent from startup uses the configured fixed reference.
+The laser zero is an HMI calibration value, not a hard-coded distance.
 Failed startup is retried only after a guarded cleanup; an unknown/non-Home pose
 is left powered and holding rather than being disabled.
+
+Startup also removes a stale ROS CLI daemon before controller health queries. If
+that daemon ignores TERM or is already in `!rclpy.ok()`, the script kills only the
+CLI daemon and stale CLI clients, then retries discovery; hardware/control nodes
+remain powered and are never included in this reset.
 
 ## Command-line fallback stop
 

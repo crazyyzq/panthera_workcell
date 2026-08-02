@@ -71,6 +71,10 @@ commissioning:
     brush_center:
     - point: brush_entry
       axes: xyz
+    - point: brush_entry_clear_high
+      axes: xy
+    - point: brush_clear_high
+      axes: xy
 points:
   home_near:
     description: 厂商绝对零点；用于启动校验、异常恢复和关机回位。
@@ -446,18 +450,35 @@ points:
     - cleaning
     - safety
     - advanced
-  brush_clear_high:
-    description: 毛刷退出后在倒料点上方200mm的跨区返回点。
+  brush_entry_clear_high:
+    description: 毛刷退出后保持倒料姿态，从入口直接垂直抬高到跨区安全高度。
     pose:
       xyz:
-      - -0.05874
+      - 0.04126
+      - -0.39374
+      - 0.45000
+      rpy:
+      - -2.5
+      - 0.0
+      - -1.5708
+    ik_seed: brush_entry
+    tags:
+    - system
+    - cleaning
+    - safety
+    - advanced
+  brush_clear_high:
+    description: 毛刷入口正上方的回正跨区点；杯子只在安全高度回正。
+    pose:
+      xyz:
+      - 0.04126
       - -0.39374
       - 0.45000
       rpy:
       - 0.0
       - 0.0
       - -1.5708
-    ik_seed: clean_hover
+    ik_seed: brush_entry_clear_high
     tags:
     - system
     - cleaning
@@ -1082,18 +1103,18 @@ routes:
     - name: rotate_wrist_to_pour
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.40
-      acceleration_scale: 0.35
+      velocity_scale: 0.70
+      acceleration_scale: 0.50
     - name: pour_shake_relief
       type: joint
       to: clean_dump_shake_relief
-      velocity_scale: 0.40
-      acceleration_scale: 0.30
+      velocity_scale: 0.60
+      acceleration_scale: 0.45
     - name: pour_shake_back
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.40
-      acceleration_scale: 0.30
+      velocity_scale: 0.60
+      acceleration_scale: 0.45
     - name: translate_positive_x_100mm_to_brush_entry
       type: linear
       to: brush_entry
@@ -1119,18 +1140,18 @@ routes:
     - name: rotate_wrist_to_pour
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.40
-      acceleration_scale: 0.35
+      velocity_scale: 0.70
+      acceleration_scale: 0.50
     - name: pour_shake_relief
       type: joint
       to: clean_dump_shake_relief
-      velocity_scale: 0.40
-      acceleration_scale: 0.30
+      velocity_scale: 0.60
+      acceleration_scale: 0.45
     - name: pour_shake_back
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.40
-      acceleration_scale: 0.30
+      velocity_scale: 0.60
+      acceleration_scale: 0.45
     - name: translate_positive_x_100mm_to_brush_entry
       type: linear
       to: brush_entry
@@ -1140,16 +1161,16 @@ routes:
         keep_orientation: true
   clean_dump_to_pour:
     start: clean_dump
-    velocity_scale: 0.40
-    acceleration_scale: 0.35
+    velocity_scale: 0.70
+    acceleration_scale: 0.50
     segments:
     - name: rotate_wrist_to_pour_limit
       type: joint
       to: clean_dump_pour
   clean_dump_pour_shake_once:
     start: clean_dump_pour
-    velocity_scale: 0.40
-    acceleration_scale: 0.30
+    velocity_scale: 0.60
+    acceleration_scale: 0.45
     segments:
     - name: shake_relief
       type: joint
@@ -1234,23 +1255,22 @@ routes:
         keep_orientation: true
   brush_entry_to_clear_high:
     start: brush_entry
-    velocity_scale: 0.75
-    acceleration_scale: 0.65
+    velocity_scale: 1.00
+    acceleration_scale: 0.75
     segments:
-    - name: return_negative_x_100mm_to_dump
+    - name: direct_vertical_lift_after_brush
       type: linear
-      to: clean_dump_pour
-      constraints:
-        keep_orientation: true
-    - name: return_wrist_upright_before_lift
-      type: joint
-      to: clean_dump
-    - name: vertical_lift_clear_of_spectrometer
-      type: linear
-      to: brush_clear_high
+      to: brush_entry_clear_high
+      velocity_scale: 1.00
+      acceleration_scale: 0.75
       constraints:
         vertical_axis: z
         keep_orientation: true
+    - name: return_wrist_upright_at_safe_height
+      type: joint
+      to: brush_clear_high
+      velocity_scale: 1.00
+      acceleration_scale: 0.70
   brush_clear_high_to_outlet_1_hover_fast:
     start: brush_clear_high
     velocity_scale: 1.00
@@ -1568,26 +1588,19 @@ routes:
     velocity_scale: 1.00
     acceleration_scale: 1.00
     segments:
-    - name: return_negative_x_100mm_to_dump
+    - name: direct_vertical_lift_after_brush
       type: linear
-      to: clean_dump_pour
+      to: brush_entry_clear_high
       velocity_scale: 1.00
-      acceleration_scale: 0.60
-      constraints:
-        keep_orientation: true
-    - name: return_wrist_upright_before_lift
-      type: joint
-      to: clean_dump
-      velocity_scale: 1.00
-      acceleration_scale: 0.45
-    - name: vertical_lift_clear_of_spectrometer
-      type: linear
-      to: brush_clear_high
-      velocity_scale: 1.00
-      acceleration_scale: 0.70
+      acceleration_scale: 0.75
       constraints:
         vertical_axis: z
         keep_orientation: true
+    - name: return_wrist_upright_at_safe_height
+      type: joint
+      to: brush_clear_high
+      velocity_scale: 1.00
+      acceleration_scale: 0.70
     - name: high_cross_station_transfer
       type: joint
       to: outlet_1_hover

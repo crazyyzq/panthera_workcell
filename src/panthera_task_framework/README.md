@@ -1,5 +1,9 @@
 # panthera_task_framework
 
+> 生产环境已停用。当前光谱工作站由 `panthera_motion` 固定轨迹和
+> `panthera_spectrometer_cell` 长期状态机运行；不要同时启动本 workflow executor，
+> 否则会出现多个机械臂轨迹发布者。本 README 仅保留旧流程兼容参考。
+
 `panthera_task_framework` 是机械臂应用层流程执行器。它把 MoveIt 运动、夹爪动作、传感器输入、外部状态信号都放进 YAML 流程里，后续改作业流程主要改 YAML，不需要反复改 C++ 主逻辑。
 
 ## 一键启动

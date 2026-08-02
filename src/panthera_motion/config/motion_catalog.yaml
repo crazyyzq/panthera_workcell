@@ -24,6 +24,8 @@ defaults:
   acceleration_scale: 0.85
   # Bound the peak jerk of the controller's quintic spline interpolation.
   max_jerk_rad_sec3: 300.0
+  # Grasp/place Cartesian segments need a lower jerk ceiling than long joint moves.
+  cartesian_max_jerk_rad_sec3: 40.0
   joint_step_rad: 0.10
   cartesian_step_m: 0.010
   max_joint_jump_rad: 0.35

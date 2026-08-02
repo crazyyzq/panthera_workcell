@@ -1088,13 +1088,18 @@ hardware_interface::return_type PantheraHardwareInterface::write(
     }
     else if (control_mode_ == "position_velocity")
     {
-      // The vendor cooperative mode interprets velocity as a positive speed
-      // ceiling, not a signed trajectory setpoint. Trajectory timing already
-      // defines the desired motion; feeding its instantaneous velocity caused
-      // repeated slow/stop commands near spline knots and visible stutter.
-      const std::vector<double> & velocities = arm_max_velocities;
+      // This vendor mode expects a non-negative speed limit, not ROS
+      // trajectory velocity with its direction sign.  Keep a small floor so
+      // near-zero samples do not repeatedly stop/restart Cartesian motion.
+      constexpr double kMinimumTrackingSpeed = 0.05;
+      std::vector<double> speed_limits = arm_velocities;
+      for (std::size_t index = 0; index < speed_limits.size(); ++index)
+      {
+        speed_limits[index] = std::clamp(
+          std::abs(speed_limits[index]), kMinimumTrackingSpeed, arm_max_velocities[index]);
+      }
       arm_command_ok = robot_->posVelMaxTorque(
-        arm_positions, velocities, arm_max_torques, false);
+        arm_positions, speed_limits, arm_max_torques, false);
     }
     else if (control_mode_ == "pd_control")
     {

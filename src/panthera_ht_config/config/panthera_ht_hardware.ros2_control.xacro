@@ -87,9 +87,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">10.0</param>
-                <!-- Fixed vendor ceiling for J6. Motion timing remains in joint_limits.yaml;
-                     keeping this ceiling constant avoids knot-by-knot speed modulation. -->
-                <param name="max_velocity">1.1</param>
+                <param name="max_velocity">2.2</param>
                 <param name="kp">1.0</param>
                 <param name="kd">0.1</param>
             </joint>

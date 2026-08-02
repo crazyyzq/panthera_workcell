@@ -172,6 +172,9 @@ MotionCatalog MotionCatalog::loadFromFile(const std::string & path)
     defaults, "acceleration_scale", catalog.defaults.acceleration_scale, "defaults");
   catalog.defaults.max_jerk_rad_sec3 = finiteDouble(
     defaults, "max_jerk_rad_sec3", catalog.defaults.max_jerk_rad_sec3, "defaults");
+  catalog.defaults.cartesian_max_jerk_rad_sec3 = finiteDouble(
+    defaults, "cartesian_max_jerk_rad_sec3",
+    catalog.defaults.cartesian_max_jerk_rad_sec3, "defaults");
   catalog.defaults.joint_step_rad = finiteDouble(
     defaults, "joint_step_rad", catalog.defaults.joint_step_rad, "defaults");
   catalog.defaults.cartesian_step_m = finiteDouble(
@@ -302,7 +305,8 @@ ValidationResult MotionCatalog::validate() const
   }
   if (defaults.joint_step_rad <= 0.0 || defaults.cartesian_step_m <= 0.0 ||
     defaults.max_joint_jump_rad <= 0.0 || defaults.max_lateral_error_m < 0.0 ||
-    defaults.max_jerk_rad_sec3 <= 0.0 || defaults.ik_timeout_sec <= 0.0 ||
+    defaults.max_jerk_rad_sec3 <= 0.0 || defaults.cartesian_max_jerk_rad_sec3 <= 0.0 ||
+    defaults.ik_timeout_sec <= 0.0 ||
     defaults.ik_attempts <= 0)
   {
     return ValidationResult::fail("motion catalog defaults contain invalid limits");

@@ -778,10 +778,7 @@ struct TrajectoryCompiler::Impl
     const std::size_t translation_steps = interpolationSteps(distance, segment.cartesian_step_m);
     const std::size_t rotation_steps = interpolationSteps(orientation_distance, 0.05);
     const std::size_t steps = std::max(translation_steps, rotation_steps);
-    // Validate Cartesian geometry at the configured fine resolution, but do
-    // not burden the 100 Hz hardware servo with a spline knot every 10 mm.
-    // Twenty-millimetre controller knots retain the straight TCP path while
-    // avoiding repeated accelerate/decelerate corrections at dense IK samples.
+    // Keep validation dense while avoiding unnecessary controller knots.
     constexpr double controller_cartesian_step_m = 0.020;
     const std::size_t controller_stride = std::max<std::size_t>(
       1, static_cast<std::size_t>(
@@ -992,9 +989,17 @@ struct TrajectoryCompiler::Impl
       }
     }
 
+    const bool contains_linear_segment = std::any_of(
+      route.segments.begin(), route.segments.end(),
+      [](const SegmentDefinition & segment) {return segment.type == SegmentType::LINEAR;});
+    const double jerk_limit = contains_linear_segment ?
+      std::min(
+      catalog.defaults.max_jerk_rad_sec3,
+      catalog.defaults.cartesian_max_jerk_rad_sec3) :
+      catalog.defaults.max_jerk_rad_sec3;
     result = enforceTrajectoryDynamicsLimits(
       output.trajectory, joint_velocity_limits, joint_acceleration_limits,
-      catalog.defaults.max_jerk_rad_sec3);
+      jerk_limit);
     if (!result.success) {
       return ValidationResult::fail(
         "route '" + route.name + "' dynamics limiting failed: " + result.message);

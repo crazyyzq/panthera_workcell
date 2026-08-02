@@ -177,6 +177,22 @@ This file contains durable repository context and operating rules for future age
   `brush_entry_to_outlet_1_return_continuous`); other main segments were about
   4.7-6.5 rad/s^2. Treat joint6 continuous retiming/blending as the next motion
   optimization; do not tune MIT Kp/Kd to mask this trajectory-level discontinuity.
+- A 2026-08-02 position/velocity A/B test restored the pre-MIT hardware ceiling
+  for joint6 from `1.1` to `2.2 rad/s`; all six arm joints now use the original
+  `2.2 rad/s` ceiling. Xacro Kp/Kd values are logged but are not sent in
+  `position_velocity` mode, so PD tuning cannot correct PV-mode stutter.
+- The vendor `posVelMaxTorque` velocity argument is a non-negative speed limit,
+  not a signed ROS trajectory velocity (the vendor example keeps it positive
+  even while moving toward a lower joint position). Passing signed trajectory
+  velocity caused stop/restart behavior in the Cartesian cup-pick routes. The
+  bridge must send `abs(desired_velocity)` with a `0.05 rad/s` tracking floor and
+  clamp it to the per-joint hardware maximum. Do not restore signed velocity or
+  a constant full-speed chase ceiling.
+- Cartesian-containing routes use an additional `40 rad/s^3` jerk cap; joint-only
+  transfers retain the global `300 rad/s^3` cap. At 100% speed, repeated outlet
+  pick/retreat tests completed in about `11.38 s`, returned exact Home, and the
+  user confirmed visibly smoother motion. Keep this local Cartesian limit rather
+  than globally lowering speed or acceleration.
 - Joints 1-4 use route path tolerance `0.15 rad` (or `0.20 rad` during
   pouring). Wrist joints 5-6 use `0.45 rad`: vendor feedback is batch-updated,
   and a measured joint5 `0.1645 rad` transient plus joint6 `0.3536 rad` transient

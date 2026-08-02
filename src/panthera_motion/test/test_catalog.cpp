@@ -86,6 +86,10 @@ TEST(MotionCatalog, InvalidJerkLimitFails)
   const auto result = catalog.validate();
   EXPECT_FALSE(result.success);
   EXPECT_NE(result.message.find("invalid limits"), std::string::npos);
+
+  catalog = validCatalog();
+  catalog.defaults.cartesian_max_jerk_rad_sec3 = 0.0;
+  EXPECT_FALSE(catalog.validate().success);
 }
 
 TEST(TrajectoryScaling, InvalidScaleIsRejected)

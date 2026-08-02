@@ -304,7 +304,7 @@ positioning:
   # 未接入激光时使用固定基准；一旦收到有效激光，取杯/放杯都要求各自的新稳定样本。
   # 已接入的传感器若中途失联会安全等待，避免在随机扫描位置盲取。
   mode: sensor_optional
-  fixed_axis_position_mm: 163.8
+  fixed_axis_position_mm: 162.9
 spectrometer_axis:
   # ========== 光谱仪激光换算 ==========
   # 这个段落决定“激光读数 -> 光谱仪实际目标坐标”。
@@ -316,7 +316,7 @@ spectrometer_axis:
 
   # 光谱仪基准坐标对应的激光距离，单位 mm。
   # 机械标准品位置固定为 X=162.0mm；激光参考值以最近一次 HMI 校准为准。
-  axis_zero_laser_mm: 163.8
+  axis_zero_laser_mm: 162.9
   # 激光每变化 1mm，目标坐标沿 axis 变化多少 m。
   # 0.001 表示激光增加 1mm，目标坐标增加 0.001m。
   # 如果方向反了，把它改成 -0.001。

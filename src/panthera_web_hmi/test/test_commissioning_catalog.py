@@ -1,6 +1,7 @@
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler
 import inspect
+import json
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 import yaml
 
 from panthera_web_hmi.web_hmi_node import WebHmiNode
+from panthera_web_hmi.web_hmi_node import HmiStateStore
 from panthera_web_hmi.web_hmi_node import HmiRequestHandler
 from panthera_web_hmi.web_hmi_node import _validate_motion_catalog_document
 from panthera_web_hmi.web_hmi_node import cartesian_pose_delta
@@ -59,6 +61,121 @@ def test_hmi_separates_debug_entry_from_point_motion():
     assert 'id="debugGoto"' in html
     assert "'/api/debug/enter', {}" in javascript
     assert "'/api/debug/goto', {point_name: point}" in javascript
+
+
+def test_laser_filter_reports_stable_median_and_axis_offset():
+    store = HmiStateStore()
+    store.set_laser_reference(162.0)
+    for index in range(19):
+        value = 166.0 + (index % 3 - 1) * 0.1
+        store.set_laser(SimpleNamespace(
+            valid=True,
+            distance_mm=value,
+            distance_m=value / 1000.0,
+            source='test',
+            status='ok',
+        ))
+
+    laser = store.stable_laser()
+
+    assert laser['stable'] is True
+    assert laser['stable_distance_mm'] == pytest.approx(166.0, abs=0.1)
+    assert laser['span_mm'] <= 1.0
+    assert laser['axis_position_mm'] == pytest.approx(166.0, abs=0.1)
+
+
+def test_laser_calibration_saves_matching_reference_fields():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node.state_store = HmiStateStore()
+    node.state_store.set_cell_state('WAIT_DISCHARGE')
+    node.state_store.set_cell_context(json.dumps({
+        'state': 'WAIT_DISCHARGE',
+        'has_active_task': False,
+        'cup_in_gripper': False,
+        'spectrometer_occupied': False,
+    }))
+    for index in range(19):
+        value = 162.2 + (index % 3 - 1) * 0.1
+        node.state_store.set_laser(SimpleNamespace(
+            valid=True,
+            distance_mm=value,
+            distance_m=value / 1000.0,
+            source='test',
+            status='ok',
+        ))
+    saved = {}
+    node.save_point_config = lambda body, **_kwargs: (
+        saved.update(body) or {'success': True, 'message': 'saved'})
+
+    result = node.calibrate_laser({'confirm_standard_position': True})
+
+    assert result['success'] is True
+    assert saved['config']['spectrometer_axis'] == {
+        'axis_zero_laser_mm': pytest.approx(162.2, abs=0.1),
+        'axis': 'x',
+    }
+    assert saved['config']['positioning']['fixed_axis_position_mm'] == pytest.approx(
+        162.2, abs=0.1)
+
+
+def test_laser_calibration_rejects_unstable_samples():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node.state_store = HmiStateStore()
+    node.state_store.set_cell_context(json.dumps({
+        'state': 'WAIT_DISCHARGE',
+        'has_active_task': False,
+    }))
+    for index in range(19):
+        value = 160.0 if index % 2 else 164.0
+        node.state_store.set_laser(SimpleNamespace(
+            valid=True,
+            distance_mm=value,
+            distance_m=value / 1000.0,
+            source='test',
+            status='ok',
+        ))
+    node.save_point_config = lambda _body, **_kwargs: pytest.fail(
+        'unstable value was saved')
+
+    result = node.calibrate_laser({'confirm_standard_position': True})
+
+    assert result['success'] is False
+    assert '尚未稳定' in result['message']
+
+
+def test_point_config_reload_failure_restores_original_file(tmp_path):
+    config_path = tmp_path / 'spectrometer_cell.yaml'
+    original = (
+        'positioning:\n'
+        '  mode: sensor_optional\n'
+        '  fixed_axis_position_mm: 150.0\n'
+        'spectrometer_axis:\n'
+        '  axis_zero_laser_mm: 150.0\n'
+        '  axis: x\n')
+    config_path.write_text(original, encoding='utf-8')
+    node = WebHmiNode.__new__(WebHmiNode)
+    node.point_config_path = str(config_path)
+    node.reload_config_client = SimpleNamespace(service_is_ready=lambda: True)
+    node.state_store = HmiStateStore()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': False}
+    node.get_logger = lambda: SimpleNamespace(warn=lambda _message: None)
+    reload_results = iter((
+        {'success': False, 'message': 'rejected test config'},
+        {'success': True, 'message': 'previous config restored'},
+    ))
+    node.reload_point_config = lambda **_kwargs: next(reload_results)
+
+    result = node.save_point_config({
+        'config': {
+            'spectrometer_axis': {'axis_zero_laser_mm': 162.2},
+            'positioning': {'fixed_axis_position_mm': 162.2},
+        },
+    })
+
+    assert result['success'] is False
+    assert result['runtime_reloaded'] is False
+    assert config_path.read_text(encoding='utf-8') == original
 
 
 def test_debug_entry_enables_tools_without_arm_motion():

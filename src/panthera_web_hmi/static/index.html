@@ -358,6 +358,9 @@
       <div class="laser-grid">
         <div><span>原始距离</span><strong id="laserRaw">--</strong></div>
         <div><span>滤波距离</span><strong id="laserFiltered">--</strong></div>
+        <div><span>稳定值 / 跨度</span><strong id="laserStable">--</strong></div>
+        <div><span>标定基准</span><strong id="laserReference">--</strong></div>
+        <div><span>当前偏置</span><strong id="laserDelta">--</strong></div>
         <div><span>轴向坐标</span><strong id="laserAxis">--</strong></div>
         <div><span>状态</span><strong id="laserStatus">--</strong></div>
       </div>
@@ -365,6 +368,9 @@
         <div><span>放杯前</span><strong id="placeLaser">--</strong></div>
         <div><span>取杯前</span><strong id="pickLaser">--</strong></div>
       </div>
+      <button id="calibrateLaser" class="cmd neutral" type="button">校准标准品位置</button>
+      <div class="muted">仅在光谱仪位于标准品固定位置 X=162.0 mm 时操作；校准不会移动机械臂。</div>
+      <div id="laserCalibrationResult" class="command-result"></div>
     </section>
 
     <section class="panel tool-pose-panel" data-page="dashboard">

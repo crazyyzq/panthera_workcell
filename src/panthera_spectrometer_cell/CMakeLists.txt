@@ -28,6 +28,7 @@ find_package(yaml-cpp REQUIRED)
 add_executable(spectrometer_cell_node
   src/main.cpp
   src/Config.cpp
+  src/LaserProcessing.cpp
   src/RobotActions.cpp
   src/Sensors.cpp
   src/Spectrometer.cpp
@@ -118,6 +119,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_sensors
     test/test_sensors.cpp
     src/Sensors.cpp
+    src/LaserProcessing.cpp
   )
   target_include_directories(test_sensors PRIVATE include)
   ament_target_dependencies(test_sensors
@@ -125,8 +127,25 @@ if(BUILD_TESTING)
     std_srvs
     panthera_interfaces
   )
+  set_tests_properties(test_sensors PROPERTIES
+    ENVIRONMENT "ROS_DOMAIN_ID=232;ROS_LOCALHOST_ONLY=1"
+  )
+  ament_add_gtest(test_laser_processing
+    test/test_laser_processing.cpp
+    src/LaserProcessing.cpp
+  )
+  target_include_directories(test_laser_processing PRIVATE include)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
+  set(ament_cmake_uncrustify_ADDITIONAL_ARGS LANGUAGE C++)
+  # ponytail: keep lint enforcing the maintained files without a noisy legacy-only reformat.
+  set(ament_cmake_uncrustify_ADDITIONAL_EXCLUDE
+    include/panthera_spectrometer_cell/RobotActions.h
+    src/Config.cpp
+    src/RobotActions.cpp
+    src/main.cpp
+    src/recover_current_cycle.cpp
+  )
   ament_lint_auto_find_test_dependencies()
 endif()
 

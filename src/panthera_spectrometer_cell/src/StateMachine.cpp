@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <utility>
@@ -274,49 +275,54 @@ std::vector<Event> StateMachine::collectEvents()
   const auto stamp = nowMs();
 
   if (sensors_->isEmergencyStopActive() && state_ != State::ESTOP) {
-    events.push_back(makeEvent(
-      EventType::ESTOP_PRESSED,
-      "sensors",
-      "emergency_stop",
-      "emergency stop active",
-      stamp));
+    events.push_back(
+      makeEvent(
+        EventType::ESTOP_PRESSED,
+        "sensors",
+        "emergency_stop",
+        "emergency stop active",
+        stamp));
   } else if (!sensors_->isEmergencyStopActive() && estop_pressed_ && !estop_released_) {
-    events.push_back(makeEvent(
-      EventType::ESTOP_RELEASED,
-      "sensors",
-      "emergency_stop",
-      "emergency stop released",
-      stamp));
+    events.push_back(
+      makeEvent(
+        EventType::ESTOP_RELEASED,
+        "sensors",
+        "emergency_stop",
+        "emergency stop released",
+        stamp));
   }
 
   if (sensors_->consumeManualResetRequest()) {
-    events.push_back(makeEvent(
-      EventType::RESET_SYSTEM,
-      "operator",
-      "request_reset",
-      "manual reset requested",
-      stamp));
+    events.push_back(
+      makeEvent(
+        EventType::RESET_SYSTEM,
+        "operator",
+        "request_reset",
+        "manual reset requested",
+        stamp));
   }
 
   if (manual_mode_enabled_.load() && !context_.pauseRequested &&
     state_ != State::PAUSED && state_ != State::ERROR &&
     state_ != State::ESTOP && state_ != State::RESET)
   {
-    events.push_back(makeEvent(
-      EventType::PAUSE_AUTO,
-      "operator",
-      "manual_mode",
-      "manual pause requested",
-      stamp));
+    events.push_back(
+      makeEvent(
+        EventType::PAUSE_AUTO,
+        "operator",
+        "manual_mode",
+        "manual pause requested",
+        stamp));
   }
 
   if (manual_step_requested_.exchange(false)) {
-    events.push_back(makeEvent(
-      EventType::MANUAL_NEXT_STEP,
-      "operator",
-      "step_once",
-      "manual next step requested",
-      stamp));
+    events.push_back(
+      makeEvent(
+        EventType::MANUAL_NEXT_STEP,
+        "operator",
+        "step_once",
+        "manual next step requested",
+        stamp));
   }
 
   const auto discharge = sensors_->readDischargeDone();
@@ -324,7 +330,10 @@ std::vector<Event> StateMachine::collectEvents()
     const EventType type = discharge.outletId == OutletId::OUTLET_1 ?
       EventType::OUTLET_1_DISCHARGE_DONE :
       EventType::OUTLET_2_DISCHARGE_DONE;
-    events.push_back(makeEvent(type, "sensors", toString(discharge.outletId), discharge.message, stamp));
+    events.push_back(
+      makeEvent(
+        type, "sensors", toString(discharge.outletId), discharge.message,
+        stamp));
   }
 
   if (events.empty()) {
@@ -500,7 +509,9 @@ void StateMachine::enqueueOutletIfAllowed(OutletId outlet, const std::string & s
 
 bool StateMachine::pendingContains(OutletId outlet) const
 {
-  return std::find(pending_outlets_.begin(), pending_outlets_.end(), outlet) != pending_outlets_.end();
+  return std::find(
+    pending_outlets_.begin(), pending_outlets_.end(),
+    outlet) != pending_outlets_.end();
 }
 
 void StateMachine::updateInit(const Event &)
@@ -538,7 +549,9 @@ void StateMachine::updateIdle(const Event & event)
   context_.clearTask(context_.cycleId, State::IDLE, nowMs());
   clearActiveAction();
 
-  if (event.type == EventType::START_AUTO || event.type == EventType::RESUME_AUTO || auto_mode_enabled_) {
+  if (event.type == EventType::START_AUTO || event.type == EventType::RESUME_AUTO ||
+    auto_mode_enabled_)
+  {
     auto_mode_enabled_ = true;
     transitionTo(State::WAIT_DISCHARGE, "auto mode enabled");
     return;
@@ -599,7 +612,9 @@ void StateMachine::updateSelectTask(const Event &)
   context_.beginTask(next_cycle_id_++, outlet, state_, nowMs());
   context_.currentState = state_;
   context_.clearError();
-  RCLCPP_INFO(logger_, "TASK_CREATED cycle=%lu outlet=%s", context_.cycleId, toString(outlet).c_str());
+  RCLCPP_INFO(
+    logger_, "TASK_CREATED cycle=%lu outlet=%s", context_.cycleId, toString(
+      outlet).c_str());
   transitionTo(State::PICK_FROM_OUTLET, "task selected");
 }
 
@@ -629,7 +644,12 @@ void StateMachine::updateMeasureBeforePlace(const Event &)
 {
   double value = 0.0;
   std::string error;
-  if (!measureSpectrometerPosition("measure_before_place", value, error)) {
+  bool waiting = false;
+  if (!measureSpectrometerPosition("measure_before_place", value, error, waiting)) {
+    if (waiting) {
+      RCLCPP_INFO_THROTTLE(logger_, *node_->get_clock(), 2000, "%s", error.c_str());
+      return;
+    }
     fail(error);
     return;
   }
@@ -691,6 +711,15 @@ void StateMachine::updateWaitDetectionDone(const Event & event)
     return;
   }
 
+  if (!done && !config_.simulation.enabled) {
+    const auto scan = sensors_->pollScanTracking();
+    done = scan.done;
+    RCLCPP_INFO_THROTTLE(
+      logger_, *node_->get_clock(), 5000,
+      "LASER_SCAN phase=%s farthest=%.3fmm remaining=%.1fs",
+      toString(scan.phase), scan.farthestMm, scan.remainingSec);
+  }
+
   if (done) {
     context_.detectionDone = true;
     RCLCPP_INFO(logger_, "SPECTROMETER_DETECTION_DONE message=%s", result.message.c_str());
@@ -702,7 +731,12 @@ void StateMachine::updateMeasureBeforePick(const Event &)
 {
   double value = 0.0;
   std::string error;
-  if (!measureSpectrometerPosition("measure_before_pick", value, error)) {
+  bool waiting = false;
+  if (!measureSpectrometerPosition("measure_before_pick", value, error, waiting)) {
+    if (waiting) {
+      RCLCPP_INFO_THROTTLE(logger_, *node_->get_clock(), 2000, "%s", error.c_str());
+      return;
+    }
     fail(error);
     return;
   }
@@ -783,7 +817,9 @@ void StateMachine::updateReturnCup(const Event &)
 void StateMachine::updateCompleteCycle(const Event &)
 {
   const double cycle_time =
-    std::chrono::duration<double>(std::chrono::steady_clock::now() - context_.cycleStartTime).count();
+    std::chrono::duration<double>(
+    std::chrono::steady_clock::now() -
+    context_.cycleStartTime).count();
   RCLCPP_INFO(
     logger_,
     "COMPLETE_CYCLE cycle=%lu outlet=%s place_laser=%.3fmm pick_laser=%.3fmm cycle_time=%.2fs",
@@ -1136,6 +1172,14 @@ void StateMachine::onExit(State)
 
 void StateMachine::onEnter(State state)
 {
+  if (state == State::MEASURE_SPECTROMETER_BEFORE_PLACE ||
+    state == State::MEASURE_SPECTROMETER_BEFORE_PICK)
+  {
+    sensors_->beginSpectrometerMeasurement();
+  }
+  if (state == State::WAIT_DETECTION_DONE) {
+    sensors_->startScanTracking();
+  }
   if (state == State::WAIT_DISCHARGE) {
     const auto result = robot_->moveToOutletWait();
     if (!result.success) {
@@ -1272,7 +1316,9 @@ void StateMachine::handleActionFailure(const Event & event, const std::string & 
   fail(out.str());
 }
 
-bool StateMachine::completeCurrentAction(const Event & event, const std::string & expected_action_name)
+bool StateMachine::completeCurrentAction(
+  const Event & event,
+  const std::string & expected_action_name)
 {
   if (event.actionName != expected_action_name || !isCurrentActionFeedback(event)) {
     RCLCPP_WARN(
@@ -1290,12 +1336,18 @@ bool StateMachine::completeCurrentAction(const Event & event, const std::string 
 bool StateMachine::measureSpectrometerPosition(
   const std::string & request_name,
   double & out_value,
-  std::string & out_error)
+  std::string & out_error,
+  bool & out_waiting)
 {
   RCLCPP_INFO(logger_, "SENSOR_REQUEST name=%s", request_name.c_str());
   const auto result = sensors_->readSpectrometerPosition();
   if (!result.success) {
     out_error = request_name + " position measurement invalid: " + result.message;
+    return false;
+  }
+  if (!result.ready) {
+    out_waiting = true;
+    out_error = request_name + " " + result.message;
     return false;
   }
   if (!validateSpectrometerMeasurement(result.value)) {
@@ -1380,23 +1432,33 @@ bool StateMachine::handleManualStateRequest(const Event & event)
     event.message.c_str());
 
   if (state_ == State::ESTOP && event.targetState != State::RESET) {
-    RCLCPP_WARN(logger_, "STATE_REQUEST_REJECTED current=ESTOP target=%s", toString(event.targetState).c_str());
+    RCLCPP_WARN(
+      logger_, "STATE_REQUEST_REJECTED current=ESTOP target=%s",
+      toString(event.targetState).c_str());
     return true;
   }
-  if (state_ == State::ERROR && event.targetState != State::RESET && event.targetState != State::ESTOP) {
-    RCLCPP_WARN(logger_, "STATE_REQUEST_REJECTED current=ERROR target=%s", toString(event.targetState).c_str());
+  if (state_ == State::ERROR && event.targetState != State::RESET &&
+    event.targetState != State::ESTOP)
+  {
+    RCLCPP_WARN(
+      logger_, "STATE_REQUEST_REJECTED current=ERROR target=%s",
+      toString(event.targetState).c_str());
     return true;
   }
   if (event.targetState == State::PICK_FROM_SPECTROMETER &&
     !context_.spectrometerPositionBeforePickValid)
   {
-    RCLCPP_WARN(logger_, "STATE_REQUEST_REJECTED target=PICK_FROM_SPECTROMETER reason=missing before-pick measurement");
+    RCLCPP_WARN(
+      logger_,
+      "STATE_REQUEST_REJECTED target=PICK_FROM_SPECTROMETER reason=missing before-pick measurement");
     return true;
   }
   if (event.targetState == State::RETURN_CUP &&
     (context_.outletId == OutletId::NONE || !context_.cupCleaned))
   {
-    RCLCPP_WARN(logger_, "STATE_REQUEST_REJECTED target=RETURN_CUP reason=missing outlet or cup not cleaned");
+    RCLCPP_WARN(
+      logger_,
+      "STATE_REQUEST_REJECTED target=RETURN_CUP reason=missing outlet or cup not cleaned");
     return true;
   }
 
@@ -1463,9 +1525,11 @@ void StateMachine::checkTimeouts()
       message = "pick from outlet timeout";
       break;
     case State::MEASURE_SPECTROMETER_BEFORE_PLACE:
-      timeout_sec = config_.loop.sensorTimeoutSec;
-      message = "before-place laser timeout";
-      break;
+      RCLCPP_WARN_THROTTLE(
+        logger_, *node_->get_clock(), 10000,
+        "LASER_WAIT before-place elapsed=%.1fs; holding safely for stable standard position",
+        elapsed);
+      return;
     case State::PLACE_TO_SPECTROMETER:
       timeout_sec = config_.loop.actionTimeoutSec;
       message = "place to spectrometer timeout";
@@ -1479,9 +1543,11 @@ void StateMachine::checkTimeouts()
       message = "detection timeout";
       break;
     case State::MEASURE_SPECTROMETER_BEFORE_PICK:
-      timeout_sec = config_.loop.sensorTimeoutSec;
-      message = "before-pick laser timeout";
-      break;
+      RCLCPP_WARN_THROTTLE(
+        logger_, *node_->get_clock(), 10000,
+        "LASER_WAIT before-pick elapsed=%.1fs; holding safely for stable target position",
+        elapsed);
+      return;
     case State::PICK_FROM_SPECTROMETER:
       timeout_sec = config_.loop.actionTimeoutSec;
       message = "pick from spectrometer timeout";
@@ -1626,6 +1692,8 @@ void StateMachine::publishError()
 
 void StateMachine::publishContext()
 {
+  const auto laser = sensors_->laserSnapshot();
+  const auto scan = sensors_->pollScanTracking();
   std::ostringstream out;
   out << "{"
       << "\"state\":\"" << toString(state_) << "\","
@@ -1635,11 +1703,13 @@ void StateMachine::publishContext()
       << "\"outlet\":\"" << toString(context_.outletId) << "\","
       << "\"cup_in_gripper\":" << (context_.cupInGripper ? "true" : "false") << ","
       << "\"cup_picked_from_outlet\":" << (context_.cupPickedFromOutlet ? "true" : "false") << ","
-      << "\"cup_placed_to_spectrometer\":" << (context_.cupPlacedToSpectrometer ? "true" : "false") << ","
+      << "\"cup_placed_to_spectrometer\":" <<
+    (context_.cupPlacedToSpectrometer ? "true" : "false") << ","
       << "\"spectrometer_occupied\":" << (context_.spectrometerOccupied ? "true" : "false") << ","
       << "\"detection_started\":" << (context_.detectionStarted ? "true" : "false") << ","
       << "\"detection_done\":" << (context_.detectionDone ? "true" : "false") << ","
-      << "\"cup_picked_from_spectrometer\":" << (context_.cupPickedFromSpectrometer ? "true" : "false") << ","
+      << "\"cup_picked_from_spectrometer\":" <<
+    (context_.cupPickedFromSpectrometer ? "true" : "false") << ","
       << "\"cup_cleaned\":" << (context_.cupCleaned ? "true" : "false") << ","
       << "\"cup_returned\":" << (context_.cupReturned ? "true" : "false") << ","
       << "\"spectrometer_position_before_place_valid\":"
@@ -1650,6 +1720,14 @@ void StateMachine::publishContext()
       << context_.spectrometerPositionBeforePlace << ","
       << "\"spectrometer_position_before_pick_mm\":"
       << context_.spectrometerPositionBeforePick << ","
+      << "\"laser_filtered_valid\":" << (laser.filteredValid ? "true" : "false") << ","
+      << "\"laser_filtered_mm\":" << laser.filteredMm << ","
+      << "\"laser_stable\":" << (laser.stable ? "true" : "false") << ","
+      << "\"laser_stable_mm\":" << laser.stableMm << ","
+      << "\"laser_span_mm\":" << laser.spanMm << ","
+      << "\"laser_scan_phase\":\"" << toString(scan.phase) << "\","
+      << "\"laser_scan_farthest_mm\":" << scan.farthestMm << ","
+      << "\"laser_scan_remaining_sec\":" << scan.remainingSec << ","
       << "\"active_command_id\":" << context_.activeCommandId << ","
       << "\"active_action_name\":\"" << jsonEscape(context_.activeActionName) << "\","
       << "\"pending_outlets\":" << pendingOutletsJson() << ","

@@ -83,7 +83,13 @@ TEST_F(SensorsTest, OptionalModeUsesFreshValidLaser)
   const auto result = sensors.readSpectrometerPosition();
 
   EXPECT_TRUE(result.success);
+  EXPECT_TRUE(result.ready);
   EXPECT_DOUBLE_EQ(result.value, 162.5);
+
+  sensors.beginSpectrometerMeasurement();
+  EXPECT_FALSE(sensors.readSpectrometerPosition().ready);
+  publishAndDeliver(node, publisher, message);
+  EXPECT_TRUE(sensors.readSpectrometerPosition().ready);
 }
 
 TEST_F(SensorsTest, OptionalModeRejectsNonFiniteAndOutOfRangeLaser)

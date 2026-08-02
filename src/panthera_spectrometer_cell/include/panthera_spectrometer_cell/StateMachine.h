@@ -90,7 +90,8 @@ private:
   bool measureSpectrometerPosition(
     const std::string & request_name,
     double & out_value,
-    std::string & out_error);
+    std::string & out_error,
+    bool & out_waiting);
   bool validateSpectrometerMeasurement(double value) const;
   bool startDetectionWithFeedback();
 

@@ -77,6 +77,11 @@ POINT_CONFIG_AXIS_KEYS = {
     'pick_offset_xyz',
 }
 
+POINT_CONFIG_POSITIONING_KEYS = {
+    'mode',
+    'fixed_axis_position_mm',
+}
+
 POINT_CONFIG_CLEANING_KEYS = {
     'pour_wrist_joint_index',
     'pour_direction',
@@ -354,6 +359,11 @@ class HmiStateStore:
         self._tool_pose_candidate = None
         self._tool_pose_candidate_count = 0
         self._tool_pose_reject_count = 0
+        self._laser_raw_window = []
+        self._laser_filtered_window = []
+        self._laser_last_valid_time = None
+        self._laser_reference_mm = 150.0
+        self._spectrometer_standard_x_mm = 162.0
         self._data = {
             'server': {
                 'started_at': now_sec(),
@@ -373,6 +383,15 @@ class HmiStateStore:
                 'source': '',
                 'status': 'no data',
                 'age_sec': None,
+                'raw_distance_mm': None,
+                'filtered_distance_mm': None,
+                'stable_distance_mm': None,
+                'stable': False,
+                'span_mm': None,
+                'reference_mm': 150.0,
+                'delta_mm': None,
+                'axis_position_mm': None,
+                'last_calibration': '',
             },
             'workflow': {
                 'name': '',
@@ -468,15 +487,74 @@ class HmiStateStore:
 
     def set_laser(self, msg):
         with self._lock:
+            current = now_sec()
+            value = float(msg.distance_mm)
+            sample_valid = bool(msg.valid) and math.isfinite(value) and 120.0 <= value <= 280.0
+            if sample_valid:
+                if (self._laser_last_valid_time is not None and
+                        current - self._laser_last_valid_time > 1.0):
+                    self._laser_raw_window.clear()
+                    self._laser_filtered_window.clear()
+                self._laser_last_valid_time = current
+                self._laser_raw_window.append(value)
+                self._laser_raw_window = self._laser_raw_window[-5:]
+                if len(self._laser_raw_window) == 5:
+                    filtered = sorted(self._laser_raw_window)[2]
+                    self._laser_filtered_window.append(filtered)
+                    self._laser_filtered_window = self._laser_filtered_window[-15:]
+
+            filtered = (
+                self._laser_filtered_window[-1]
+                if self._laser_filtered_window else None)
+            stable_value = None
+            span = None
+            stable = False
+            if len(self._laser_filtered_window) == 15:
+                ordered = sorted(self._laser_filtered_window)
+                span = ordered[-1] - ordered[0]
+                stable = sample_valid and span <= 1.0
+                stable_value = ordered[7]
+            axis_position = (
+                self._spectrometer_standard_x_mm + filtered - self._laser_reference_mm
+                if filtered is not None else None)
             self._data['laser'] = {
-                'valid': bool(msg.valid),
-                'distance_mm': float(msg.distance_mm),
+                'valid': sample_valid,
+                'distance_mm': value,
                 'distance_m': float(msg.distance_m),
                 'source': msg.source,
                 'status': msg.status,
                 'age_sec': 0.0,
+                'raw_distance_mm': value,
+                'filtered_distance_mm': filtered,
+                'stable_distance_mm': stable_value,
+                'stable': stable,
+                'span_mm': span,
+                'reference_mm': self._laser_reference_mm,
+                'delta_mm': (
+                    filtered - self._laser_reference_mm
+                    if filtered is not None else None),
+                'axis_position_mm': axis_position,
+                'last_calibration': self._data['laser'].get('last_calibration', ''),
             }
-            self._timestamps['laser'] = now_sec()
+            self._timestamps['laser'] = current
+
+    def set_laser_reference(self, reference_mm, message=''):
+        with self._lock:
+            self._laser_reference_mm = float(reference_mm)
+            self._data['laser']['reference_mm'] = self._laser_reference_mm
+            self._data['laser']['last_calibration'] = message
+
+    def stable_laser(self):
+        with self._lock:
+            laser = dict(self._data['laser'])
+            age = None
+            if 'laser' in self._timestamps:
+                age = now_sec() - self._timestamps['laser']
+            laser['age_sec'] = age
+            laser['valid_age_sec'] = (
+                None if self._laser_last_valid_time is None
+                else now_sec() - self._laser_last_valid_time)
+            return laser
 
     def set_workflow(self, msg):
         with self._lock:
@@ -1338,6 +1416,7 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/workcell/restart',
             '/api/speed_scale',
             '/api/camera/restart',
+            '/api/laser/calibrate',
             '/api/point_config',
             '/api/point_config/reload',
             '/api/motion_catalog',
@@ -1392,6 +1471,8 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.call_speed_scale(body)
         elif parsed.path == '/api/camera/restart':
             result = self.server.bridge_node.restart_camera()
+        elif parsed.path == '/api/laser/calibrate':
+            result = self.server.bridge_node.calibrate_laser(body)
         elif parsed.path == '/api/point_config':
             result = self.server.bridge_node.save_point_config(body)
         elif parsed.path == '/api/point_config/reload':
@@ -1562,6 +1643,14 @@ class WebHmiNode(Node):
         self.point_config_path = self.declare_parameter(
             'point_config_path',
             default_point_config_path).value
+        try:
+            with open(self.point_config_path, 'r', encoding='utf-8') as stream:
+                initial_config = yaml.safe_load(stream) or {}
+            self.state_store.set_laser_reference(
+                initial_config.get('spectrometer_axis', {}).get(
+                    'axis_zero_laser_mm', 150.0))
+        except Exception as exc:
+            self.get_logger().warning(f'laser reference config unavailable: {exc}')
         default_motion_catalog_path = os.path.join(
             os.path.expanduser('~'),
             'panthera_workcell_ws',
@@ -3128,6 +3217,11 @@ class WebHmiNode(Node):
                         for key in sorted(POINT_CONFIG_AXIS_KEYS)
                         if key in config.get('spectrometer_axis', {})
                     },
+                    'positioning': {
+                        key: config.get('positioning', {}).get(key)
+                        for key in sorted(POINT_CONFIG_POSITIONING_KEYS)
+                        if key in config.get('positioning', {})
+                    },
                     'cleaning': {
                         key: config.get('cleaning', {}).get(key)
                         for key in sorted(POINT_CONFIG_CLEANING_KEYS)
@@ -3206,6 +3300,29 @@ class WebHmiNode(Node):
                         return {'success': False, 'message': f'spectrometer_axis.{key} must be finite'}
                 updated_text = _replace_yaml_value(updated_text, ['spectrometer_axis', key], value)
                 changed.append(f'spectrometer_axis.{key}')
+
+            positioning = updates.get('positioning', {})
+            if positioning is not None and not isinstance(positioning, dict):
+                return {'success': False, 'message': 'positioning must be an object'}
+            for key, value in (positioning or {}).items():
+                if key not in POINT_CONFIG_POSITIONING_KEYS:
+                    return {
+                        'success': False,
+                        'message': f'positioning key is not editable from HMI: {key}',
+                    }
+                if key == 'mode':
+                    value = str(value).strip()
+                    if value not in ('fixed', 'sensor_optional', 'sensor_offset'):
+                        return {'success': False, 'message': 'invalid positioning.mode'}
+                else:
+                    value = float(value)
+                    if not math.isfinite(value):
+                        return {
+                            'success': False,
+                            'message': f'positioning.{key} must be finite',
+                        }
+                updated_text = _replace_yaml_value(updated_text, ['positioning', key], value)
+                changed.append(f'positioning.{key}')
 
             cleaning = updates.get('cleaning', {})
             if cleaning is not None and not isinstance(cleaning, dict):
@@ -3302,6 +3419,13 @@ class WebHmiNode(Node):
             reload_success = bool(reload_result.get('success'))
             if reload_success:
                 message = f'saved {len(changed)} fields and reloaded runtime config'
+                try:
+                    _, reloaded = self._load_point_config()
+                    self.state_store.set_laser_reference(
+                        reloaded.get('spectrometer_axis', {}).get(
+                            'axis_zero_laser_mm', 150.0))
+                except Exception:
+                    pass
             else:
                 self._atomic_write_text(write_path, text)
                 rollback_reload = self.reload_point_config(allow_debug=allow_debug)
@@ -3347,6 +3471,51 @@ class WebHmiNode(Node):
         self.get_logger().warn(
             f"point config reload requested success={result.get('success')} "
             f"message={result.get('message')}")
+        return result
+
+    def calibrate_laser(self, body):
+        if body.get('confirm_standard_position') is not True:
+            return {
+                'success': False,
+                'message': '请先确认光谱仪位于标准品固定位置 X=162.0 mm',
+            }
+        cell = self.state_store.snapshot().get('spectrometer_cell', {})
+        context = cell.get('context') or {}
+        if cell.get('state') not in ('IDLE', 'WAIT_DISCHARGE', 'PAUSED'):
+            return {'success': False, 'message': '当前生产状态不允许校准激光'}
+        if any(context.get(key) for key in (
+                'has_active_task', 'cup_in_gripper', 'spectrometer_occupied')):
+            return {'success': False, 'message': '有活动任务或杯子占位，禁止校准激光'}
+
+        laser = self.state_store.stable_laser()
+        if (not laser.get('valid') or laser.get('valid_age_sec') is None or
+                laser['valid_age_sec'] > 1.0):
+            return {'success': False, 'message': '激光数据超时，请检查传感器连接'}
+        if not laser.get('stable') or laser.get('stable_distance_mm') is None:
+            span = laser.get('span_mm')
+            suffix = f'，当前跨度 {span:.3f} mm' if span is not None else ''
+            return {'success': False, 'message': f'激光尚未稳定（需要15个滤波样本）{suffix}'}
+
+        reference = round(float(laser['stable_distance_mm']), 3)
+        result = self.save_point_config({
+            'config': {
+                'spectrometer_axis': {
+                    'axis_zero_laser_mm': reference,
+                    'axis': 'x',
+                },
+                'positioning': {
+                    'fixed_axis_position_mm': reference,
+                },
+            },
+        }, allow_debug=True)
+        if result.get('success'):
+            message = (
+                f'校准成功：标准品 X=162.0 mm 对应激光 {reference:.3f} mm，'
+                f'15样本跨度 {laser["span_mm"]:.3f} mm')
+            self.state_store.set_laser_reference(reference, message)
+            result['message'] = message
+            result['reference_mm'] = reference
+            result['span_mm'] = laser['span_mm']
         return result
 
     def call_command(self, command):

@@ -61,7 +61,8 @@ loop:
   spectrometer_start_timeout_sec: 10.0
 
   # 等待光谱仪检测完成的超时，单位 s。
-  detection_timeout_sec: 180.0
+  # 标准品校准阶段可能较长；5 分钟前不产生超时告警，超过后仍安全等待。
+  detection_timeout_sec: 300.0
 
   # ERROR/ESTOP 后人工复位动作的超时，单位 s。
   reset_timeout_sec: 30.0
@@ -294,15 +295,10 @@ outlets:
     return_pose: outlet_2_return
 
 positioning:
-  # 当前工位位置固定，默认不依赖激光节点。fixed 模式返回下面的标称轴位置，
-  # 因而 (fixed_axis_position_mm - axis_zero_laser_mm) 为 0，使用光谱仪基准点。
-  # 未来完成轴向、标定和安全验收后，改为 sensor_offset 即可恢复两次测量语义。
-  # Prefer fresh laser data; if the sensor is absent, stale or invalid, use the
-  # commissioned 150 mm default immediately. Use sensor_offset only when a laser
-  # fault must stop production.
+  # 未接入激光时使用固定基准；一旦收到有效激光，取杯/放杯都要求各自的新稳定样本。
+  # 已接入的传感器若中途失联会安全等待，避免在随机扫描位置盲取。
   mode: sensor_optional
-  fixed_axis_position_mm: 150.0
-
+  fixed_axis_position_mm: 162.1
 spectrometer_axis:
   # ========== 光谱仪激光换算 ==========
   # 这个段落决定“激光读数 -> 光谱仪实际目标坐标”。
@@ -313,9 +309,8 @@ spectrometer_axis:
   laser_max_mm: 280.0
 
   # 光谱仪基准坐标对应的激光距离，单位 mm。
-  # 当前设定: 激光读数 150mm 时，使用 named_poses.spectrometer_base 的坐标。
-  axis_zero_laser_mm: 150.0
-
+  # 当前测试标定: 激光读数 162.1mm 时，对应固定标准品 X=162.0mm。
+  axis_zero_laser_mm: 162.1
   # 激光每变化 1mm，目标坐标沿 axis 变化多少 m。
   # 0.001 表示激光增加 1mm，目标坐标增加 0.001m。
   # 如果方向反了，把它改成 -0.001。
@@ -324,10 +319,8 @@ spectrometer_axis:
   # 光谱仪基础放杯点名称，必须存在于 named_poses。
   base_pose_name: spectrometer_base
 
-  # 光谱仪移动轴。只能填 x/y/z。你当前场景是 Y 轴变化。
-  # Current fixture correction direction in base_link.
-  axis: y
-
+  # 激光距离变大表示光谱仪沿 base_link +X 移动。
+  axis: x
   # 放杯点相对 spectrometer_base 的补偿，单位 m。
   # 用于只想微调放杯，不影响取杯基准的情况。
   # 例: 放杯偏右 3mm，就按实际坐标方向改对应轴 0.003 或 -0.003。

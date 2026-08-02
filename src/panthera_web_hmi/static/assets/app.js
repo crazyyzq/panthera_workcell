@@ -960,11 +960,34 @@ function renderLaser(snapshot, context) {
   setText('laserDistance', laser.distance_mm === null || laser.distance_mm === undefined ? '--' : `${Number(laser.distance_mm).toFixed(1)} mm`);
   setText('laserRaw', formatMm(raw));
   setText('laserFiltered', formatMm(filtered));
+  setText('laserStable', laser.stable
+    ? `${formatMm(laser.stable_distance_mm)} / ${formatMm(laser.span_mm)}`
+    : `等待稳定 / ${formatMm(laser.span_mm)}`);
+  setText('laserReference', formatMm(laser.reference_mm));
+  setText('laserDelta', formatMm(laser.delta_mm));
   setText('laserAxis', formatMm(axis));
-  setText('laserStatus', `${laser.valid ? 'valid' : 'invalid'} | ${laser.status || 'no status'} | ${laser.source || '--'}`);
+  setText('laserStatus', `${laser.valid ? 'valid' : 'invalid'} | ${context.laser_scan_phase || 'idle'} | ${laser.status || 'no status'} | ${laser.source || '--'}`);
   setText('laserAge', laser.age_sec !== null && laser.age_sec !== undefined && laser.age_sec > 2.0 ? `${laserAgeText} 延迟` : laserAgeText);
   setText('placeLaser', formatMm(context.spectrometer_position_before_place_mm));
   setText('pickLaser', formatMm(context.spectrometer_position_before_pick_mm));
+  if (laser.last_calibration) {
+    setText('laserCalibrationResult', laser.last_calibration);
+  }
+  const calibrateButton = $('calibrateLaser');
+  if (calibrateButton && !calibrateButton.classList.contains('loading')) {
+    const safeState = ['IDLE', 'WAIT_DISCHARGE', 'PAUSED'].includes(context.state);
+    const safeContext = !context.has_active_task
+      && !context.cup_in_gripper
+      && !context.spectrometer_occupied;
+    const freshLaser = laser.age_sec !== null
+      && laser.age_sec !== undefined
+      && laser.age_sec <= 1.0;
+    calibrateButton.disabled = !(
+      laser.valid && laser.stable && freshLaser && safeState && safeContext);
+    calibrateButton.title = calibrateButton.disabled
+      ? '需要激光稳定，且工作站无活动任务、无杯子占位'
+      : '记录标准品位置的稳定激光距离';
+  }
 }
 
 function renderToolPose(snapshot) {
@@ -1542,6 +1565,30 @@ async function restartCamera(button) {
 }
 
 function wireButtons() {
+  const calibrateLaser = $('calibrateLaser');
+  calibrateLaser?.addEventListener('click', async () => {
+    if (!(await confirmAction(
+      '确认光谱仪当前位于扫描标准品固定位置 X=162.0 mm。系统将保存当前稳定激光距离作为新基准，不会移动机械臂。',
+      '校准激光传感器'))) {
+      return;
+    }
+    setButtonFeedback(calibrateLaser, 'loading');
+    try {
+      const result = await postJson('/api/laser/calibrate', {
+        confirm_standard_position: true,
+      });
+      if (!result.success) {
+        throw new Error(result.message || '校准被拒绝');
+      }
+      setText('laserCalibrationResult', result.message || '校准成功');
+      appendLog(result.message || 'laser calibration succeeded', 'log-success');
+    } catch (error) {
+      setText('laserCalibrationResult', `校准失败：${error}`);
+      appendLog(`laser calibration failed: ${error}`, 'log-error');
+    } finally {
+      setButtonFeedback(calibrateLaser, 'idle');
+    }
+  });
   const controlModeSelect = $('controlModeSelect');
   controlModeSelect?.addEventListener('change', () => {
     controlModeDirty = true;

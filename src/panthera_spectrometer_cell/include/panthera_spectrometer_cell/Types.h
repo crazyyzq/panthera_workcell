@@ -116,17 +116,24 @@ struct ActionResult
 struct MeasurementResult
 {
   bool success{false};
+  bool ready{false};
   double value{0.0};
+  double span{0.0};
   std::string message;
 
   static MeasurementResult ok(double measured_value, const std::string & text = "ok")
   {
-    return MeasurementResult{true, measured_value, text};
+    return MeasurementResult{true, true, measured_value, 0.0, text};
+  }
+
+  static MeasurementResult waiting(const std::string & text)
+  {
+    return MeasurementResult{true, false, 0.0, 0.0, text};
   }
 
   static MeasurementResult fail(const std::string & text)
   {
-    return MeasurementResult{false, 0.0, text};
+    return MeasurementResult{false, false, 0.0, 0.0, text};
   }
 };
 

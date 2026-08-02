@@ -38,7 +38,7 @@ This file contains durable repository context and operating rules for future age
   `300 rad/s^3`. Nearby process transitions use lower per-route scaling; the final
   10 mm pick/place segment remains at 40%. Do not restore the previous 4 rad/s^2
   acceleration profile, which produced visible overshoot.
-- The current fixed spectrometer process baseline is `x=0.1575 m`. Place uses
+- The current fixed spectrometer process baseline is `x=0.1620 m`. Place uses
   `y=0.480 m`, `z=0.320 m`; pick uses `y=0.479497 m`, `z=0.316902 m`. Their
   10 mm pre-approach and high-hover/template points must retain the matching x/y
   so each physical approach remains vertical. The independently tunable detection
@@ -145,10 +145,17 @@ This file contains durable repository context and operating rules for future age
 - Legacy `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` still replan with MoveIt and are migration-only. Their default HMI launch flags are disabled so they do not run beside another legacy owner.
 - Target architecture: one motion server is the only arm trajectory owner. MoveIt is retained for commissioning, IK, collision checks and trajectory compilation, not per-step production planning.
 - Spectrometer positioning supports `fixed`, `sensor_optional`, and strict
-  `sensor_offset` modes. Production defaults to `sensor_optional`: a fresh valid
-  laser reading corrects base-link Y by `(reading_mm - 150.0) / 1000`; absent,
-  stale, or invalid data immediately falls back to the canonical point. The
-  150 mm reading is the calibrated zero-offset reference.
+  `sensor_offset` modes. Production uses `sensor_optional`: if no valid laser has
+  ever been seen it uses the commissioned fixed point; once connected, it requires
+  fresh stable samples and never silently falls back after a dropout. Valid range is
+  120..280 mm. The moving direction is base-link +X and the fixed standard-sample
+  coordinate is X=0.1620 m. The HMI calibration captures the current stable laser
+  median at that standard position and atomically updates both zero-reference fields.
+- Spectrometer place and pick each use a new stable laser measurement at the current
+  (possibly random) axis position; neither requires the standard pose. After place,
+  scan detection must first observe five samples back at the calibrated standard
+  position, then five samples at least 5 mm away, followed by a 2 s farthest-point
+  quiet period. The 40 s timer starts from the last farthest measurement.
 - The 2026-07-24 bench revision rotated the robot base clockwise 90 degrees. In the
   current `base_link`, +X points toward the outlets and +Y toward the spectrometer.
   Provisional measured process coordinates are outlet1
@@ -156,7 +163,7 @@ This file contains durable repository context and operating rules for future age
   `(0.09126,-0.34374,0.250)m`. Dump z=0.250 m is an intentionally raised
   commissioning value, not final calibration. The former transformed spectrometer
   pickup column `(0.132,0.600)m` is obsolete; the current fixed process baseline
-  is `x=0.1575 m` (place `y=0.480 m`, pick `y=0.479497 m`).
+  is `x=0.1620 m` (place `y=0.480 m`, pick `y=0.479497 m`).
 - The revised cleaning branch keeps the gripper pointing toward base `-Y`
   (yaw `-1.5708 rad`) and uses pour roll `-2.5 rad`. After pouring at
   `(0.09126,-0.34374,0.250)m`, move in a straight line along base `+X` by 150 mm
@@ -577,9 +584,10 @@ The production lifecycle entry points are `scripts/start_workcell.sh` and
 controllers, Motion Server, fresh Home encoders, and HMI services pass. Stop
 must verify an empty cycle, settled Motion Server, and original Home before
 disabling, then terminate the owned group and verify all related processes are
-gone. The laser adapter starts with production, but valid laser data is optional
-and excluded from READY because `sensor_optional` has a deterministic 150 mm
-fallback. Camera startup is also optional and excluded from READY. Never restore
+gone. The laser adapter starts with production and remains excluded from READY so
+an unfitted station can use its commissioned fixed point. After the first valid
+laser sample, production requires fresh stable measurements and waits safely on
+sensor dropout. Camera startup is also optional and excluded from READY. Never restore
 the legacy MoveIt/workflow startup chain to
 these production scripts. `--force` is an explicit maintenance escape hatch,
 not a normal shutdown path.

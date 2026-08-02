@@ -424,9 +424,9 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   ASSERT_TRUE(outlet_2_grasp->pose.has_value());
   ASSERT_TRUE(outlet_2_return->pose.has_value());
   EXPECT_NEAR(
-    outlet_1_return->pose->xyz[2] - outlet_1_grasp->pose->xyz[2], 0.003, 1e-9);
+    outlet_1_return->pose->xyz[2] - outlet_1_grasp->pose->xyz[2], 0.006, 1e-9);
   EXPECT_NEAR(
-    outlet_2_return->pose->xyz[2] - outlet_2_grasp->pose->xyz[2], 0.003, 1e-9);
+    outlet_2_return->pose->xyz[2] - outlet_2_grasp->pose->xyz[2], 0.006, 1e-9);
   for (const auto & segment : direct_return->segments) {
     EXPECT_NE(segment.to, "clean_dump_pour");
     EXPECT_NE(segment.to, "clean_dump");

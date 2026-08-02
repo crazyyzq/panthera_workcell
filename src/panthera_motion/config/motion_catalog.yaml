@@ -171,12 +171,12 @@ points:
     - precision_approach
     - advanced
   outlet_1_return:
-    description: 出料口1放回点；自动跟随夹取点，Z固定高3mm。
+    description: 出料口1放回点；自动跟随夹取点，Z固定高6mm。
     pose:
       xyz:
       - 0.484046
       - -0.097000
-      - 0.215
+      - 0.218
       rpy:
       - 0.0
       - 0.0
@@ -235,12 +235,12 @@ points:
     - precision_approach
     - advanced
   outlet_2_return:
-    description: 出料口2放回点；自动跟随夹取点，Z固定高3mm。
+    description: 出料口2放回点；自动跟随夹取点，Z固定高6mm。
     pose:
       xyz:
       - 0.484102
       - 0.085769
-      - 0.214
+      - 0.217
       rpy:
       - 0.00
       - 0.00

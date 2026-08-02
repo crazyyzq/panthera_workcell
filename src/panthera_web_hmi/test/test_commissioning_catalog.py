@@ -50,6 +50,87 @@ def test_hmi_exposes_no_zero_control():
         static_root / 'assets' / 'app.js').read_text(encoding='utf-8')
 
 
+def test_hmi_separates_debug_entry_from_point_motion():
+    static_root = Path(__file__).parents[1] / 'static'
+    html = (static_root / 'index.html').read_text(encoding='utf-8')
+    javascript = (static_root / 'assets' / 'app.js').read_text(encoding='utf-8')
+
+    assert '进入调试（不移动）' in html
+    assert 'id="debugGoto"' in html
+    assert "'/api/debug/enter', {}" in javascript
+    assert "'/api/debug/goto', {point_name: point}" in javascript
+
+
+def test_debug_entry_enables_tools_without_arm_motion():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': False, 'phase': 'inactive'}
+    node.state_store = SimpleNamespace(snapshot=lambda: {
+        'spectrometer_cell': {'state': 'PAUSED', 'context': {}},
+    })
+    node._execute_motion_route = lambda _route: pytest.fail('enter moved the arm')
+
+    result = node.enter_debug({})
+
+    assert result == {
+        'success': True,
+        'message': 'debug mode entered without robot motion',
+        'robot_moved': False,
+    }
+    assert node._debug['active'] is True
+    assert node._debug['selected_point'] == ''
+    assert node._debug['target_reached'] is False
+
+
+def test_debug_tools_do_not_require_a_selected_point():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'active': True,
+        'phase': 'ready',
+        'selected_point': '',
+        'target_reached': False,
+        'brush_enabled': False,
+    }
+    node.debug_gripper_open_client = object()
+    node.debug_gripper_close_client = object()
+    node.debug_brush_client = object()
+    node._call_trigger_client = lambda *_args, **_kwargs: {'success': True}
+    node._call_service_request = lambda *_args, **_kwargs: (
+        SimpleNamespace(
+            success=True, message='brush started', enabled=True,
+            applied_speed_percent=50.0), '')
+
+    assert node._debug_gripper_locked({'command': 'close'})['success'] is True
+    assert node._debug_brush_locked(
+        {'enabled': True, 'speed_percent': 50})['success'] is True
+
+
+def test_debug_exit_without_a_point_does_not_move_the_arm():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'active': True,
+        'phase': 'ready',
+        'selected_point': '',
+        'target_reached': False,
+        'history': [],
+        'brush_enabled': True,
+    }
+    node.debug_brush_client = object()
+    node._call_service_request = lambda *_args, **_kwargs: (None, '')
+    node._execute_motion_route = lambda _route: pytest.fail('exit moved the arm')
+
+    result = node.exit_debug()
+
+    assert result['success'] is True
+    assert result['robot_moved'] is False
+    assert node._debug['active'] is False
+    assert node._debug['brush_enabled'] is False
+
+
 def test_every_tunable_point_has_a_safe_round_trip():
     catalog = load_catalog()
     _validate_motion_catalog_document(catalog)
@@ -226,7 +307,10 @@ def test_direct_coordinate_move_accepts_current_pose_without_motion():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_operation_lock = threading.Lock()
     node._debug_lock = threading.Lock()
-    node._debug = {'active': True, 'phase': 'ready', 'last_message': ''}
+    node._debug = {
+        'active': True, 'phase': 'ready', 'last_message': '',
+        'selected_point': 'clean_dump', 'target_reached': True,
+    }
     node._debug_require_paused = lambda: (True, 'ready')
     node._settled_tool_pose = lambda: ([0.42, -0.08, 0.19], [0.2, -0.3, 1.1])
 
@@ -305,7 +389,10 @@ def test_debug_jog_rejects_unrepeatable_one_millimeter_step():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_operation_lock = threading.Lock()
     node._debug_lock = threading.Lock()
-    node._debug = {'active': True, 'phase': 'ready'}
+    node._debug = {
+        'active': True, 'phase': 'ready',
+        'selected_point': 'clean_dump', 'target_reached': True,
+    }
     node._debug_require_paused = lambda: (True, 'ready')
 
     result = node.debug_jog({
@@ -315,6 +402,25 @@ def test_debug_jog_rejects_unrepeatable_one_millimeter_step():
 
     assert result['success'] is False
     assert '2mm' in result['message']
+
+
+def test_debug_jog_requires_a_selected_point():
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {
+        'active': True, 'phase': 'ready',
+        'selected_point': '', 'target_reached': False,
+    }
+    node._debug_require_paused = lambda: (True, 'ready')
+
+    result = node.debug_jog({
+        'translation_m': [0.002, 0.0, 0.0],
+        'rotation_rad': [0.0, 0.0, 0.0],
+    })
+
+    assert result['success'] is False
+    assert result['message'] == 'debug point is not ready'
 
 
 def test_debug_exit_rewinds_successful_jogs_in_reverse_order():
@@ -357,6 +463,7 @@ def test_debug_save_preserves_translation_follower_orientation():
         'active': True,
         'phase': 'ready',
         'selected_point': 'clean_dump',
+        'target_reached': True,
         'commanded_pose': {
             'xyz': [0.10, -0.34, 0.26],
             'rpy': [0.1, 0.0, -1.57],
@@ -417,6 +524,7 @@ def test_spectrometer_place_save_keeps_laser_exit_vertical():
         'active': True,
         'phase': 'ready',
         'selected_point': 'spectrometer_place',
+        'target_reached': True,
         'commanded_pose': {'xyz': target_xyz, 'rpy': list(place['rpy'])},
     }
     node._debug_catalog_target = lambda _name: (
@@ -496,7 +604,10 @@ def test_debug_jog_executes_one_load_compensated_axis_route():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_operation_lock = threading.Lock()
     node._debug_lock = threading.Lock()
-    node._debug = {'active': True, 'phase': 'ready'}
+    node._debug = {
+        'active': True, 'phase': 'ready',
+        'selected_point': 'clean_dump', 'target_reached': False,
+    }
     node._debug_require_paused = lambda: (True, 'ready')
     node._fresh_tool_pose = lambda: ([0.42, -0.08, 0.19], [0.0, 0.0, 0.0])
     calls = []
@@ -602,7 +713,10 @@ def test_direct_coordinate_move_rejects_more_than_20mm():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_operation_lock = threading.Lock()
     node._debug_lock = threading.Lock()
-    node._debug = {'active': True, 'phase': 'ready', 'last_message': ''}
+    node._debug = {
+        'active': True, 'phase': 'ready', 'last_message': '',
+        'selected_point': 'clean_dump', 'target_reached': True,
+    }
     node._debug_require_paused = lambda: (True, 'ready')
     node._settled_tool_pose = lambda: ([0.42, -0.08, 0.19], [0.2, -0.3, 1.1])
 

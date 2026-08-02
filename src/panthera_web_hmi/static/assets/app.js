@@ -1055,41 +1055,60 @@ function renderDebug(snapshot) {
   const debug = snapshot.debug || {};
   const tool = snapshot.tool_pose || {};
   const active = !!debug.active;
-  const ready = active && debug.phase === 'ready' && !debugBusy;
+  const sessionReady = active && debug.phase === 'ready' && !debugBusy;
+  const pointReady = sessionReady && !!debug.selected_point;
   const status = $('debugStatus');
   if (status) {
     const phaseLabel = debugPhaseLabels[debug.phase] || debug.phase || '未进入调试';
-    status.textContent = active ? `${phaseLabel} · ${debug.selected_point}` : phaseLabel;
+    status.textContent = active && debug.selected_point
+      ? `${phaseLabel} · ${debug.selected_point}`
+      : phaseLabel;
     status.className = debug.phase === 'error'
       ? 'pill pill-error'
-      : (ready ? 'pill pill-ok' : 'pill pill-warn');
+      : (sessionReady ? 'pill pill-ok' : 'pill pill-warn');
   }
   const select = $('debugPointSelect');
   if (select && debug.selected_point) {
     select.value = debug.selected_point;
   }
   if (select) {
-    select.disabled = active || debugBusy;
+    select.disabled = debugBusy || pointReady;
   }
   const enter = $('debugEnter');
   if (enter) {
-    enter.disabled = active || debugBusy || !select || !select.value;
+    enter.disabled = active || debugBusy;
+  }
+  const goto = $('debugGoto');
+  if (goto) {
+    goto.disabled = !sessionReady || pointReady || !!debug.brush_enabled || !select || !select.value;
   }
 
   document.querySelectorAll('.jog-button').forEach((button) => {
-    button.disabled = !ready;
+    button.disabled = !pointReady;
   });
   document.querySelectorAll('.debug-target-grid input').forEach((input) => {
-    input.disabled = !ready;
+    input.disabled = !pointReady;
   });
   ['debugGripperOpen', 'debugGripperClose', 'debugBrushStart', 'debugBrushStop',
-    'debugBrushSave', 'debugSave', 'debugExit',
-    'debugCopyPose', 'debugMoveTo'].forEach((id) => {
+    'debugBrushSave'].forEach((id) => {
     const button = $(id);
     if (button) {
-      button.disabled = !active || debugBusy || (id !== 'debugExit' && !ready);
+      button.disabled = !sessionReady;
     }
   });
+  ['debugSave', 'debugCopyPose', 'debugMoveTo'].forEach((id) => {
+    const button = $(id);
+    if (button) {
+      button.disabled = !pointReady;
+    }
+  });
+  const exit = $('debugExit');
+  if (exit) {
+    exit.disabled = !active || debugBusy;
+    exit.textContent = debug.selected_point
+      ? '放弃未保存修改并回 Home'
+      : '退出调试（不移动）';
+  }
   document.querySelectorAll('.advanced-maintenance input, .advanced-maintenance select, .advanced-maintenance textarea, .advanced-maintenance button').forEach((control) => {
     control.disabled = active || debugBusy;
   });
@@ -1102,10 +1121,14 @@ function renderDebug(snapshot) {
   setText('debugPoseRoll', Number.isFinite(rpy.roll) ? `${rpy.roll.toFixed(2)}°` : '--');
   setText('debugPosePitch', Number.isFinite(rpy.pitch) ? `${rpy.pitch.toFixed(2)}°` : '--');
   setText('debugPoseYaw', Number.isFinite(rpy.yaw) ? `${rpy.yaw.toFixed(2)}°` : '--');
-  setText('debugInterlock', active
+  setText('debugInterlock', pointReady
     ? `${debugPhaseLabels[debug.phase] || debug.phase} · 已点动 ${debug.jog_count || 0} 次 · ${debug.dirty ? '有未保存修改' : '点位与配置一致'}`
-    : '选择点位后，点击“进入调试并前往该点”。');
-  if (ready && debugTargetPoint !== debug.selected_point &&
+    : (active
+      ? (debug.brush_enabled
+        ? '毛刷运行中；夹爪仍可操作。停止毛刷后才能前往所选点位。'
+        : '调试已进入，夹爪和毛刷可直接操作；需要示教时再前往所选点位。')
+      : '点击“进入调试（不移动）”，机械臂不会移动。'));
+  if (pointReady && debugTargetPoint !== debug.selected_point &&
       copyMeasuredPoseToTarget(snapshot)) {
     debugTargetPoint = debug.selected_point;
   } else if (!active) {
@@ -1556,13 +1579,24 @@ function wireButtons() {
   const debugEnter = $('debugEnter');
   if (debugEnter) {
     debugEnter.addEventListener('click', async () => {
+      if (!(await confirmAction(
+        '将暂停自动流程并进入调试。机械臂不会移动，进入后可直接操作夹爪和毛刷。',
+        '进入调试'))) {
+        return;
+      }
+      await runDebugRequest('/api/debug/enter', {}, debugEnter);
+    });
+  }
+  const debugGoto = $('debugGoto');
+  if (debugGoto) {
+    debugGoto.addEventListener('click', async () => {
       const point = $('debugPointSelect').value;
       if (!point || !(await confirmAction(
         `机械臂将先确认/恢复 Home，再经过安全调试点前往 ${point}。确认工位周围安全。`,
-        '进入点位调试'))) {
+        '前往所选点位'))) {
         return;
       }
-      await runDebugRequest('/api/debug/enter', {point_name: point}, debugEnter);
+      await runDebugRequest('/api/debug/goto', {point_name: point}, debugGoto);
     });
   }
 
@@ -1619,10 +1653,12 @@ function wireButtons() {
   debugSave?.addEventListener('click', () => runDebugRequest('/api/debug/save', {}, debugSave));
   const debugExit = $('debugExit');
   debugExit?.addEventListener('click', async () => {
-    const dirty = !!((latestSnapshot || {}).debug || {}).dirty;
-    const message = dirty
-      ? '未保存点位不会写入配置；机械臂将沿标定安全退出路线回到安全调试点和 Home。确认继续？'
-      : '机械臂将沿标定退出路线回到安全调试点和 Home。确认继续？';
+    const debug = ((latestSnapshot || {}).debug || {});
+    const message = !debug.selected_point
+      ? '将停止毛刷并退出调试，机械臂不会移动，自动流程仍保持暂停。确认继续？'
+      : (debug.dirty
+        ? '未保存点位不会写入配置；机械臂将沿标定安全退出路线回到安全调试点和 Home。确认继续？'
+        : '机械臂将沿标定退出路线回到安全调试点和 Home。确认继续？');
     if (await confirmAction(message, '退出点位调试')) {
       await runDebugRequest('/api/debug/exit', {}, debugExit);
     }

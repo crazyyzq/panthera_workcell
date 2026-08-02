@@ -229,6 +229,9 @@ This file contains durable repository context and operating rules for future age
   crossing to outlet 1. A direct low transfer from `brush_entry` toward the outlet can
   collide with the spectrometer.
 - Never execute real robot motion merely to test a code change. Use build, unit, simulation and dry-run validation first.
+- Current real HMI commissioning motion is restricted to the `clean_dump` point,
+  which the operator has identified as the safe test area. Do not physically enter
+  any other tunable point unless the operator explicitly changes this restriction.
 - Before real motion, confirm the workspace is clear, hardware E-stop is available, the controller is healthy, the robot is stationary, and the current joints are within the trajectory start tolerance.
 - Never silently bridge an arbitrary current state to a cached trajectory. Reject start mismatch or use a separately commissioned recovery route.
 - A transient controller path-tolerance violation gets one bounded suffix resume:
@@ -365,14 +368,17 @@ This file contains durable repository context and operating rules for future age
   leave the debug session ready. Direct-coordinate validation allows 0.5 mm numerical
   tolerance around the advertised 20 mm limit because the displayed TCP and the
   backend's settled sample are not simultaneous.
-- Entering a tunable point pauses the state machine, verifies or recovers to original
+- Entering commissioning mode only pauses the state machine; it must not command
+  arm motion or require a selected point. Gripper and brush controls are immediately
+  available. The separate go-to-point command verifies or recovers to original
   Home, then runs `home_to_safe_center` and the point's validated
   `debug_safe_to_<point>` route. Exiting must first replay every successful
   commissioning jog in strict reverse order, removing a history entry only after
   its inverse motion succeeds; then run `debug_<point>_to_safe` and
   `safe_center_to_home`. This keeps a large operator-created offset on the exact
   known path instead of misclassifying it as an unknown pose or widening the
-  global Home recovery envelope. A 2026-07-30 physical recovery reversed 34
+  global Home recovery envelope. Exiting before any point was selected stops the
+  brush and leaves the arm unmoved with automatic mode paused. A 2026-07-30 physical recovery reversed 34
   accumulated jogs and returned Home, followed by a three-jog regression with
   automatic rewind and final Home error `0.005655 rad`. Automatic mode remains
   paused. If rewind or either safe-exit route fails, keep power enabled.

@@ -202,10 +202,11 @@
           <span>要修改的工艺点</span>
           <select id="debugPointSelect"></select>
         </label>
-        <button id="debugEnter" class="cmd warn" type="button">进入调试并前往该点</button>
-        <span id="debugPath" class="muted">Home → 安全调试点 → 工位安全接近点 → 目标点</span>
+        <button id="debugEnter" class="cmd warn" type="button">进入调试（不移动）</button>
+        <button id="debugGoto" class="cmd primary" type="button">前往所选点位</button>
+        <span id="debugPath" class="muted">进入调试不移动；前往点位时：Home → 安全调试点 → 目标点</span>
       </div>
-      <div id="debugInterlock" class="point-config-alert">选择点位后，点击“进入调试并前往该点”。</div>
+      <div id="debugInterlock" class="point-config-alert">先进入调试即可操作夹爪和毛刷；需要示教时再前往所选点位。</div>
 
       <div class="debug-workspace">
         <div class="debug-position">
@@ -288,9 +289,9 @@
 
       <div class="debug-final-actions">
         <button id="debugSave" class="cmd primary" type="button">保存并热重载</button>
-        <button id="debugExit" class="cmd warn" type="button">放弃未保存修改并回 Home</button>
+        <button id="debugExit" class="cmd warn" type="button">退出调试（不移动）</button>
       </div>
-      <div id="debugResult" class="command-result">请选择点位后执行。</div>
+      <div id="debugResult" class="command-result">进入调试不会移动机械臂。</div>
     </section>
 
     <section class="panel point-config-panel advanced-maintenance" data-page="points">

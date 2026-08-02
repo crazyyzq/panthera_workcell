@@ -232,6 +232,7 @@ HMI 不提供电机零点设置。绝对零点维护使用厂商独立工具，�
 
 ```text
 POST /api/debug/enter
+POST /api/debug/goto
 POST /api/debug/jog
 POST /api/debug/move_to
 POST /api/debug/save

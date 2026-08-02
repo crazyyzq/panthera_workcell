@@ -1343,6 +1343,7 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             '/api/motion_catalog',
             '/api/motion_catalog/reload',
             '/api/debug/enter',
+            '/api/debug/goto',
             '/api/debug/jog',
             '/api/debug/move_to',
             '/api/debug/save',
@@ -1401,6 +1402,8 @@ class HmiRequestHandler(BaseHTTPRequestHandler):
             result = self.server.bridge_node.reload_motion_catalog()
         elif parsed.path == '/api/debug/enter':
             result = self.server.bridge_node.enter_debug(body)
+        elif parsed.path == '/api/debug/goto':
+            result = self.server.bridge_node.goto_debug_point(body)
         elif parsed.path == '/api/debug/jog':
             result = self.server.bridge_node.debug_jog(body)
         elif parsed.path == '/api/debug/move_to':
@@ -2201,7 +2204,7 @@ class WebHmiNode(Node):
             'point_name': point_name,
         }
 
-    def enter_debug(self, body):
+    def enter_debug(self, _body):
         if not self._debug_operation_lock.acquire(blocking=False):
             return {'success': False, 'message': 'another debug operation is running'}
 
@@ -2210,12 +2213,11 @@ class WebHmiNode(Node):
             with self._debug_lock:
                 self._debug.update(
                     active=False, phase='error', selected_point='', dirty=False,
-                    history=[], commanded_pose=None, last_message=message)
+                    history=[], commanded_pose=None, target_reached=False,
+                    brush_enabled=False, last_message=message)
             return result
 
         try:
-            point_name = str(body.get('point_name', '')).strip()
-            catalog, _, point, entry_route, _ = self._debug_catalog_target(point_name)
             snapshot = self.state_store.snapshot()
             cell = snapshot.get('spectrometer_cell', {})
             context = cell.get('context', {}) if isinstance(cell.get('context'), dict) else {}
@@ -2226,7 +2228,7 @@ class WebHmiNode(Node):
                 return {'success': False, 'message': f'debug entry rejected from state {state}'}
             with self._debug_lock:
                 if self._debug['active']:
-                    return {'success': False, 'message': 'exit the current debug point first'}
+                    return {'success': True, 'message': 'debug mode is already active'}
                 self._debug.update(phase='pausing', last_message='正在暂停自动流程')
 
             if state != 'PAUSED':
@@ -2242,6 +2244,59 @@ class WebHmiNode(Node):
                 else:
                     return fail({'success': False, 'message': 'state machine did not enter PAUSED'})
 
+            with self._debug_lock:
+                self._debug.update(
+                    active=True,
+                    phase='ready',
+                    selected_point='',
+                    dirty=False,
+                    history=[],
+                    commanded_pose=None,
+                    target_reached=False,
+                    last_message='已进入调试，机械臂未移动；夹爪和毛刷可以直接操作')
+            return {
+                'success': True,
+                'message': 'debug mode entered without robot motion',
+                'robot_moved': False,
+            }
+        except Exception as exc:
+            return fail({'success': False, 'message': str(exc)})
+        finally:
+            self._debug_operation_lock.release()
+
+    def goto_debug_point(self, body):
+        if not self._debug_operation_lock.acquire(blocking=False):
+            return {'success': False, 'message': 'another debug operation is running'}
+
+        def keep_ready(result):
+            with self._debug_lock:
+                self._debug.update(
+                    phase='ready',
+                    last_message=result.get('message', 'debug point entry failed'))
+            return result
+
+        try:
+            ready, message = self._debug_require_paused()
+            with self._debug_lock:
+                active = self._debug['active'] and self._debug['phase'] == 'ready'
+                target_reached = self._debug.get('target_reached', False)
+                brush_enabled = self._debug.get('brush_enabled', False)
+            if not ready or not active:
+                return {
+                    'success': False,
+                    'message': message if not ready else 'debug mode is not ready',
+                }
+            if target_reached:
+                return {'success': False, 'message': 'exit the current debug point first'}
+            if brush_enabled:
+                return {'success': False, 'message': 'stop the brush before moving the robot'}
+
+            point_name = str(body.get('point_name', '')).strip()
+            catalog, _, point, entry_route, _ = self._debug_catalog_target(point_name)
+            with self._debug_lock:
+                self._debug.update(
+                    phase='recovering_home', selected_point=point_name,
+                    last_message='正在确认 Home')
             at_home, home_message = self._debug_verify_home(catalog)
             if not at_home:
                 with self._debug_lock:
@@ -2288,7 +2343,7 @@ class WebHmiNode(Node):
                     last_message='点位已到达，可以点动')
             return {'success': True, 'message': 'debug point reached', 'point_name': point_name}
         except Exception as exc:
-            return fail({'success': False, 'message': str(exc)})
+            return keep_ready({'success': False, 'message': str(exc)})
         finally:
             self._debug_operation_lock.release()
 
@@ -2322,7 +2377,9 @@ class WebHmiNode(Node):
         try:
             ready, message = self._debug_require_paused()
             with self._debug_lock:
-                active = self._debug['active'] and self._debug['phase'] == 'ready'
+                active = (
+                    self._debug['active'] and self._debug['phase'] == 'ready' and
+                    bool(self._debug.get('selected_point')))
             if not ready or not active:
                 return {'success': False, 'message': message if not ready else 'debug point is not ready'}
             translation = [float(value) for value in body.get('translation_m', [0, 0, 0])]
@@ -2372,7 +2429,9 @@ class WebHmiNode(Node):
         try:
             ready, message = self._debug_require_paused()
             with self._debug_lock:
-                active = self._debug['active'] and self._debug['phase'] == 'ready'
+                active = (
+                    self._debug['active'] and self._debug['phase'] == 'ready' and
+                    bool(self._debug.get('selected_point')))
             if not ready or not active:
                 return {
                     'success': False,
@@ -2639,7 +2698,9 @@ class WebHmiNode(Node):
             return {'success': False, 'message': 'another debug operation is running'}
         try:
             with self._debug_lock:
-                if not self._debug['active'] or self._debug['phase'] != 'ready':
+                if (
+                        not self._debug['active'] or self._debug['phase'] != 'ready' or
+                        not self._debug.get('selected_point')):
                     return {'success': False, 'message': 'debug point is not ready'}
                 point_name = self._debug['selected_point']
                 commanded_pose = self._debug.get('commanded_pose')
@@ -2744,6 +2805,18 @@ class WebHmiNode(Node):
                 with self._debug_lock:
                     self._debug.update(phase='error', last_message=rewind['message'])
                 return rewind
+            if not point_name:
+                with self._debug_lock:
+                    self._debug.update(
+                        active=False, phase='inactive', selected_point='', dirty=False,
+                        history=[], commanded_pose=None, target_reached=False,
+                        brush_enabled=False,
+                        last_message='已退出调试，机械臂未移动，自动流程仍暂停')
+                return {
+                    'success': True,
+                    'message': 'debug mode exited without robot motion; automatic mode remains paused',
+                    'robot_moved': False,
+                }
             if not target_reached:
                 return recover_home({
                     'success': False,
@@ -2805,7 +2878,7 @@ class WebHmiNode(Node):
     def _debug_gripper_locked(self, body):
         with self._debug_lock:
             if not self._debug['active'] or self._debug['phase'] != 'ready':
-                return {'success': False, 'message': 'debug point is not ready'}
+                return {'success': False, 'message': 'debug mode is not ready'}
         command = str(body.get('command', '')).strip().lower()
         client = self.debug_gripper_open_client if command == 'open' else self.debug_gripper_close_client
         if command not in ('open', 'close'):

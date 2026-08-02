@@ -430,7 +430,7 @@ cleaning:
   motor_rs485_slave_id: 2
 
   # 寄存器 0x0040：-1000~1000 对应 -100.0%~100.0%，符号决定方向。
-  motor_rs485_duty_permille: 500
+  motor_rs485_duty_permille: 400
 
   # 寄存器 0x008e，单位 0.1s；通信中断后驱动器自动制动。100 = 10.0s。
   motor_rs485_communication_timeout_ds: 100

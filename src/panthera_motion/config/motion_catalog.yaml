@@ -40,11 +40,15 @@ commissioning:
       axes: xyz
     - point: outlet_1_hover
       axes: xy
+    - point: outlet_1_return
+      axes: xyz
     outlet_2_grasp:
     - point: outlet_2_pregrasp
       axes: xyz
     - point: outlet_2_hover
       axes: xy
+    - point: outlet_2_return
+      axes: xyz
     spectrometer_place:
     - point: spectrometer_preplace
       axes: xyz
@@ -166,6 +170,22 @@ points:
     - outlet
     - precision_approach
     - advanced
+  outlet_1_return:
+    description: 出料口1放回点；自动跟随夹取点，Z固定高3mm。
+    pose:
+      xyz:
+      - 0.484046
+      - -0.097000
+      - 0.215
+      rpy:
+      - 0.0
+      - 0.0
+      - 0.0
+    ik_seed: outlet_1_pregrasp
+    tags:
+    - outlet
+    - return
+    - advanced
   outlet_2_hover:
     description: 出料口2夹取点正上方的垂直进退点。
     pose:
@@ -213,6 +233,22 @@ points:
     tags:
     - outlet
     - precision_approach
+    - advanced
+  outlet_2_return:
+    description: 出料口2放回点；自动跟随夹取点，Z固定高3mm。
+    pose:
+      xyz:
+      - 0.484102
+      - 0.085769
+      - 0.214
+      rpy:
+      - 0.00
+      - 0.00
+      - 0.00
+    ik_seed: outlet_2_pregrasp
+    tags:
+    - outlet
+    - return
     - advanced
   spectrometer_hover:
     description: 光谱仪工艺点正上方的垂直进退点；不作为检测等待位。
@@ -1290,9 +1326,9 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
-    - name: final_10mm_return_outlet_1
+    - name: final_return_outlet_1
       type: linear
-      to: outlet_1_grasp
+      to: outlet_1_return
       velocity_scale: 0.40
       acceleration_scale: 0.35
       constraints:
@@ -1364,7 +1400,7 @@ routes:
         keep_orientation: true
     - name: precision_return_outlet_1
       type: linear
-      to: outlet_1_grasp
+      to: outlet_1_return
       velocity_scale: 0.25
       acceleration_scale: 0.20
       constraints:
@@ -1388,14 +1424,14 @@ routes:
         keep_orientation: true
     - name: precision_return_outlet_2
       type: linear
-      to: outlet_2_grasp
+      to: outlet_2_return
       velocity_scale: 0.25
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
         keep_orientation: true
   outlet_1_return_to_wait:
-    start: outlet_1_grasp
+    start: outlet_1_return
     segments:
     - name: precision_leave_outlet_1
       type: linear
@@ -1419,7 +1455,7 @@ routes:
       velocity_scale: 0.85
       acceleration_scale: 0.85
   outlet_1_return_to_home_fast:
-    start: outlet_1_grasp
+    start: outlet_1_return
     velocity_scale: 1.00
     acceleration_scale: 1.00
     segments:
@@ -1443,7 +1479,7 @@ routes:
       type: joint
       to: home_near
   outlet_1_return_to_hover_fast:
-    start: outlet_1_grasp
+    start: outlet_1_return
     velocity_scale: 0.75
     acceleration_scale: 0.65
     segments:
@@ -1614,16 +1650,16 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
-    - name: final_10mm_return_outlet_1
+    - name: final_return_outlet_1
       type: linear
-      to: outlet_1_grasp
+      to: outlet_1_return
       velocity_scale: 0.40
       acceleration_scale: 0.35
       constraints:
         vertical_axis: z
         keep_orientation: true
   outlet_2_return_to_wait:
-    start: outlet_2_grasp
+    start: outlet_2_return
     segments:
     - name: precision_leave_outlet_2
       type: linear

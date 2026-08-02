@@ -25,8 +25,8 @@ src/panthera_motion/config/motion_catalog.yaml
 
 | 工艺点 | XYZ（m） | 用途 |
 | --- | --- | --- |
-| `outlet_1_grasp` | `[0.484046, -0.097, 0.212]` | 1 号出料口取放杯 |
-| `outlet_2_grasp` | `[0.484102, 0.085769, 0.211]` | 2 号出料口取放杯 |
+| `outlet_1_grasp` | `[0.484046, -0.097, 0.212]` | 1 号出料口取杯 |
+| `outlet_2_grasp` | `[0.484102, 0.085769, 0.211]` | 2 号出料口取杯 |
 | `spectrometer_place` | `[0.162, 0.480, 0.320]` | 光谱仪放杯 |
 | `spectrometer_pick` | `[0.162, 0.479497, 0.316902]` | 光谱仪取杯，比放杯低约 3 mm |
 | `spectrometer_wait` | `[0.216, 0.190, 0.450]` | 扫描期间独立安全等待位 |
@@ -35,6 +35,7 @@ src/panthera_motion/config/motion_catalog.yaml
 
 关联的 hover/pregrasp 点由目录中的 `translation_followers` 自动跟随。不要只移动抓取点
 却留下旧接近点。
+出料口放回点也会跟随对应取杯点平移，并始终保持 Z 高 3 mm，无需单独示教。
 
 ## 光谱仪激光补偿
 

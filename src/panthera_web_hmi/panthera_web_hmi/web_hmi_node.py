@@ -1853,6 +1853,9 @@ class WebHmiNode(Node):
                 process_config.get('cleaning', {}).get('brush_hold_sec', 6.0))
             self._debug['scan_duration_sec'] = float(
                 process_config.get('loop', {}).get('scan_duration_sec', 40.0))
+            self._debug['brush_speed_percent'] = abs(float(
+                process_config.get('cleaning', {}).get(
+                    'motor_rs485_duty_permille', 500))) / 10.0
         except Exception as exc:
             self.get_logger().warn(f'failed to load debug process timing defaults: {exc}')
         default_camera_restart_script = os.path.join(

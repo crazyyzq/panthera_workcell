@@ -821,11 +821,11 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
       current_point = fixed_point_;
     }
     ActionResult result = ActionResult::ok("already at outlet return point");
-    if (current_point != (outlet_one ? "outlet_1_grasp" : "outlet_2_grasp")) {
+    if (current_point != (outlet_one ? "outlet_1_return" : "outlet_2_return")) {
       if (current_point == "brush_entry" && outlet_one) {
         result = executeFixedRoute(
           "brush_entry_to_outlet_1_return_continuous",
-          "outlet_1_grasp",
+          "outlet_1_return",
           "fixed continuous brush exit and return to outlet");
       } else {
         if (current_point == "brush_entry") {
@@ -837,7 +837,7 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
         }
         result = executeFixedRoute(
           outlet_one ? "clean_hover_to_outlet_1_return" : "clean_hover_to_outlet_2_return",
-          outlet_one ? "outlet_1_grasp" : "outlet_2_grasp",
+          outlet_one ? "outlet_1_return" : "outlet_2_return",
           "fixed route return cup to outlet");
       }
       if (!result.success) {

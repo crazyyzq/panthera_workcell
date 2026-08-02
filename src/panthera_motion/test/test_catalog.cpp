@@ -410,6 +410,23 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_TRUE(direct_return->segments[0].constraints.keep_orientation);
   EXPECT_EQ(direct_return->segments[1].to, "brush_clear_high");
   EXPECT_EQ(direct_return->segments[2].to, "outlet_1_hover");
+  EXPECT_EQ(direct_return->segments.back().to, "outlet_1_return");
+  const auto * outlet_1_grasp = catalog.findPoint("outlet_1_grasp");
+  const auto * outlet_1_return = catalog.findPoint("outlet_1_return");
+  const auto * outlet_2_grasp = catalog.findPoint("outlet_2_grasp");
+  const auto * outlet_2_return = catalog.findPoint("outlet_2_return");
+  ASSERT_NE(outlet_1_grasp, nullptr);
+  ASSERT_NE(outlet_1_return, nullptr);
+  ASSERT_NE(outlet_2_grasp, nullptr);
+  ASSERT_NE(outlet_2_return, nullptr);
+  ASSERT_TRUE(outlet_1_grasp->pose.has_value());
+  ASSERT_TRUE(outlet_1_return->pose.has_value());
+  ASSERT_TRUE(outlet_2_grasp->pose.has_value());
+  ASSERT_TRUE(outlet_2_return->pose.has_value());
+  EXPECT_NEAR(
+    outlet_1_return->pose->xyz[2] - outlet_1_grasp->pose->xyz[2], 0.003, 1e-9);
+  EXPECT_NEAR(
+    outlet_2_return->pose->xyz[2] - outlet_2_grasp->pose->xyz[2], 0.003, 1e-9);
   for (const auto & segment : direct_return->segments) {
     EXPECT_NE(segment.to, "clean_dump_pour");
     EXPECT_NE(segment.to, "clean_dump");

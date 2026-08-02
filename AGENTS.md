@@ -719,6 +719,8 @@ not a normal shutdown path.
   than the preceding 2.6667/1.8667 s); the 15 mm close target and hold behavior are unchanged.
 - Production cleaning must insert the cup fully at `brush_center` before starting
   the brush. If brush start fails, retreat to `brush_entry` with the motor off.
+- Production brush speed defaults to 40%. Outlet return points follow their grasp
+  points in XYZ while retaining a +3 mm Z offset; do not merge the two points.
 - Machine-managed config saves must be validated and atomic (temporary file, flush/fsync, rename). A failed save/compile must leave the previous active version intact.
 
 ## Coding rules for the refactor

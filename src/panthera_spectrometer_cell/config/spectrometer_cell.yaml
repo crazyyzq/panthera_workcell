@@ -223,22 +223,25 @@ gripper:
   close_position: 0.015
 
   # 打开夹爪轨迹时长，单位 s。
-  open_duration_sec: 4.0
+  # 50mm 行程约 2.05s；在已提速 50% 的基础上再提速 30%。
+  open_duration_sec: 2.0513
 
   # 闭合夹爪轨迹时长，单位 s。
-  # 35mm 行程 / 厂商 12.5mm/s，保持厂商额定夹爪速度。
-  close_duration_sec: 2.8
+  # 35mm 行程约 1.44s；在已提速 50% 的基础上再提速 30%，夹紧目标仍保持 15mm。
+  close_duration_sec: 1.4359
 
   # Closed-loop FollowJointTrajectory command and recovery settings.
   # Cold boots can take 10-15 seconds to spawn both trajectory controllers.
   action_server_wait_sec: 20.0
-  command_timeout_margin_sec: 2.0
+  # 夹爪热保护或控制器换目标后可能短时延迟响应；给动作结果和取消留足时间。
+  command_timeout_margin_sec: 5.0
   position_tolerance_m: 0.003
   # 抓到杯子后允许控制器正常结束轨迹，并持续保持 15mm 闭合目标。
   # 严禁在接触时 cancel；只有明确的开爪命令才能释放杯子。
   grasp_hold_goal_tolerance_m: 0.025
   settled_velocity_tolerance_mps: 0.003
-  settle_timeout_sec: 1.0
+  # 轨迹结束后的编码器确认窗口；延长后不会因短暂迟滞误报失败。
+  settle_timeout_sec: 5.0
   # 闭合时只要夹爪至少收拢该距离，并持续低速不动，就认为已稳定夹到杯子。
   # 这样物体阻挡在约32mm时不会再等待“闭合到0mm”的超时和重试。
   grasp_contact_min_closure_m: 0.008

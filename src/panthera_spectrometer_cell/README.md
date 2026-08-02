@@ -71,7 +71,8 @@ config/spectrometer_cell.yaml
 | 等待出料提示间隔 | `loop.wait_discharge_soft_timeout_sec` |
 | 光谱仪检测超时 | `loop.detection_timeout_sec` |
 | 最远点后的扫描完成时间（默认 40 s） | `loop.scan_duration_sec` |
-| 夹爪开合位置 | `gripper.open_position` / `gripper.close_position` |
+| 夹爪开合位置和时长 | `gripper.open_position` / `gripper.close_position` / `*_duration_sec` |
+| 夹爪结果确认和重试冷却 | `gripper.settle_timeout_sec` / `command_timeout_margin_sec` |
 | 两个出料口取杯/放回点位 | `outlets` + `named_poses` |
 | 光谱仪轴向和激光换算 | `spectrometer_axis` |
 | 清理位置和抖动次数 | `cleaning` |
@@ -87,7 +88,7 @@ config/spectrometer_cell.yaml
 毛刷使用 AQMD6030NS-A3 驱动器，通过 `/dev/ttyS8` 的 Modbus RTU 控制。SW8 必须为 ON；
 现场 SW1 为 ON，手册译码和实机扫描均对应站号 `0x02`。默认串口参数为 `9600/8E1`。
 
-程序启动时先写 `0x0040=0` 确认停转；清洁开始前写 `0x0080=0` 选择占空比模式，
+程序启动时先写 `0x0040=0` 确认停转；杯子完全套入 `brush_center` 后才写 `0x0080=0` 选择占空比模式，
 写 `0x008e` 启用断线制动，再向 `0x0040` 写有符号速度。每次写操作必须收到站号、
 功能码、寄存器、数据和 CRC 均正确的回显，否则动作失败并重连一次，不会继续进杯。
 
@@ -133,6 +134,7 @@ config/spectrometer_cell.yaml
   不要求停在标准品位置。
 - 毛刷清洁完成后沿杯口轴退出，保持倒料姿态垂直抬到 0.45 m，在高位回正后
   直接跨区返回原出料口，不再低位原路返回倒料点。
+- 毛刷必须在杯子到达 `brush_center` 后启动；若启动失败，先在毛刷未转状态下安全退杯。
 - 任意动作失败进入 `ERROR`，不会继续执行下一步。
 - `ERROR` 保留上下文，不清空杯子位置、出料口状态和 active action 信息。
 - `ESTOP` 优先级最高，急停下不执行任何机械臂动作，必须释放急停并复位后才能回 `IDLE`。

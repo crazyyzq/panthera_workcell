@@ -714,6 +714,11 @@ not a normal shutdown path.
 - Tool/TCP frame: `gripper_center`.
 - Point and route IDs use stable `snake_case` names.
 - Production motion data must have one canonical source. Do not add another hard-coded list in C++, launch files or the HMI.
+- Gripper open/close duration is configured in `spectrometer_cell.yaml`. The
+  commissioned 2026-08-02 values are 2.0513 s open and 1.4359 s close (30% faster
+  than the preceding 2.6667/1.8667 s); the 15 mm close target and hold behavior are unchanged.
+- Production cleaning must insert the cup fully at `brush_center` before starting
+  the brush. If brush start fails, retreat to `brush_entry` with the motor off.
 - Machine-managed config saves must be validated and atomic (temporary file, flush/fsync, rename). A failed save/compile must leave the previous active version intact.
 
 ## Coding rules for the refactor

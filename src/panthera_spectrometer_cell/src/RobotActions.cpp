@@ -1776,11 +1776,7 @@ ActionResult RobotActions::executeFixedCleaning()
     }
   }
 
-  result = setCleaningMotor(true, "start cleaning motor before fixed brush insertion");
-  if (!result.success) {
-    return result;
-  }
-  bool motor_running = true;
+  bool motor_running = false;
   const auto stop_motor = [this, &motor_running]() {
       if (!motor_running) {
         return ActionResult::ok("cleaning motor already stopped");
@@ -1793,9 +1789,20 @@ ActionResult RobotActions::executeFixedCleaning()
   result = executeFixedRoute(
     "brush_entry_to_center", "brush_center", "fixed Cartesian brush insertion");
   if (!result.success) {
-    stop_motor();
     return result;
   }
+
+  result = setCleaningMotor(true, "start cleaning motor after cup is fully inserted");
+  if (!result.success) {
+    const auto retreat = executeFixedRoute(
+      "brush_center_to_entry", "brush_entry",
+      "safe brush exit after cleaning motor start failure");
+    if (!retreat.success) {
+      return ActionResult::fail(result.message + "; safe brush exit failed: " + retreat.message);
+    }
+    return result;
+  }
+  motor_running = true;
   if (config_.cleaning.brushHoldSec > 0.0) {
     std::this_thread::sleep_for(
       std::chrono::duration<double>(effectiveDuration(config_.cleaning.brushHoldSec)));
@@ -2552,6 +2559,11 @@ ActionResult RobotActions::sendGripperTo(
       RCLCPP_WARN(
         logger_, "%s attempt %d/%d failed: %s; retrying idempotent gripper target",
         label.c_str(), attempt + 1, config_.gripper.retryCount + 1, last_error.c_str());
+      // A gripper that has held a cup for a long time can briefly reject the
+      // opposite command while its drive protection settles. Immediate retries
+      // only repeat the same failure and can extend the protection interval.
+      std::this_thread::sleep_for(
+        std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec));
     }
   }
 

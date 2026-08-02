@@ -269,9 +269,9 @@ colcon build --packages-select panthera_interfaces panthera_spectrometer_cell pa
 | 点位 | 当前 XYZ（m） |
 | --- | --- |
 | `outlet_1_grasp` | `[0.484046, -0.097, 0.212]` |
-| `outlet_1_return` | `[0.484046, -0.097, 0.218]`（放回比取杯高 6 mm，自动跟随） |
+| `outlet_1_return` | `[0.484046, -0.097, 0.222]`（放回比取杯高 10 mm，自动跟随） |
 | `outlet_2_grasp` | `[0.484102, 0.085769, 0.211]` |
-| `outlet_2_return` | `[0.484102, 0.085769, 0.217]`（放回比取杯高 6 mm，自动跟随） |
+| `outlet_2_return` | `[0.484102, 0.085769, 0.221]`（放回比取杯高 10 mm，自动跟随） |
 | `spectrometer_place` | `[0.162, 0.480, 0.320]` |
 | `spectrometer_pick` | `[0.162, 0.479497, 0.316902]` |
 | `clean_dump` | `[-0.05874, -0.39374, 0.205]` |

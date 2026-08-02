@@ -403,7 +403,7 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   const auto * direct_return =
     catalog.findRoute("brush_entry_to_outlet_1_return_smooth");
   ASSERT_NE(direct_return, nullptr);
-  ASSERT_GE(direct_return->segments.size(), 5u);
+  ASSERT_GE(direct_return->segments.size(), 4u);
   EXPECT_EQ(direct_return->segments[0].to, "brush_entry_clear_high");
   EXPECT_EQ(direct_return->segments[0].type, panthera_motion::SegmentType::LINEAR);
   EXPECT_EQ(direct_return->segments[0].constraints.vertical_axis, "z");
@@ -424,9 +424,9 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   ASSERT_TRUE(outlet_2_grasp->pose.has_value());
   ASSERT_TRUE(outlet_2_return->pose.has_value());
   EXPECT_NEAR(
-    outlet_1_return->pose->xyz[2] - outlet_1_grasp->pose->xyz[2], 0.006, 1e-9);
+    outlet_1_return->pose->xyz[2] - outlet_1_grasp->pose->xyz[2], 0.010, 1e-9);
   EXPECT_NEAR(
-    outlet_2_return->pose->xyz[2] - outlet_2_grasp->pose->xyz[2], 0.006, 1e-9);
+    outlet_2_return->pose->xyz[2] - outlet_2_grasp->pose->xyz[2], 0.010, 1e-9);
   for (const auto & segment : direct_return->segments) {
     EXPECT_NE(segment.to, "clean_dump_pour");
     EXPECT_NE(segment.to, "clean_dump");

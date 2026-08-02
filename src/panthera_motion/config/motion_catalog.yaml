@@ -171,12 +171,12 @@ points:
     - precision_approach
     - advanced
   outlet_1_return:
-    description: 出料口1放回点；自动跟随夹取点，Z固定高6mm。
+    description: 出料口1放回点；自动跟随夹取点，Z固定高10mm。
     pose:
       xyz:
       - 0.484046
       - -0.097000
-      - 0.218
+      - 0.222
       rpy:
       - 0.0
       - 0.0
@@ -235,12 +235,12 @@ points:
     - precision_approach
     - advanced
   outlet_2_return:
-    description: 出料口2放回点；自动跟随夹取点，Z固定高6mm。
+    description: 出料口2放回点；自动跟随夹取点，Z固定高10mm。
     pose:
       xyz:
       - 0.484102
       - 0.085769
-      - 0.217
+      - 0.221
       rpy:
       - 0.00
       - 0.00
@@ -1322,15 +1322,7 @@ routes:
     segments:
     - name: vertical_approach_outlet_1
       type: linear
-      to: outlet_1_pregrasp
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
-    - name: final_return_outlet_1
-      type: linear
       to: outlet_1_return
-      velocity_scale: 0.40
-      acceleration_scale: 0.35
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -1392,17 +1384,9 @@ routes:
       acceleration_scale: 0.85
     - name: vertical_approach_return_outlet_1
       type: linear
-      to: outlet_1_pregrasp
+      to: outlet_1_return
       velocity_scale: 0.55
       acceleration_scale: 0.45
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
-    - name: precision_return_outlet_1
-      type: linear
-      to: outlet_1_return
-      velocity_scale: 0.25
-      acceleration_scale: 0.20
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -1416,31 +1400,15 @@ routes:
       acceleration_scale: 0.85
     - name: vertical_approach_return_outlet_2
       type: linear
-      to: outlet_2_pregrasp
+      to: outlet_2_return
       velocity_scale: 0.55
       acceleration_scale: 0.45
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
-    - name: precision_return_outlet_2
-      type: linear
-      to: outlet_2_return
-      velocity_scale: 0.25
-      acceleration_scale: 0.20
       constraints:
         vertical_axis: z
         keep_orientation: true
   outlet_1_return_to_wait:
     start: outlet_1_return
     segments:
-    - name: precision_leave_outlet_1
-      type: linear
-      to: outlet_1_pregrasp
-      velocity_scale: 0.30
-      acceleration_scale: 0.25
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
     - name: vertical_leave_outlet_1
       type: linear
       to: outlet_1_hover
@@ -1459,14 +1427,6 @@ routes:
     velocity_scale: 1.00
     acceleration_scale: 1.00
     segments:
-    - name: final_10mm_leave_outlet_1
-      type: linear
-      to: outlet_1_pregrasp
-      velocity_scale: 0.40
-      acceleration_scale: 0.35
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
     - name: vertical_leave_outlet_1
       type: linear
       to: outlet_1_hover
@@ -1483,14 +1443,6 @@ routes:
     velocity_scale: 0.75
     acceleration_scale: 0.65
     segments:
-    - name: final_10mm_leave_outlet_1
-      type: linear
-      to: outlet_1_pregrasp
-      velocity_scale: 0.40
-      acceleration_scale: 0.35
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
     - name: vertical_leave_outlet_1
       type: linear
       to: outlet_1_hover
@@ -1644,31 +1596,15 @@ routes:
       acceleration_scale: 0.70
     - name: vertical_approach_outlet_1
       type: linear
-      to: outlet_1_pregrasp
+      to: outlet_1_return
       velocity_scale: 0.60
       acceleration_scale: 0.50
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
-    - name: final_return_outlet_1
-      type: linear
-      to: outlet_1_return
-      velocity_scale: 0.40
-      acceleration_scale: 0.35
       constraints:
         vertical_axis: z
         keep_orientation: true
   outlet_2_return_to_wait:
     start: outlet_2_return
     segments:
-    - name: precision_leave_outlet_2
-      type: linear
-      to: outlet_2_pregrasp
-      velocity_scale: 0.30
-      acceleration_scale: 0.25
-      constraints:
-        vertical_axis: z
-        keep_orientation: true
     - name: vertical_leave_outlet_2
       type: linear
       to: outlet_2_hover

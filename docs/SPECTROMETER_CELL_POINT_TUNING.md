@@ -35,7 +35,7 @@ src/panthera_motion/config/motion_catalog.yaml
 
 关联的 hover/pregrasp 点由目录中的 `translation_followers` 自动跟随。不要只移动抓取点
 却留下旧接近点。
-出料口放回点也会跟随对应取杯点平移，并始终保持 Z 高 6 mm，无需单独示教。
+出料口放回点也会跟随对应取杯点平移，并始终保持 Z 高 10 mm，无需单独示教。
 
 ## 光谱仪激光补偿
 

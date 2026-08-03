@@ -223,12 +223,12 @@ gripper:
   close_position: 0.015
 
   # 打开夹爪轨迹时长，单位 s。
-  # 50mm 行程约 2.05s；在已提速 50% 的基础上再提速 30%。
-  open_duration_sec: 2.0513
+  # 50mm 行程约 1.37s；在上一版基础上再提速 50%。
+  open_duration_sec: 1.3675
 
   # 闭合夹爪轨迹时长，单位 s。
-  # 35mm 行程约 1.44s；在已提速 50% 的基础上再提速 30%，夹紧目标仍保持 15mm。
-  close_duration_sec: 1.4359
+  # 35mm 行程约 0.96s；在上一版基础上再提速 50%，夹紧目标仍保持 15mm。
+  close_duration_sec: 0.9573
 
   # Closed-loop FollowJointTrajectory command and recovery settings.
   # Cold boots can take 10-15 seconds to spawn both trajectory controllers.

@@ -33,11 +33,11 @@ This file contains durable repository context and operating rules for future age
 
 ## Current motion facts
 
-- Current physically validated smooth profile (2026-07-18): arm trajectory velocity
-  limit `2.2 rad/s`, acceleration limit `3.0 rad/s^2`, and catalog jerk limit
-  `300 rad/s^3`. Nearby process transitions use lower per-route scaling; the final
-  10 mm pick/place segment remains at 40%. Do not restore the previous 4 rad/s^2
-  acceleration profile, which produced visible overshoot.
+- The physically validated 2026-07-18 profile used a `2.2 rad/s` arm ceiling.
+  The operator-requested 2026-08-03 production ceiling is now `2.0 rad/s` on all
+  six arm joints, with acceleration still limited to `3.0 rad/s^2` and jerk to
+  `300 rad/s^3` globally / `40 rad/s^3` for Cartesian-containing routes. Do not
+  restore the previous `4 rad/s^2` acceleration profile, which produced overshoot.
 - The current fixed spectrometer process baseline is `x=0.1620 m`. Place uses
   `y=0.480 m`, `z=0.320 m`; pick uses `y=0.479497 m`, `z=0.316902 m`. Their
   10 mm pre-approach and high-hover/template points must retain the matching x/y
@@ -207,9 +207,11 @@ This file contains durable repository context and operating rules for future age
   caused false aborts despite correct motion. Final position/velocity tolerances
   remain strict. After this correction, 50 consecutive 100%-speed empty
   full-flow cycles passed on 2026-07-28 with maximum Home error `0.007912 rad`.
-- Production pour wrist segments use 70% velocity / 50% acceleration; the short
-  shake relief/back segments use 60% / 45%. Keep these local overrides and the
-  compiler jerk limits instead of raising global motion dynamics.
+- Since 2026-08-03 all production route/segment velocity scales are 100% against
+  the six-axis `2.0 rad/s` ceiling. Pour wrist acceleration remains 50% and short
+  shake acceleration 45%; debug, maintenance, and recovery routes keep their
+  lower speeds. Keep the compiler acceleration and jerk limits rather than using
+  higher dynamics to force short segments to reach peak speed.
 - Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
 - The cleaning brush motor driver is AQMD6030NS-A3 on `/dev/ttyS8`, Modbus RTU
   slave `0x02`, default `9600/8E1`. Its SW8 must be ON. The manual uses an
@@ -715,8 +717,9 @@ not a normal shutdown path.
 - Point and route IDs use stable `snake_case` names.
 - Production motion data must have one canonical source. Do not add another hard-coded list in C++, launch files or the HMI.
 - Gripper open/close duration is configured in `spectrometer_cell.yaml`. The
-  commissioned 2026-08-02 values are 2.0513 s open and 1.4359 s close (30% faster
-  than the preceding 2.6667/1.8667 s); the 15 mm close target and hold behavior are unchanged.
+  2026-08-03 values are 1.3675 s open and 0.9573 s close (50% faster than the
+  preceding 2.0513/1.4359 s); the hardware ceiling is 0.01875 m/s, while the
+  15 mm close target and hold behavior are unchanged.
 - Production cleaning must insert the cup fully at `brush_center` before starting
   the brush. If brush start fails, retreat to `brush_entry` with the motor off.
 - Production brush speed defaults to 40%. Outlet return points follow their grasp

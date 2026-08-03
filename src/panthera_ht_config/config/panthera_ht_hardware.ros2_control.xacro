@@ -27,7 +27,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">21.0</param>
-                <param name="max_velocity">2.2</param>
+                <param name="max_velocity">2.0</param>
                 <param name="kp">4.0</param>
                 <param name="kd">0.5</param>
             </joint>
@@ -39,7 +39,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">36.0</param>
-                <param name="max_velocity">2.2</param>
+                <param name="max_velocity">2.0</param>
                 <param name="kp">10.0</param>
                 <param name="kd">0.8</param>
             </joint>
@@ -51,7 +51,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">36.0</param>
-                <param name="max_velocity">2.2</param>
+                <param name="max_velocity">2.0</param>
                 <param name="kp">10.0</param>
                 <param name="kd">0.8</param>
             </joint>
@@ -63,7 +63,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">21.0</param>
-                <param name="max_velocity">2.2</param>
+                <param name="max_velocity">2.0</param>
                 <param name="kp">2.0</param>
                 <param name="kd">0.2</param>
             </joint>
@@ -75,7 +75,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">10.0</param>
-                <param name="max_velocity">2.2</param>
+                <param name="max_velocity">2.0</param>
                 <param name="kp">2.0</param>
                 <param name="kd">0.2</param>
             </joint>
@@ -87,7 +87,7 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">10.0</param>
-                <param name="max_velocity">2.2</param>
+                <param name="max_velocity">2.0</param>
                 <param name="kp">1.0</param>
                 <param name="kd">0.1</param>
             </joint>
@@ -100,8 +100,8 @@
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
                 <param name="max_torque">2.5</param>
-                <!-- Vendor gripper default: 0.5 rad/s × 0.025 m/rad. -->
-                <param name="max_velocity">0.0125</param>
+                <!-- Commissioned 50% faster than the vendor 0.0125 m/s default. -->
+                <param name="max_velocity">0.01875</param>
                 <param name="kp">1.5</param>
                 <param name="kd">0.1</param>
             </joint>

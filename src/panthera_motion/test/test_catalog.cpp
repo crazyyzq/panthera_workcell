@@ -375,12 +375,12 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   EXPECT_EQ(final_segment.constraints.vertical_axis, "z");
   EXPECT_TRUE(final_segment.constraints.keep_orientation);
   ASSERT_TRUE(final_segment.velocity_scale.has_value());
-  EXPECT_DOUBLE_EQ(*final_segment.velocity_scale, 0.25);
+  EXPECT_DOUBLE_EQ(*final_segment.velocity_scale, 1.0);
   EXPECT_DOUBLE_EQ(catalog.defaults.max_jerk_rad_sec3, 300.0);
 
   const auto & transfer_segment = outlet_route->segments.front();
   ASSERT_TRUE(transfer_segment.velocity_scale.has_value());
-  EXPECT_DOUBLE_EQ(*transfer_segment.velocity_scale, 0.85);
+  EXPECT_DOUBLE_EQ(*transfer_segment.velocity_scale, 1.0);
 
   const auto * home_to_outlet_2 =
     catalog.findRoute("home_to_outlet_2_grasp_smooth");
@@ -448,7 +448,7 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   ASSERT_NE(pour_segment, clean_route->segments.end());
   ASSERT_TRUE(pour_segment->velocity_scale.has_value());
   ASSERT_TRUE(pour_segment->acceleration_scale.has_value());
-  EXPECT_DOUBLE_EQ(*pour_segment->velocity_scale, 0.70);
+  EXPECT_DOUBLE_EQ(*pour_segment->velocity_scale, 1.0);
   EXPECT_DOUBLE_EQ(*pour_segment->acceleration_scale, 0.50);
 
   const auto * dump = catalog.findPoint("clean_dump");
@@ -459,6 +459,40 @@ TEST(ProductionCatalog, KeepsMinimalOperatorFacingProfile)
   ASSERT_TRUE(brush_entry->pose.has_value());
   EXPECT_NEAR(dump->pose->xyz[0], -0.05874, 1e-9);
   EXPECT_NEAR(brush_entry->pose->xyz[0] - dump->pose->xyz[0], 0.100, 1e-9);
+}
+
+TEST(ProductionCatalog, UsesFullVelocityScaleOutsideSafetyRoutes)
+{
+  const auto catalog =
+    panthera_motion::MotionCatalog::loadFromFile(PANTHERA_TEST_CATALOG_PATH);
+  EXPECT_DOUBLE_EQ(catalog.defaults.velocity_scale, 1.0);
+
+  const std::set<std::string> safety_routes{
+    "home_to_safe_center",
+    "safe_center_to_home",
+    "safe_center_to_outlet_wait",
+    "home_to_outlet_wait_continuous",
+    "outlet_wait_to_safe_center",
+    "outlet_wait_to_home_continuous",
+  };
+  for (const auto & item : catalog.routes) {
+    const auto & name = item.first;
+    const auto & route = item.second;
+    const bool exempt =
+      name.rfind("debug_", 0) == 0 ||
+      name.find("_recovery") != std::string::npos ||
+      name.find("_commission") != std::string::npos ||
+      safety_routes.count(name) != 0;
+    if (exempt) {
+      continue;
+    }
+    EXPECT_DOUBLE_EQ(route.velocity_scale, 1.0) << name;
+    for (const auto & segment : route.segments) {
+      if (segment.velocity_scale) {
+        EXPECT_DOUBLE_EQ(*segment.velocity_scale, 1.0) << name << "/" << segment.name;
+      }
+    }
+  }
 }
 
 }  // namespace

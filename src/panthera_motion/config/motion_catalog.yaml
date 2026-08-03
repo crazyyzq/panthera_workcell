@@ -18,9 +18,9 @@ robot:
   - 0.0
   - 0.0
 defaults:
-  # Smooth production profile. Segment overrides keep long transfers fast and
-  # lower speed only where the process needs precise vertical/wrist motion.
-  velocity_scale: 0.85
+  # Production requests the full configured joint-speed ceiling. Segment
+  # acceleration overrides still soften precise vertical and wrist motion.
+  velocity_scale: 1.00
   acceleration_scale: 0.85
   # Bound the peak jerk of the controller's quintic spline interpolation.
   max_jerk_rad_sec3: 300.0
@@ -539,6 +539,7 @@ points:
 routes:
   home_to_spectrometer_pick_recovery:
     start: home_near
+    velocity_scale: 0.85
     segments:
     - name: leave_home_via_safe_center
       type: joint
@@ -579,6 +580,7 @@ routes:
       to: spectrometer_pick_hover
   home_to_clean_hover_recovery:
     start: home_near
+    velocity_scale: 0.85
     segments:
     - name: leave_home_via_safe_center
       type: joint
@@ -614,6 +616,7 @@ routes:
       to: home_near
   home_to_clean_dump_recovery:
     start: home_near
+    velocity_scale: 0.85
     segments:
     - name: leave_home_via_safe_center
       type: joint
@@ -659,6 +662,7 @@ routes:
       to: safe_joint_center
   safe_center_to_outlet_wait:
     start: safe_joint_center
+    velocity_scale: 0.85
     segments:
     - name: enter_production_wait
       type: joint
@@ -677,6 +681,7 @@ routes:
       acceleration_scale: 0.50
   outlet_wait_to_safe_center:
     start: outlet_wait
+    velocity_scale: 0.85
     segments:
     - name: leave_production_area
       type: joint
@@ -699,12 +704,12 @@ routes:
     - name: transfer_above_outlet_1
       type: joint
       to: outlet_1_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
     - name: vertical_approach_outlet_1
       type: linear
       to: outlet_1_pregrasp
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -712,7 +717,7 @@ routes:
     - name: precision_grasp_outlet_1
       type: linear
       to: outlet_1_grasp
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -723,12 +728,12 @@ routes:
     - name: transfer_above_outlet_2
       type: joint
       to: outlet_2_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
     - name: vertical_approach_outlet_2
       type: linear
       to: outlet_2_pregrasp
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -736,7 +741,7 @@ routes:
     - name: precision_grasp_outlet_2
       type: linear
       to: outlet_2_grasp
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -747,7 +752,7 @@ routes:
     - name: precision_lift_outlet_1
       type: linear
       to: outlet_1_pregrasp
-      velocity_scale: 0.50
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -755,7 +760,7 @@ routes:
     - name: vertical_lift_outlet_1
       type: linear
       to: outlet_1_hover
-      velocity_scale: 0.80
+      velocity_scale: 1.00
       acceleration_scale: 0.70
       constraints:
         vertical_axis: z
@@ -763,12 +768,12 @@ routes:
     - name: transfer_to_spectrometer
       type: joint
       to: spectrometer_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
     - name: vertical_approach_spectrometer_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -776,7 +781,7 @@ routes:
     - name: precision_place_spectrometer
       type: linear
       to: spectrometer_place
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -806,7 +811,7 @@ routes:
     - name: precision_lift_outlet_1
       type: linear
       to: outlet_1_pregrasp
-      velocity_scale: 0.50
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -814,7 +819,7 @@ routes:
     - name: vertical_lift_outlet_1
       type: linear
       to: outlet_1_hover
-      velocity_scale: 0.80
+      velocity_scale: 1.00
       acceleration_scale: 0.70
       constraints:
         vertical_axis: z
@@ -822,11 +827,11 @@ routes:
     - name: transfer_to_spectrometer
       type: joint
       to: spectrometer_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
   outlet_1_hover_to_spectrometer_place:
     start: outlet_1_hover
-    velocity_scale: 0.85
+    velocity_scale: 1.00
     acceleration_scale: 0.85
     segments:
     - name: transfer_to_spectrometer
@@ -835,7 +840,7 @@ routes:
     - name: vertical_approach_spectrometer_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -843,7 +848,7 @@ routes:
     - name: precision_place_spectrometer
       type: linear
       to: spectrometer_place
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -854,7 +859,7 @@ routes:
     - name: precision_lift_outlet_2
       type: linear
       to: outlet_2_pregrasp
-      velocity_scale: 0.30
+      velocity_scale: 1.00
       acceleration_scale: 0.25
       constraints:
         vertical_axis: z
@@ -862,7 +867,7 @@ routes:
     - name: vertical_lift_outlet_2
       type: linear
       to: outlet_2_hover
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -870,12 +875,12 @@ routes:
     - name: transfer_to_spectrometer
       type: joint
       to: spectrometer_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
     - name: vertical_approach_spectrometer_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -883,7 +888,7 @@ routes:
     - name: precision_place_spectrometer
       type: linear
       to: spectrometer_place
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -896,7 +901,7 @@ routes:
     - name: precision_lift_outlet_2
       type: linear
       to: outlet_2_pregrasp
-      velocity_scale: 0.30
+      velocity_scale: 1.00
       acceleration_scale: 0.25
       constraints:
         vertical_axis: z
@@ -904,7 +909,7 @@ routes:
     - name: vertical_lift_outlet_2
       type: linear
       to: outlet_2_hover
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -912,7 +917,7 @@ routes:
     - name: transfer_to_spectrometer
       type: joint
       to: spectrometer_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
   spectrometer_place_to_wait:
     start: spectrometer_place
@@ -920,7 +925,7 @@ routes:
     - name: precision_leave_after_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.30
+      velocity_scale: 1.00
       acceleration_scale: 0.25
       constraints:
         vertical_axis: z
@@ -928,7 +933,7 @@ routes:
     - name: vertical_leave_after_place
       type: linear
       to: spectrometer_hover
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -936,7 +941,7 @@ routes:
     - name: enter_detection_wait
       type: joint
       to: spectrometer_wait
-      velocity_scale: 0.35
+      velocity_scale: 1.00
       acceleration_scale: 0.30
   spectrometer_sensor_place_to_wait:
     start: spectrometer_place
@@ -944,7 +949,7 @@ routes:
     - name: precision_leave_adjusted_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.30
+      velocity_scale: 1.00
       acceleration_scale: 0.25
       constraints:
         vertical_axis: z
@@ -952,7 +957,7 @@ routes:
     - name: vertical_leave_adjusted_place
       type: linear
       to: spectrometer_sensor_hover_template
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -960,12 +965,12 @@ routes:
     - name: align_nominal_hover_at_clearance
       type: joint
       to: spectrometer_hover
-      velocity_scale: 0.35
+      velocity_scale: 1.00
       acceleration_scale: 0.30
     - name: enter_detection_wait
       type: joint
       to: spectrometer_wait
-      velocity_scale: 0.35
+      velocity_scale: 1.00
       acceleration_scale: 0.30
   spectrometer_hover_to_place:
     start: spectrometer_hover
@@ -973,7 +978,7 @@ routes:
     - name: vertical_approach_spectrometer_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -981,7 +986,7 @@ routes:
     - name: precision_place_spectrometer
       type: linear
       to: spectrometer_place
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -992,12 +997,12 @@ routes:
     - name: align_above_spectrometer_pick
       type: joint
       to: spectrometer_pick_hover
-      velocity_scale: 0.35
+      velocity_scale: 1.00
       acceleration_scale: 0.30
     - name: vertical_approach_spectrometer_pick
       type: linear
       to: spectrometer_prepick
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1005,7 +1010,7 @@ routes:
     - name: precision_pick_spectrometer
       type: linear
       to: spectrometer_pick
-      velocity_scale: 0.25
+      velocity_scale: 1.00
       acceleration_scale: 0.20
       constraints:
         vertical_axis: z
@@ -1016,7 +1021,7 @@ routes:
     - name: precision_lift_spectrometer
       type: linear
       to: spectrometer_prepick
-      velocity_scale: 0.30
+      velocity_scale: 1.00
       acceleration_scale: 0.25
       constraints:
         vertical_axis: z
@@ -1024,7 +1029,7 @@ routes:
     - name: vertical_lift_spectrometer
       type: linear
       to: spectrometer_pick_hover
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1032,7 +1037,7 @@ routes:
     - name: align_from_spectrometer_pick
       type: joint
       to: spectrometer_hover
-      velocity_scale: 0.35
+      velocity_scale: 1.00
       acceleration_scale: 0.30
   spectrometer_pick_to_clean_dump:
     start: spectrometer_pick
@@ -1115,7 +1120,7 @@ routes:
     - name: precision_lift_spectrometer
       type: linear
       to: spectrometer_prepick
-      velocity_scale: 0.50
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1139,22 +1144,22 @@ routes:
     - name: rotate_wrist_to_pour
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.70
+      velocity_scale: 1.00
       acceleration_scale: 0.50
     - name: pour_shake_relief
       type: joint
       to: clean_dump_shake_relief
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.45
     - name: pour_shake_back
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.45
     - name: translate_positive_x_100mm_to_brush_entry
       type: linear
       to: brush_entry
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.50
       constraints:
         keep_orientation: true
@@ -1176,28 +1181,28 @@ routes:
     - name: rotate_wrist_to_pour
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.70
+      velocity_scale: 1.00
       acceleration_scale: 0.50
     - name: pour_shake_relief
       type: joint
       to: clean_dump_shake_relief
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.45
     - name: pour_shake_back
       type: joint
       to: clean_dump_pour
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.45
     - name: translate_positive_x_100mm_to_brush_entry
       type: linear
       to: brush_entry
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.50
       constraints:
         keep_orientation: true
   clean_dump_to_pour:
     start: clean_dump
-    velocity_scale: 0.70
+    velocity_scale: 1.00
     acceleration_scale: 0.50
     segments:
     - name: rotate_wrist_to_pour_limit
@@ -1205,7 +1210,7 @@ routes:
       to: clean_dump_pour
   clean_dump_pour_shake_once:
     start: clean_dump_pour
-    velocity_scale: 0.60
+    velocity_scale: 1.00
     acceleration_scale: 0.45
     segments:
     - name: shake_relief
@@ -1216,13 +1221,13 @@ routes:
       to: clean_dump_pour
   clean_dump_pour_to_clean_hover:
     start: clean_dump_pour
-    velocity_scale: 0.70
+    velocity_scale: 1.00
     acceleration_scale: 0.70
     segments:
     - name: return_wrist_upright_at_dump
       type: joint
       to: clean_dump
-      velocity_scale: 0.40
+      velocity_scale: 1.00
       acceleration_scale: 0.35
     - name: vertical_leave_dump
       type: linear
@@ -1232,7 +1237,7 @@ routes:
         keep_orientation: true
   clean_dump_pour_to_brush_entry:
     start: clean_dump_pour
-    velocity_scale: 0.60
+    velocity_scale: 1.00
     acceleration_scale: 0.50
     segments:
     - name: offset_positive_x_100mm
@@ -1252,7 +1257,7 @@ routes:
         keep_orientation: true
   clean_dump_pour_to_clean_dump:
     start: clean_dump_pour
-    velocity_scale: 0.40
+    velocity_scale: 1.00
     acceleration_scale: 0.35
     segments:
     - name: return_wrist_upright_in_place
@@ -1281,7 +1286,7 @@ routes:
         keep_orientation: true
   brush_center_to_entry:
     start: brush_center
-    velocity_scale: 0.75
+    velocity_scale: 1.00
     acceleration_scale: 0.65
     segments:
     - name: exit_along_pour_cup_axis_100mm
@@ -1317,7 +1322,7 @@ routes:
       to: outlet_1_hover
   outlet_1_hover_to_return_fast:
     start: outlet_1_hover
-    velocity_scale: 0.65
+    velocity_scale: 1.00
     acceleration_scale: 0.55
     segments:
     - name: vertical_approach_outlet_1
@@ -1380,12 +1385,12 @@ routes:
     - name: transfer_above_outlet_1
       type: joint
       to: outlet_1_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
     - name: vertical_approach_return_outlet_1
       type: linear
       to: outlet_1_return
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1396,12 +1401,12 @@ routes:
     - name: transfer_above_outlet_2
       type: joint
       to: outlet_2_hover
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
     - name: vertical_approach_return_outlet_2
       type: linear
       to: outlet_2_return
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1412,7 +1417,7 @@ routes:
     - name: vertical_leave_outlet_1
       type: linear
       to: outlet_1_hover
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1420,7 +1425,7 @@ routes:
     - name: return_to_shared_wait
       type: joint
       to: outlet_wait
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
   outlet_1_return_to_home_fast:
     start: outlet_1_return
@@ -1430,7 +1435,7 @@ routes:
     - name: vertical_leave_outlet_1
       type: linear
       to: outlet_1_hover
-      velocity_scale: 0.75
+      velocity_scale: 1.00
       acceleration_scale: 0.65
       constraints:
         vertical_axis: z
@@ -1440,7 +1445,7 @@ routes:
       to: home_near
   outlet_1_return_to_hover_fast:
     start: outlet_1_return
-    velocity_scale: 0.75
+    velocity_scale: 1.00
     acceleration_scale: 0.65
     segments:
     - name: vertical_leave_outlet_1
@@ -1471,7 +1476,7 @@ routes:
     - name: vertical_approach_outlet_1
       type: linear
       to: outlet_1_pregrasp
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.50
       constraints:
         vertical_axis: z
@@ -1479,7 +1484,7 @@ routes:
     - name: final_10mm_grasp_outlet_1
       type: linear
       to: outlet_1_grasp
-      velocity_scale: 0.40
+      velocity_scale: 1.00
       acceleration_scale: 0.35
       constraints:
         vertical_axis: z
@@ -1495,7 +1500,7 @@ routes:
     - name: vertical_approach_outlet_2
       type: linear
       to: outlet_2_pregrasp
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.50
       constraints:
         vertical_axis: z
@@ -1503,7 +1508,7 @@ routes:
     - name: final_10mm_grasp_outlet_2
       type: linear
       to: outlet_2_grasp
-      velocity_scale: 0.40
+      velocity_scale: 1.00
       acceleration_scale: 0.35
       constraints:
         vertical_axis: z
@@ -1535,13 +1540,13 @@ routes:
       to: home_near
   spectrometer_place_to_pick_smooth:
     start: spectrometer_place
-    velocity_scale: 0.70
+    velocity_scale: 1.00
     acceleration_scale: 0.60
     segments:
     - name: leave_spectrometer_place
       type: linear
       to: spectrometer_preplace
-      velocity_scale: 0.40
+      velocity_scale: 1.00
       acceleration_scale: 0.35
       constraints:
         vertical_axis: z
@@ -1555,7 +1560,7 @@ routes:
     - name: align_above_spectrometer_pick
       type: joint
       to: spectrometer_pick_hover
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.50
     - name: vertical_approach_spectrometer_pick
       type: linear
@@ -1566,7 +1571,7 @@ routes:
     - name: final_10mm_pick_spectrometer
       type: linear
       to: spectrometer_pick
-      velocity_scale: 0.40
+      velocity_scale: 1.00
       acceleration_scale: 0.35
       constraints:
         vertical_axis: z
@@ -1597,7 +1602,7 @@ routes:
     - name: vertical_approach_outlet_1
       type: linear
       to: outlet_1_return
-      velocity_scale: 0.60
+      velocity_scale: 1.00
       acceleration_scale: 0.50
       constraints:
         vertical_axis: z
@@ -1608,7 +1613,7 @@ routes:
     - name: vertical_leave_outlet_2
       type: linear
       to: outlet_2_hover
-      velocity_scale: 0.55
+      velocity_scale: 1.00
       acceleration_scale: 0.45
       constraints:
         vertical_axis: z
@@ -1616,7 +1621,7 @@ routes:
     - name: return_to_shared_wait
       type: joint
       to: outlet_wait
-      velocity_scale: 0.85
+      velocity_scale: 1.00
       acceleration_scale: 0.85
   debug_safe_to_outlet_1_grasp:
     start: safe_joint_center

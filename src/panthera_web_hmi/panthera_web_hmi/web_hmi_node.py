@@ -2336,7 +2336,7 @@ class WebHmiNode(Node):
             if state not in ('IDLE', 'WAIT_DISCHARGE', 'PAUSED'):
                 return {'success': False, 'message': f'debug entry rejected from state {state}'}
             with self._debug_lock:
-                if self._debug['active']:
+                if self._debug['active'] and state == 'PAUSED':
                     return {'success': True, 'message': 'debug mode is already active'}
                 self._debug.update(phase='pausing', last_message='正在暂停自动流程')
 

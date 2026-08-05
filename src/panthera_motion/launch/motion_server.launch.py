@@ -46,7 +46,7 @@ def generate_launch_description():
                         default_speed_scale, value_type=float),
                     'start_tolerance_rad': 0.05,
                     'joint_state_max_age_sec': 0.50,
-                    'settled_velocity_rad_sec': 0.05,
+                    'settled_velocity_rad_sec': 0.08,
                     'trajectory_start_delay_sec': 0.02,
                     'goal_position_tolerance_rad': 0.06,
                     'path_position_tolerance_rad': 0.15,

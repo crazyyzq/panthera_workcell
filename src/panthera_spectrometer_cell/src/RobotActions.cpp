@@ -701,8 +701,6 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
     result = closeGripperForGrasp();
     if (!result.success) {
       const std::string close_error = result.message;
-      const bool no_cup =
-        close_error.find("fully closed without cup contact") != std::string::npos;
       result = executeFixedRoute(
         outlet_one ? "debug_outlet_1_grasp_to_safe" : "debug_outlet_2_grasp_to_safe",
         "safe_joint_center",
@@ -719,10 +717,6 @@ ActionResult RobotActions::pickFromOutlet(OutletId outlet)
       if (!result.success) {
         return ActionResult::fail(
           close_error + "; outlet pick recovery failed: " + result.message);
-      }
-      if (no_cup) {
-        return ActionResult::fail(
-          "NO_CUP_AT_OUTLET: " + close_error + "; recovered Home encoder-confirmed");
       }
       return ActionResult::fail(close_error + "; recovered Home encoder-confirmed");
     }
@@ -806,9 +800,20 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
 
   if (usesFixedMotion()) {
     OutletId active_outlet = OutletId::NONE;
+    bool restored_recovery_outlet = false;
     {
       std::lock_guard<std::mutex> lock(fixed_state_mutex_);
       active_outlet = active_outlet_;
+      if (active_outlet == OutletId::NONE) {
+        active_outlet_ = outlet;
+        active_outlet = outlet;
+        restored_recovery_outlet = true;
+      }
+    }
+    if (restored_recovery_outlet) {
+      RCLCPP_WARN(
+        logger_, "fixed return restored missing active outlet from explicit target %s",
+        toString(outlet).c_str());
     }
     if (active_outlet != outlet) {
       return ActionResult::fail(
@@ -850,7 +855,7 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
     }
     result = detachCup();
     if (!result.success) {
-      return result;
+      return ActionResult::fail("CUP_RELEASED: " + result.message);
     }
     result = executeFixedRoute(
       outlet_one ? "outlet_1_return_to_home_fast" : "outlet_2_return_to_wait",
@@ -860,7 +865,7 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
       std::lock_guard<std::mutex> lock(fixed_state_mutex_);
       active_outlet_ = OutletId::NONE;
     }
-    return result;
+    return result.success ? result : ActionResult::fail("CUP_RELEASED: " + result.message);
   }
 
   const auto target_pose = config_.findPose(outlet_config->returnPose);
@@ -907,10 +912,11 @@ ActionResult RobotActions::returnCupToOutlet(OutletId outlet)
 
   result = detachCup();
   if (!result.success) {
-    return result;
+    return ActionResult::fail("CUP_RELEASED: " + result.message);
   }
 
-  return moveToPoseCartesian(above_return, "cartesian lift from outlet return target");
+  result = moveToPoseCartesian(above_return, "cartesian lift from outlet return target");
+  return result.success ? result : ActionResult::fail("CUP_RELEASED: " + result.message);
 }
 
 ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
@@ -957,21 +963,23 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
     }
     result = detachCup();
     if (!result.success) {
-      return result;
+      return ActionResult::fail("CUP_RELEASED: " + result.message);
     }
     if (!sensor_adjusted) {
-      return executeFixedRoute(
+      result = executeFixedRoute(
         "spectrometer_place_to_wait",
         "spectrometer_wait",
         "fixed route enter spectrometer detection wait");
+    } else {
+      result = stageAndExecuteProcessRoute(
+        "spectrometer_sensor_place_to_wait",
+        {"spectrometer_place", "spectrometer_preplace",
+          "spectrometer_sensor_hover_template"},
+        sensor_offset,
+        "spectrometer_wait",
+        "continuous enter laser-adjusted spectrometer detection wait");
     }
-    return stageAndExecuteProcessRoute(
-      "spectrometer_sensor_place_to_wait",
-      {"spectrometer_place", "spectrometer_preplace",
-        "spectrometer_sensor_hover_template"},
-      sensor_offset,
-      "spectrometer_wait",
-      "continuous enter laser-adjusted spectrometer detection wait");
+    return result.success ? result : ActionResult::fail("CUP_RELEASED: " + result.message);
   }
 
   PoseConfig target;
@@ -1014,10 +1022,11 @@ ActionResult RobotActions::placeToSpectrometer(double axis_position_mm)
 
   result = detachCup();
   if (!result.success) {
-    return result;
+    return ActionResult::fail("CUP_RELEASED: " + result.message);
   }
 
-  return moveToPoseCartesian(above_place, "cartesian lift from spectrometer place target");
+  result = moveToPoseCartesian(above_place, "cartesian lift from spectrometer place target");
+  return result.success ? result : ActionResult::fail("CUP_RELEASED: " + result.message);
 }
 
 ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
@@ -1052,23 +1061,21 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
       return result;
     }
     result = attachCup();
-    if (!result.success || !sensor_adjusted) {
-      return result;
+    if (!result.success) {
+      return ActionResult::fail("CUP_HELD: " + result.message);
     }
-    if (config_.cleaning.brushEnabled) {
-      return stageAndExecuteProcessRoute(
-        "spectrometer_pick_to_brush_entry_smooth",
-        {"spectrometer_pick", "spectrometer_prepick", "spectrometer_pick_hover"},
-        sensor_offset,
-        "brush_entry",
-        "continuous laser-adjusted lift and cleaning transfer");
-    }
-    return stageAndExecuteProcessRoute(
-      "spectrometer_pick_to_hover",
+    result = sensor_adjusted ?
+      stageAndExecuteProcessRoute(
+      "spectrometer_pick_to_pick_hover_fast",
       {"spectrometer_pick", "spectrometer_prepick", "spectrometer_pick_hover"},
       sensor_offset,
       "spectrometer_sensor_pick_hover",
-      "continuous lift from laser-adjusted spectrometer pick");
+      "lift laser-adjusted spectrometer grasp") :
+      executeFixedRoute(
+      "spectrometer_pick_to_pick_hover_fast",
+      "spectrometer_pick_hover",
+      "lift spectrometer grasp");
+    return result.success ? result : ActionResult::fail("CUP_HELD: " + result.message);
   }
 
   PoseConfig target;
@@ -1112,10 +1119,11 @@ ActionResult RobotActions::pickFromSpectrometer(double axis_position_mm)
 
   result = moveToPoseCartesian(above_pick, "cartesian lift cup from spectrometer");
   if (!result.success) {
-    return result;
+    return ActionResult::fail("CUP_HELD: " + result.message);
   }
 
-  return attachCup();
+  result = attachCup();
+  return result.success ? result : ActionResult::fail("CUP_HELD: " + result.message);
 }
 
 ActionResult RobotActions::cleanCup()
@@ -1348,6 +1356,35 @@ ActionResult RobotActions::brushCleanCup()
 
   RCLCPP_INFO(logger_, "brush exit complete; wrist upright is allowed now");
   return finish_with_cleanup(result);
+}
+
+ActionResult RobotActions::moveHomeToSpectrometerWaitForRecovery()
+{
+  if (!usesFixedMotion()) {
+    return ActionResult::fail("spectrometer recovery requires fixed motion backend");
+  }
+
+  std::string current_point;
+  {
+    std::lock_guard<std::mutex> lock(fixed_state_mutex_);
+    current_point = fixed_point_;
+  }
+  if (current_point == "spectrometer_wait") {
+    return ActionResult::ok("already at spectrometer wait");
+  }
+  if (current_point != "home_near") {
+    return ActionResult::fail(
+      "spectrometer recovery requires encoder-confirmed Home; current=" + current_point);
+  }
+
+  auto result = executeFixedRoute(
+    "home_to_safe_center", "safe_joint_center", "spectrometer recovery leave Home");
+  if (!result.success) {
+    return result;
+  }
+  return executeFixedRoute(
+    "debug_safe_to_spectrometer_wait", "spectrometer_wait",
+    "spectrometer recovery enter wait point");
 }
 
 ActionResult RobotActions::moveToOutletWait()
@@ -2444,9 +2481,11 @@ bool RobotActions::getLatestArmJointValues(std::vector<double> & positions) cons
 ActionResult RobotActions::sendGripperTo(
   double position,
   double duration_sec,
-  const std::string & label,
-  bool require_grasp_contact)
+  const std::string & label)
 {
+  if (!config_.gripper.commandEnabled) {
+    return ActionResult::ok(label + " bypassed by gripper.command_enabled=false");
+  }
   if (config_.simulation.enabled) {
     return simulateDelay(label);
   }
@@ -2457,8 +2496,6 @@ ActionResult RobotActions::sendGripperTo(
   const double command_position =
     clampPosition(position, config_.gripper.closePosition, config_.gripper.openPosition);
   const double scaled_duration = effectiveDuration(duration_sec);
-  const bool allow_grasp_contact =
-    command_position <= config_.gripper.closePosition + config_.gripper.positionToleranceM;
   std::string last_error;
 
   for (int attempt = 0; attempt <= config_.gripper.retryCount; ++attempt) {
@@ -2480,25 +2517,17 @@ ActionResult RobotActions::sendGripperTo(
     point.time_from_start = secondsToDuration(scaled_duration);
     goal.trajectory.points.push_back(point);
 
-    if (allow_grasp_contact) {
-      auto hold_point = point;
-      hold_point.time_from_start = secondsToDuration(scaled_duration + 3600.0);
-      goal.trajectory.points.push_back(hold_point);
-    }
-
     control_msgs::msg::JointTolerance tolerance;
     tolerance.name = kGripperJoint;
-    tolerance.position = allow_grasp_contact ?
-      config_.gripper.graspHoldGoalToleranceM : config_.gripper.positionToleranceM;
-    tolerance.velocity = config_.gripper.settledVelocityToleranceMps;
+    // The controller keeps its final command after the action finishes. Erase its soft
+    // abort thresholds and let fresh encoder/contact feedback below decide completion.
+    // A 3600-second hold point previously kept goals pending for an hour and made drive
+    // recovery unnecessarily difficult after a protection event.
+    tolerance.position = -1.0;
+    tolerance.velocity = -1.0;
+    tolerance.acceleration = -1.0;
     goal.goal_tolerance.push_back(tolerance);
-    if (allow_grasp_contact) {
-      auto path_tolerance = tolerance;
-      path_tolerance.position = 0.10;
-      // Velocity here is checked throughout the path, not only after settling.
-      path_tolerance.velocity = 0.0;
-      goal.path_tolerance.push_back(path_tolerance);
-    }
+    goal.path_tolerance.push_back(tolerance);
     goal.goal_time_tolerance = secondsToDuration(config_.gripper.commandTimeoutMarginSec);
 
     const auto goal_future = gripper_client_->async_send_goal(goal);
@@ -2516,44 +2545,22 @@ ActionResult RobotActions::sendGripperTo(
     }
 
     const auto result_future = gripper_client_->async_get_result(goal_handle);
-    bool grasp_contact = false;
-    std::string target_error;
-    if (waitForGripperTarget(
-        command_position,
-        std::chrono::duration<double>(scaled_duration + config_.gripper.settleTimeoutSec),
-        allow_grasp_contact,
-        require_grasp_contact,
-        grasp_contact,
-        target_error))
+    if (result_future.wait_for(
+        std::chrono::duration<double>(scaled_duration + config_.gripper.commandTimeoutMarginSec)) ==
+      std::future_status::ready)
     {
-      if (grasp_contact) {
-        // The cup intentionally prevents the commanded zero position. Keep the accepted
-        // trajectory alive: its final target remains zero, so ros2_control continues applying
-        // closing effort after contact until an explicit open command replaces it.
-        RCLCPP_INFO(
-          logger_, "%s stable grasp contact detected; continuous close target retained",
-          label.c_str());
-        return ActionResult::ok(label + " ok (stable grasp contact)");
-      }
-      return ActionResult::ok(label + " ok (encoder target reached)");
-    }
-
-    if (result_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
       const auto wrapped = result_future.get();
-      last_error = wrapped.result ? wrapped.result->error_string : "missing gripper result";
       if (wrapped.code == rclcpp_action::ResultCode::SUCCEEDED && wrapped.result &&
         wrapped.result->error_code == FollowTrajectory::Result::SUCCESSFUL)
       {
-        last_error = "controller succeeded but encoder verification failed";
+        return ActionResult::ok(label + " ok");
       }
+      last_error = wrapped.result ? wrapped.result->error_string : "missing gripper result";
     } else {
       const auto cancel_future = gripper_client_->async_cancel_goal(goal_handle);
       cancel_future.wait_for(
         std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec));
-      last_error = target_error.empty() ? "gripper result timeout" : target_error;
-    }
-    if (!target_error.empty() && last_error.find(target_error) == std::string::npos) {
-      last_error += "; " + target_error;
+      last_error = "gripper controller result timeout";
     }
     if (attempt < config_.gripper.retryCount) {
       RCLCPP_WARN(
@@ -2568,84 +2575,6 @@ ActionResult RobotActions::sendGripperTo(
   }
 
   return ActionResult::fail(label + " failed: " + last_error);
-}
-
-bool RobotActions::waitForGripperTarget(
-  double target_position,
-  std::chrono::duration<double> timeout,
-  bool allow_grasp_contact,
-  bool require_grasp_contact,
-  bool & grasp_contact,
-  std::string & error) const
-{
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  std::optional<std::chrono::steady_clock::time_point> contact_since;
-  grasp_contact = false;
-  do {
-    sensor_msgs::msg::JointState state;
-    rclcpp::Time received;
-    {
-      std::lock_guard<std::mutex> lock(joint_state_mutex_);
-      if (has_joint_state_) {
-        state = latest_joint_state_;
-        received = latest_joint_state_received_;
-      }
-    }
-    if (state.name.empty()) {
-      error = "no joint state received for gripper verification";
-    } else if ((node_->now() - received).seconds() > 0.5) {
-      error = "joint state is stale during gripper verification";
-    } else {
-      double current_position = 0.0;
-      double current_velocity = std::numeric_limits<double>::infinity();
-      const bool has_position = lookupJointValue(
-        state, kGripperJoint, state.position, current_position);
-      const bool has_velocity = lookupJointValue(
-        state, kGripperJoint, state.velocity, current_velocity);
-      if (!has_position || !has_velocity) {
-        error = "joint state is missing gripper position or velocity";
-      } else {
-        const double position_error = std::abs(current_position - target_position);
-        const bool encoder_target_reached =
-          position_error <= config_.gripper.positionToleranceM &&
-          std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps;
-        if (encoder_target_reached && !require_grasp_contact)
-        {
-          return true;
-        }
-        const bool contact_candidate =
-          allow_grasp_contact &&
-          current_position <= config_.gripper.openPosition -
-          config_.gripper.graspContactMinClosureM &&
-          current_position > target_position + config_.gripper.positionToleranceM &&
-          std::abs(current_velocity) <= config_.gripper.settledVelocityToleranceMps;
-        if (contact_candidate) {
-          const auto now = std::chrono::steady_clock::now();
-          if (!contact_since) {
-            contact_since = now;
-          } else if (std::chrono::duration<double>(now - *contact_since).count() >=
-            config_.gripper.graspContactConfirmSec)
-          {
-            grasp_contact = true;
-            return true;
-          }
-        } else {
-          contact_since.reset();
-        }
-        if (encoder_target_reached && require_grasp_contact) {
-          error = "gripper fully closed without cup contact";
-          return false;
-        } else {
-          std::ostringstream out;
-          out << "gripper target not reached: position_error=" << position_error
-              << "m velocity=" << current_velocity << "m/s";
-          error = out.str();
-        }
-      }
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  } while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline);
-  return false;
 }
 
 ActionResult RobotActions::setCleaningMotor(bool enabled, const std::string & label)
@@ -2823,8 +2752,7 @@ ActionResult RobotActions::closeGripperForGrasp()
   return sendGripperTo(
     config_.gripper.closePosition,
     config_.gripper.closeDurationSec,
-    "close gripper for grasp",
-    true);
+    "close gripper for grasp");
 }
 
 ActionResult RobotActions::simulateDelay(const std::string & label)

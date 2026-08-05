@@ -36,7 +36,6 @@ enum class SegmentType
 struct SegmentConstraints
 {
   std::string vertical_axis;
-  double max_lateral_error_m{0.001};
   bool keep_orientation{true};
 };
 
@@ -73,7 +72,6 @@ struct CatalogDefaults
   double joint_step_rad{0.05};
   double cartesian_step_m{0.005};
   double max_joint_jump_rad{0.35};
-  double max_lateral_error_m{0.001};
   double ik_timeout_sec{0.10};
   int ik_attempts{10};
 };

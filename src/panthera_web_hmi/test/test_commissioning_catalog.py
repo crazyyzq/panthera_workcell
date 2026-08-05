@@ -211,6 +211,31 @@ def test_debug_entry_enables_tools_without_arm_motion():
     assert node._debug['target_reached'] is False
 
 
+def test_debug_entry_repauses_after_workcell_restart():
+    cell_state = {'value': 'WAIT_DISCHARGE'}
+    node = WebHmiNode.__new__(WebHmiNode)
+    node._debug_operation_lock = threading.Lock()
+    node._debug_lock = threading.Lock()
+    node._debug = {'active': True, 'phase': 'ready'}
+    node.state_store = SimpleNamespace(snapshot=lambda: {
+        'spectrometer_cell': {'state': cell_state['value'], 'context': {}},
+    })
+
+    def pause(command):
+        assert command == 'manual_mode'
+        cell_state['value'] = 'PAUSED'
+        return {'success': True}
+
+    node.call_command = pause
+
+    result = node.enter_debug({})
+
+    assert result['success'] is True
+    assert result['robot_moved'] is False
+    assert node._debug['active'] is True
+    assert cell_state['value'] == 'PAUSED'
+
+
 def test_debug_tools_do_not_require_a_selected_point():
     node = WebHmiNode.__new__(WebHmiNode)
     node._debug_lock = threading.Lock()

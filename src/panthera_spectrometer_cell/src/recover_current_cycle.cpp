@@ -74,6 +74,8 @@ int main(int argc, char ** argv)
     getOrDeclareParameter<std::string>(node, "config_file", defaultConfigPath());
   const bool simulation_enabled =
     getOrDeclareParameter<bool>(node, "simulation_enabled", false);
+  const bool gripper_command_enabled =
+    getOrDeclareParameter<bool>(node, "gripper_command_enabled", true);
   const double spectrometer_laser_mm =
     getOrDeclareParameter<double>(node, "spectrometer_laser_mm", 150.3);
   const std::string outlet_name =
@@ -82,6 +84,8 @@ int main(int argc, char ** argv)
     getOrDeclareParameter<double>(node, "detection_hold_sec", 1.0);
   const bool clean_return_only =
     getOrDeclareParameter<bool>(node, "clean_return_only", false);
+  const bool start_from_spectrometer =
+    getOrDeclareParameter<bool>(node, "start_from_spectrometer", false);
 
   const auto outlet = outletFromString(outlet_name);
   if (outlet == panthera_spectrometer_cell::OutletId::NONE) {
@@ -94,6 +98,7 @@ int main(int argc, char ** argv)
   try {
     config = panthera_spectrometer_cell::WorkcellConfig::loadFromFile(config_file);
     config.simulation.enabled = simulation_enabled;
+    config.gripper.commandEnabled = gripper_command_enabled;
   } catch (const std::exception & e) {
     RCLCPP_FATAL(logger, "failed to load config '%s': %s", config_file.c_str(), e.what());
     rclcpp::shutdown();
@@ -109,10 +114,13 @@ int main(int argc, char ** argv)
   try {
     RCLCPP_WARN(
       logger,
-      "RECOVERY_START assumes cup is already in gripper; laser=%.3fmm outlet=%s clean_return_only=%s",
+      "RECOVERY_START raw_laser=%.3fmm outlet=%s clean_return_only=%s "
+      "start_from_spectrometer=%s gripper_command_enabled=%s",
       spectrometer_laser_mm,
       outlet_name.c_str(),
-      clean_return_only ? "true" : "false");
+      clean_return_only ? "true" : "false",
+      start_from_spectrometer ? "true" : "false",
+      gripper_command_enabled ? "true" : "false");
 
     if (!runStep(logger, "initialize", robot->initialize())) {
       exit_code = 3;
@@ -120,16 +128,32 @@ int main(int argc, char ** argv)
       std::this_thread::sleep_for(500ms);
     }
 
-    if (exit_code == 0 && !clean_return_only &&
+    if (exit_code == 0 && !clean_return_only && !start_from_spectrometer &&
       !runStep(logger, "place_to_spectrometer", robot->placeToSpectrometer(spectrometer_laser_mm)))
     {
       exit_code = 4;
     }
 
-    if (exit_code == 0 && !clean_return_only && detection_hold_sec > 0.0) {
+    if (exit_code == 0 && !clean_return_only && !start_from_spectrometer &&
+      detection_hold_sec > 0.0)
+    {
       RCLCPP_INFO(logger, "RECOVERY_HOLD spectrometer %.2fs", detection_hold_sec);
       std::this_thread::sleep_for(
         std::chrono::milliseconds(static_cast<int>(detection_hold_sec * 1000.0)));
+    }
+
+    if (exit_code == 0 && start_from_spectrometer &&
+      !runStep(logger, "open_gripper", robot->openGripper()))
+    {
+      exit_code = 4;
+    }
+
+    if (exit_code == 0 && start_from_spectrometer &&
+      !runStep(
+        logger, "move_to_spectrometer_wait",
+        robot->moveHomeToSpectrometerWaitForRecovery()))
+    {
+      exit_code = 4;
     }
 
     if (exit_code == 0 && !clean_return_only &&

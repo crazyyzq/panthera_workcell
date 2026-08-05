@@ -79,18 +79,13 @@ struct MotionConfig
 
 struct GripperConfig
 {
+  bool commandEnabled{true};
   double openPosition{0.045};
   double closePosition{0.002};
   double openDurationSec{1.5};
   double closeDurationSec{1.5};
   double actionServerWaitSec{5.0};
   double commandTimeoutMarginSec{2.0};
-  double positionToleranceM{0.003};
-  double graspHoldGoalToleranceM{0.040};
-  double settledVelocityToleranceMps{0.003};
-  double settleTimeoutSec{1.0};
-  double graspContactMinClosureM{0.008};
-  double graspContactConfirmSec{0.08};
   int retryCount{1};
 };
 

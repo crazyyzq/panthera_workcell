@@ -181,8 +181,6 @@ MotionCatalog MotionCatalog::loadFromFile(const std::string & path)
     defaults, "cartesian_step_m", catalog.defaults.cartesian_step_m, "defaults");
   catalog.defaults.max_joint_jump_rad = finiteDouble(
     defaults, "max_joint_jump_rad", catalog.defaults.max_joint_jump_rad, "defaults");
-  catalog.defaults.max_lateral_error_m = finiteDouble(
-    defaults, "max_lateral_error_m", catalog.defaults.max_lateral_error_m, "defaults");
   catalog.defaults.ik_timeout_sec = finiteDouble(
     defaults, "ik_timeout_sec", catalog.defaults.ik_timeout_sec, "defaults");
   catalog.defaults.ik_attempts = readInt(
@@ -257,11 +255,6 @@ MotionCatalog MotionCatalog::loadFromFile(const std::string & path)
 
       const auto constraints = segment_node["constraints"];
       segment.constraints.vertical_axis = readString(constraints, "vertical_axis", "");
-      segment.constraints.max_lateral_error_m = finiteDouble(
-        constraints,
-        "max_lateral_error_m",
-        catalog.defaults.max_lateral_error_m,
-        context + ".constraints");
       segment.constraints.keep_orientation = readBool(constraints, "keep_orientation", true);
       route.segments.push_back(std::move(segment));
       ++index;
@@ -304,7 +297,7 @@ ValidationResult MotionCatalog::validate() const
     return ValidationResult::fail("default velocity/acceleration scales must be in (0, 1]");
   }
   if (defaults.joint_step_rad <= 0.0 || defaults.cartesian_step_m <= 0.0 ||
-    defaults.max_joint_jump_rad <= 0.0 || defaults.max_lateral_error_m < 0.0 ||
+    defaults.max_joint_jump_rad <= 0.0 ||
     defaults.max_jerk_rad_sec3 <= 0.0 || defaults.cartesian_max_jerk_rad_sec3 <= 0.0 ||
     defaults.ik_timeout_sec <= 0.0 ||
     defaults.ik_attempts <= 0)
@@ -404,8 +397,7 @@ ValidationResult MotionCatalog::validate() const
           "' target needs a pose");
       }
       if (segment.joint_step_rad <= 0.0 || segment.cartesian_step_m <= 0.0 ||
-        segment.max_joint_jump_rad <= 0.0 ||
-        segment.constraints.max_lateral_error_m < 0.0)
+        segment.max_joint_jump_rad <= 0.0)
       {
         return ValidationResult::fail(
           "route '" + route.name + "' segment '" + segment.name + "' has invalid limits");

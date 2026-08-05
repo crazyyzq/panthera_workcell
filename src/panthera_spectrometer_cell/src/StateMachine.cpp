@@ -1200,9 +1200,12 @@ void StateMachine::fail(const std::string & message)
   std::string final_message = message;
   const bool estop_active = estop_pressed_ || state_ == State::ESTOP ||
     (sensors_ && sensors_->isEmergencyStopActive());
+  const bool cup_may_be_held = context_.cupInGripper ||
+    message.rfind("CUP_HELD:", 0) == 0 ||
+    message.find("message=CUP_HELD:") != std::string::npos;
   // INIT may start from an unknown physical pose. Never invent a collision-free
   // recovery path before the encoders have confirmed the commissioned Home.
-  if (!estop_active && robot_ && state_ != State::INIT) {
+  if (!estop_active && robot_ && state_ != State::INIT && !cup_may_be_held) {
     const auto recovery = robot_->recoverHomeAfterError();
     if (recovery.success) {
       RCLCPP_ERROR(logger_, "SAFETY_RECOVERY_OK %s", recovery.message.c_str());
@@ -1211,6 +1214,10 @@ void StateMachine::fail(const std::string & message)
       RCLCPP_FATAL(logger_, "SAFETY_RECOVERY_FAILED %s", recovery.message.c_str());
       final_message += "; SAFETY RECOVERY FAILED, KEEP ENABLED: " + recovery.message;
     }
+  } else if (cup_may_be_held) {
+    RCLCPP_ERROR(
+      logger_, "CUP_HELD_RECOVERY_DEFERRED keep enabled at measured pose; no blind Home move");
+    final_message += "; cup may be held: keep enabled, blind Home recovery suppressed";
   }
   context_.setError(final_message);
   RCLCPP_ERROR(
@@ -1308,6 +1315,19 @@ void StateMachine::handleActionFailure(const Event & event, const std::string & 
       message.c_str());
     transitionTo(State::WAIT_DISCHARGE, message);
     return;
+  }
+  if (message.rfind("CUP_RELEASED:", 0) == 0) {
+    context_.cupInGripper = false;
+    if (event.actionName == "return_cup") {
+      context_.cupReturned = true;
+      outlet_status_[context_.outletId] = OutletStatus::WAITING_FILL;
+    } else if (event.actionName == "place_to_spectrometer") {
+      context_.cupPlacedToSpectrometer = true;
+      context_.spectrometerOccupied = true;
+    }
+    RCLCPP_WARN(
+      logger_, "CUP_RELEASE_CONFIRMED action=%s; Home recovery is permitted",
+      event.actionName.c_str());
   }
   std::ostringstream out;
   out << "ACTION_FAILED name=" << event.actionName

@@ -25,6 +25,7 @@ START_RETRY_DELAY_SEC="${START_RETRY_DELAY_SEC:-5}"
 SPEED_SCALE="${SPEED_SCALE:-1.0}"
 CONTROL_MODE="${CONTROL_MODE:-position_velocity}"
 HMI_PORT="${HMI_PORT:-8080}"
+HMI_ADVERTISED_HOST="${HMI_ADVERTISED_HOST:-100.95.35.71}"
 CAMERA_AUTO_RECOVER="${CAMERA_AUTO_RECOVER:-1}"
 MIT_KP="${MIT_KP:-75.0,105.0,135.0,135.0,75.0,75.0}"
 MIT_KD="${MIT_KD:-5.5,5.5,5.5,5.5,5.5,5.5}"
@@ -35,6 +36,65 @@ PAYLOAD_FRAME="${PAYLOAD_FRAME:-gripper_center}"
 ROBOT_CONFIG="${ROBOT_CONFIG:-$WS/install/panthera_ht_config/share/panthera_ht_config/robot_param/Follower_absolute.yaml}"
 CELL_CONFIG="${CELL_CONFIG:-$WS/install/panthera_spectrometer_cell/share/panthera_spectrometer_cell/config/spectrometer_cell.yaml}"
 KEEP_RUNNING_ON_FAILURE=0
+
+delegate_start_to_hmi()
+{
+  local snapshot state
+  echo "[start] terminal lacks realtime limits; delegating startup to persistent HMI"
+  curl -fsS --max-time 5 -X POST \
+    -H 'Content-Type: application/json' \
+    -d "{\"control_mode\":\"${CONTROL_MODE}\"}" \
+    "http://127.0.0.1:${HMI_PORT}/api/workcell/start" >/dev/null 2>&1 || true
+  for _ in $(seq 1 60); do
+    snapshot="$(curl -fsS --max-time 3 \
+      "http://127.0.0.1:${HMI_PORT}/api/status" 2>/dev/null || true)"
+    state="$(printf '%s' "$snapshot" | python3 -c '
+import json, sys
+try:
+    workcell = json.load(sys.stdin).get("workcell_control", {})
+except Exception:
+    print("waiting")
+    raise SystemExit
+if workcell.get("busy"):
+    print("waiting")
+elif workcell.get("running") and workcell.get("last_exit_code") in (None, 0):
+    print("ready")
+else:
+    print("failed")
+' 2>/dev/null || echo waiting)"
+    case "$state" in
+      ready)
+        echo "[start] READY via HMI: http://${HMI_ADVERTISED_HOST}:${HMI_PORT}"
+        return 0
+        ;;
+      failed)
+        echo "[start] ERROR: HMI-managed startup failed; inspect HMI operation log"
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  echo "[start] ERROR: timed out waiting for HMI-managed startup"
+  return 1
+}
+
+case "$CONTROL_MODE" in
+  position_velocity|mit_gravity_compensation) ;;
+  *)
+    echo "[start] ERROR: CONTROL_MODE must be position_velocity or mit_gravity_compensation"
+    exit 1
+    ;;
+esac
+
+rt_priority_limit="$(ulimit -r)"
+locked_memory_limit="$(ulimit -l)"
+if { ! [[ "$rt_priority_limit" =~ ^[0-9]+$ ]] || (( rt_priority_limit < 50 )) ||
+  [[ "$locked_memory_limit" != "unlimited" ]]; } &&
+  curl -fsS --max-time 2 "http://127.0.0.1:${HMI_PORT}/api/status" >/dev/null 2>&1
+then
+  delegate_start_to_hmi
+  exit $?
+fi
 
 mkdir -p "$LOG_DIR" "$RUNTIME_DIR"
 cd "$WS"
@@ -233,10 +293,9 @@ reset_ros2_daemon
 for command in ros2 curl python3 flock setsid pgrep pkill chrt; do
   command -v "$command" >/dev/null || fail "required command missing: $command"
 done
-rt_priority_limit="$(ulimit -r)"
 [[ "$rt_priority_limit" =~ ^[0-9]+$ && "$rt_priority_limit" -ge 50 ]] ||
   fail "realtime priority is unavailable (ulimit -r=$rt_priority_limit); log in again after installing config/system/99-panthera-realtime.conf"
-[[ "$(ulimit -l)" == "unlimited" ]] ||
+[[ "$locked_memory_limit" == "unlimited" ]] ||
   fail "locked memory is limited; install config/system/99-panthera-realtime.conf and log in again"
 chrt -f 50 true >/dev/null 2>&1 ||
   fail "SCHED_FIFO 50 is unavailable for user $(id -un)"
@@ -269,7 +328,7 @@ if launcher_alive && control_mode_matches && hmi_ready >/dev/null && motion_read
   actuators_holding >/dev/null; then
   [[ -L "$RUNTIME_DIR/active_log" ]] && ln -sfn "$(readlink -f "$RUNTIME_DIR/active_log")" "$RUNTIME_DIR/latest_log"
   echo "[start] workcell is already healthy (pid=$(cat "$PID_FILE"))"
-  echo "[start] HMI: http://$(hostname -I | awk '{print $1}'):${HMI_PORT}"
+  echo "[start] HMI: http://${HMI_ADVERTISED_HOST}:${HMI_PORT}"
   start_camera_recovery
   exit 0
 fi
@@ -354,7 +413,7 @@ for attempt in $(seq 1 "$START_ATTEMPTS"); do
       hmi_ready >>"$LOG_DIR/health_wait.log" 2>&1 &&
       actuators_holding >>"$LOG_DIR/health_wait.log" 2>&1; then
       echo "[start] READY pid=$launch_pid state=settled controllers=active Home=verified"
-      echo "[start] HMI: http://$(hostname -I | awk '{print $1}'):${HMI_PORT}"
+      echo "[start] HMI: http://${HMI_ADVERTISED_HOST}:${HMI_PORT}"
       echo "[start] logs: $LOG_DIR"
       ln -sfn "$LOG_DIR" "$RUNTIME_DIR/active_log"
       ln -sfn "$LOG_DIR" "$RUNTIME_DIR/latest_log"

@@ -99,7 +99,8 @@
                 <state_interface name="position"/>
                 <state_interface name="velocity"/>
                 <state_interface name="effort"/>
-                <param name="max_torque">2.5</param>
+                <!-- Commissioned cup-grip torque after stable-contact validation. -->
+                <param name="max_torque">3.0</param>
                 <!-- Commissioned 50% faster than the vendor 0.0125 m/s default. -->
                 <param name="max_velocity">0.01875</param>
                 <param name="kp">1.5</param>

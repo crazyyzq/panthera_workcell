@@ -24,12 +24,11 @@ defaults:
   acceleration_scale: 0.85
   # Bound the peak jerk of the controller's quintic spline interpolation.
   max_jerk_rad_sec3: 300.0
-  # Grasp/place Cartesian segments need a lower jerk ceiling than long joint moves.
+  # Keep near-object Cartesian motion smooth; joint-only intervals retain 300.
   cartesian_max_jerk_rad_sec3: 40.0
   joint_step_rad: 0.10
   cartesian_step_m: 0.010
   max_joint_jump_rad: 0.35
-  max_lateral_error_m: 0.001
   ik_timeout_sec: 0.1
   ik_attempts: 20
 commissioning:
@@ -299,16 +298,16 @@ points:
     - internal
     - spectrometer
   spectrometer_pick_hover:
-    description: 光谱仪取杯点正上方；独立于放杯上方点，保证取杯垂直进出。
+    description: 光谱仪取杯基准正上方；与取杯点保持同一XY和姿态，保证垂直进出。
     pose:
       xyz:
       - 0.16200
-      - 0.479497
+      - 0.48200
       - 0.45
       rpy:
-      - -0.005663
-      - 0.022122
-      - 1.56653
+      - 0.0
+      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
@@ -347,16 +346,16 @@ points:
     - precision_approach
     - advanced
   spectrometer_pick:
-    description: 光谱仪取杯点；比放杯点低约3.1mm。
+    description: 光谱仪取杯基准；现场确认XYZ(162,482,317)mm、RPY(0,0,1.5708)rad。
     pose:
       xyz:
       - 0.16200
-      - 0.479497
-      - 0.316902
+      - 0.48200
+      - 0.31700
       rpy:
-      - -0.005663
-      - 0.022122
-      - 1.56653
+      - 0.0
+      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - process
@@ -367,17 +366,38 @@ points:
     pose:
       xyz:
       - 0.16200
-      - 0.479497
-      - 0.326902
+      - 0.48200
+      - 0.32700
       rpy:
-      - -0.005663
-      - 0.022122
-      - 1.56653
+      - 0.0
+      - 0.0
+      - 1.5708
     ik_seed: spectrometer_hover
     tags:
     - spectrometer
     - precision_approach
     - advanced
+  spectrometer_pick_retry_hover:
+    description: 光谱仪第二次取杯的旋转悬停点；RPY偏航角正向旋转20度。
+    pose:
+      xyz: [0.16200, 0.48200, 0.45000]
+      rpy: [0.0, 0.0, 1.919866]
+    ik_seed: spectrometer_pick_hover
+    tags: [spectrometer, recovery, advanced]
+  spectrometer_prepick_retry:
+    description: 光谱仪第二次取杯点正上方10mm；保持旋转后的夹爪姿态。
+    pose:
+      xyz: [0.16200, 0.48200, 0.32700]
+      rpy: [0.0, 0.0, 1.919866]
+    ik_seed: spectrometer_pick_retry_hover
+    tags: [spectrometer, recovery, advanced]
+  spectrometer_pick_retry:
+    description: 光谱仪第二次取杯点；仅改变夹爪绕自身Z轴的角度。
+    pose:
+      xyz: [0.16200, 0.48200, 0.31700]
+      rpy: [0.0, 0.0, 1.919866]
+    ik_seed: spectrometer_prepick_retry
+    tags: [spectrometer, recovery, advanced]
   cleaning_transition_seed:
     description: 新台架清洗区固定IK分支种子；由离线Pinocchio扫描得到。
     joints:
@@ -562,7 +582,7 @@ routes:
     - name: precision_pick_spectrometer
       type: linear
       to: spectrometer_pick
-      velocity_scale: 0.40
+      velocity_scale: 1.00
       acceleration_scale: 0.40
       constraints:
         vertical_axis: z
@@ -1046,7 +1066,7 @@ routes:
       type: linear
       to: spectrometer_prepick
       velocity_scale: 1.00
-      acceleration_scale: 1.00
+      acceleration_scale: 0.45
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -1080,6 +1100,8 @@ routes:
     - name: release_clearance_spectrometer
       type: linear
       to: spectrometer_prepick
+      velocity_scale: 1.00
+      acceleration_scale: 0.30
       constraints:
         vertical_axis: z
         keep_orientation: true
@@ -1089,6 +1111,57 @@ routes:
       constraints:
         vertical_axis: z
         keep_orientation: true
+  spectrometer_pick_hover_to_pick_retry:
+    start: spectrometer_pick_hover
+    velocity_scale: 1.00
+    acceleration_scale: 0.30
+    segments:
+    - name: rotate_gripper_yaw_plus_20deg_at_safe_hover
+      type: joint
+      to: spectrometer_pick_retry_hover
+      velocity_scale: 1.00
+      acceleration_scale: 0.25
+    - name: vertical_retry_approach_spectrometer
+      type: linear
+      to: spectrometer_prepick_retry
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: precision_retry_pick_spectrometer
+      type: linear
+      to: spectrometer_pick_retry
+      velocity_scale: 1.00
+      acceleration_scale: 0.20
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  spectrometer_pick_retry_to_retry_hover:
+    start: spectrometer_pick_retry
+    velocity_scale: 1.00
+    acceleration_scale: 0.30
+    segments:
+    - name: release_clearance_rotated_spectrometer
+      type: linear
+      to: spectrometer_prepick_retry
+      velocity_scale: 1.00
+      acceleration_scale: 0.30
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+    - name: vertical_lift_rotated_spectrometer
+      type: linear
+      to: spectrometer_pick_retry_hover
+      constraints:
+        vertical_axis: z
+        keep_orientation: true
+  spectrometer_pick_retry_hover_to_pick_hover:
+    start: spectrometer_pick_retry_hover
+    velocity_scale: 1.00
+    acceleration_scale: 0.25
+    segments:
+    - name: restore_standard_gripper_orientation_at_safe_hover
+      type: joint
+      to: spectrometer_pick_hover
   spectrometer_pick_hover_to_clean_dump:
     start: spectrometer_pick_hover
     velocity_scale: 1.00
@@ -1121,7 +1194,7 @@ routes:
       type: linear
       to: spectrometer_prepick
       velocity_scale: 1.00
-      acceleration_scale: 0.45
+      acceleration_scale: 1.00
       constraints:
         vertical_axis: z
         keep_orientation: true

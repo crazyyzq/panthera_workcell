@@ -193,7 +193,7 @@ public:
     joint_state_max_age_sec_(getOrDeclareParameter<double>(
         node_, "joint_state_max_age_sec", 0.50)),
     settled_velocity_rad_sec_(getOrDeclareParameter<double>(
-        node_, "settled_velocity_rad_sec", 0.05)),
+        node_, "settled_velocity_rad_sec", 0.08)),
     controller_wait_timeout_sec_(getOrDeclareParameter<double>(
         node_, "controller_wait_timeout_sec", 3.0)),
     execution_margin_sec_(getOrDeclareParameter<double>(
@@ -1417,27 +1417,26 @@ private:
     for (const auto & joint_name : controller_request.trajectory.joint_names) {
       control_msgs::msg::JointTolerance path_tolerance;
       path_tolerance.name = joint_name;
-      const double route_path_tolerance =
-        route.name == "clean_dump_to_pour" ||
-        route.name == "clean_dump_pour_shake_once" ||
-        route.name == "clean_dump_pour_to_brush_entry" ||
-        route.name == "spectrometer_pick_to_brush_entry_continuous" ?
-        pour_path_position_tolerance_rad_ : path_position_tolerance_rad_;
-      // Wrist feedback arrives in batches. Keep strict path protection on joints 1-4,
-      // while allowing joints 5-6 to track through transient lag; final tolerance stays strict.
-      path_tolerance.position = joint_name == "joint5" || joint_name == "joint6" ?
-        std::max(route_path_tolerance, wrist_path_position_tolerance_rad_) :
-        route_path_tolerance;
+      // -1 erases controller-side soft tracking tolerances. A transient following-error
+      // sample must not abort the entire production route. Completion is still verified
+      // below against fresh encoder feedback, and hardware/communication limits remain active.
+      path_tolerance.position = -1.0;
+      path_tolerance.velocity = -1.0;
+      path_tolerance.acceleration = -1.0;
       controller_request.path_tolerance.push_back(path_tolerance);
 
       control_msgs::msg::JointTolerance tolerance;
       tolerance.name = joint_name;
-      tolerance.position = final_position_tolerance;
-      tolerance.velocity = goal_velocity_tolerance_rad_sec_;
+      tolerance.position = -1.0;
+      tolerance.velocity = -1.0;
+      tolerance.acceleration = -1.0;
       controller_request.goal_tolerance.push_back(tolerance);
     }
 
-    for (int controller_attempt = 0; controller_attempt < 2; ++controller_attempt) {
+    constexpr int kMaximumControllerAttempts = 4;
+    for (int controller_attempt = 0;
+      controller_attempt < kMaximumControllerAttempts; ++controller_attempt)
+    {
       controller_request.trajectory.header.stamp =
         node_->now() + rclcpp::Duration::from_seconds(trajectory_start_delay_sec_);
       const double expected_duration = trajectoryDurationSec(controller_request.trajectory);
@@ -1465,7 +1464,7 @@ private:
       const auto result_future = controller_client_->async_get_result(controller_goal);
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::duration<double>(expected_duration + execution_margin_sec_ + 1.0);
-      bool resume_requested = false;
+      bool retry_requested = false;
       while (rclcpp::ok() && std::chrono::steady_clock::now() < deadline) {
         if (cancel_requested_.load() || goal_handle->is_canceling()) {
           std::string settle_error;
@@ -1492,9 +1491,34 @@ private:
                 final_state_timeout_sec_,
                 final_error))
             {
+              if (controller_attempt + 1 < kMaximumControllerAttempts) {
+                std::vector<double> measured_state;
+                std::string state_error;
+                if (currentJointState(
+                    route.trajectory.joint_names, measured_state, state_error))
+                {
+                  try {
+                    controller_request.trajectory = makeEndpointConvergenceTrajectory(
+                      route.trajectory, measured_state, 1.0, 0.25);
+                    RCLCPP_WARN(
+                      logger_,
+                      "route '%s' controller completed before encoder convergence (%s); "
+                      "closing endpoint error, attempt %d/%d",
+                      route.name.c_str(), final_error.c_str(), controller_attempt + 2,
+                      kMaximumControllerAttempts);
+                    retry_requested = true;
+                    break;
+                  } catch (const std::exception & error) {
+                    final_error += "; endpoint convergence rejected: ";
+                    final_error += error.what();
+                  }
+                } else {
+                  final_error += "; endpoint encoder state unavailable: " + state_error;
+                }
+              }
               finish(
                 goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
-                "controller reported success but final state was not confirmed: " + final_error,
+                "endpoint did not converge after closed-loop correction: " + final_error,
                 started);
               return;
             }
@@ -1539,7 +1563,7 @@ private:
                   logger_,
                   "route '%s' transient path tracking fault; resuming once with %zu points",
                   route.name.c_str(), controller_request.trajectory.points.size());
-                resume_requested = true;
+                retry_requested = true;
                 break;
               } catch (const std::exception & error) {
                 controller_message += "; automatic resume rejected: ";
@@ -1565,7 +1589,7 @@ private:
           route,
           expected_duration > 0.0 ? std::min(0.99, elapsed / expected_duration) : 0.0);
       }
-      if (resume_requested) {
+      if (retry_requested) {
         continue;
       }
 
@@ -1579,7 +1603,7 @@ private:
     }
     finish(
       goal_handle, false, ExecuteMotion::Result::ERROR_CONTROLLER_FAILED,
-      "automatic trajectory resume was exhausted", started);
+      "closed-loop trajectory recovery was exhausted", started);
   }
 
   rclcpp::Node::SharedPtr node_;

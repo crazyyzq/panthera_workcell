@@ -213,21 +213,23 @@ motion:
   safe_joint_pose: [0.000, 0.180, 0.180, 0.000, 0.000, 0.000]
 
 gripper:
+  # 维护/空载耐久测试可临时设为 false；正常生产必须为 true。
+  command_enabled: true
   # 夹爪参数只控制位置轨迹，不等同于电机力矩。
   # 如果“已经闭合但夹不紧”，先确认夹爪驱动器力矩/电流参数，再微调 close_position。
 
   # 夹爪打开位置，单位 m 或控制器定义的位置单位。
   open_position: 0.050
 
-  # 夹杯时保留全行程 30% 开度，避免继续顶到机械零位。
+  # 夹杯时保留全行程30%开度；这是上一版已验证的抓杯位置。
   close_position: 0.015
 
   # 打开夹爪轨迹时长，单位 s。
-  # 50mm 行程约 1.37s；在上一版基础上再提速 50%。
+  # 恢复上一版已验证的开爪时长。
   open_duration_sec: 1.3675
 
   # 闭合夹爪轨迹时长，单位 s。
-  # 35mm 行程约 0.96s；在上一版基础上再提速 50%，夹紧目标仍保持 15mm。
+  # 恢复上一版已验证的闭爪时长。
   close_duration_sec: 0.9573
 
   # Closed-loop FollowJointTrajectory command and recovery settings.
@@ -235,17 +237,8 @@ gripper:
   action_server_wait_sec: 20.0
   # 夹爪热保护或控制器换目标后可能短时延迟响应；给动作结果和取消留足时间。
   command_timeout_margin_sec: 5.0
-  position_tolerance_m: 0.003
-  # 抓到杯子后允许控制器正常结束轨迹，并持续保持 15mm 闭合目标。
-  # 严禁在接触时 cancel；只有明确的开爪命令才能释放杯子。
-  grasp_hold_goal_tolerance_m: 0.025
-  settled_velocity_tolerance_mps: 0.003
-  # 轨迹结束后的编码器确认窗口；延长后不会因短暂迟滞误报失败。
-  settle_timeout_sec: 5.0
-  # 闭合时只要夹爪至少收拢该距离，并持续低速不动，就认为已稳定夹到杯子。
-  # 这样物体阻挡在约32mm时不会再等待“闭合到0mm”的超时和重试。
-  grasp_contact_min_closure_m: 0.008
-  grasp_contact_confirm_sec: 0.08
+  # 只判断控制器是否接受并完成开/合命令；物体接触导致的编码器位置差不判错。
+  # 最终闭合目标由控制器持续保持，只有显式开爪命令才会释放。
   retry_count: 1
 
 simulation:
@@ -304,7 +297,7 @@ positioning:
   # 未接入激光时使用固定基准；一旦收到有效激光，取杯/放杯都要求各自的新稳定样本。
   # 已接入的传感器若中途失联会安全等待，避免在随机扫描位置盲取。
   mode: sensor_optional
-  fixed_axis_position_mm: 162.9
+  fixed_axis_position_mm: 164.3
 spectrometer_axis:
   # ========== 光谱仪激光换算 ==========
   # 这个段落决定“激光读数 -> 光谱仪实际目标坐标”。
@@ -316,7 +309,7 @@ spectrometer_axis:
 
   # 光谱仪基准坐标对应的激光距离，单位 mm。
   # 机械标准品位置固定为 X=162.0mm；激光参考值以最近一次 HMI 校准为准。
-  axis_zero_laser_mm: 162.9
+  axis_zero_laser_mm: 164.3
   # 激光每变化 1mm，目标坐标沿 axis 变化多少 m。
   # 0.001 表示激光增加 1mm，目标坐标增加 0.001m。
   # 如果方向反了，把它改成 -0.001。

@@ -121,6 +121,9 @@ public:
      */
     bool gripperControl(double pos, double vel, double max_torque);
 
+    /** Reset only the gripper drive without interrupting the six arm joints. */
+    bool resetGripper();
+
     /**
      * @brief 夹爪控制（5参数MIT模式）
      * @param pos 目标位置（弧度）

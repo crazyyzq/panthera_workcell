@@ -235,10 +235,10 @@ ValidationResult enforceQuinticDynamicsLimits(
   trajectory_msgs::msg::JointTrajectory & trajectory,
   const std::vector<double> & max_velocities_rad_sec,
   const std::vector<double> & max_accelerations_rad_sec2,
-  double max_jerk_rad_sec3)
+  const std::vector<double> & max_jerks_rad_sec3)
 {
   const std::size_t joint_count = trajectory.joint_names.size();
-  if (trajectory.points.size() < 2 || max_jerk_rad_sec3 <= 0.0 ||
+  if (trajectory.points.size() < 2 || max_jerks_rad_sec3.size() != trajectory.points.size() ||
     max_velocities_rad_sec.size() != joint_count ||
     max_accelerations_rad_sec2.size() != joint_count)
   {
@@ -252,6 +252,12 @@ ValidationResult enforceQuinticDynamicsLimits(
     {
       return ValidationResult::fail("trajectory velocity/acceleration limit is invalid");
     }
+  }
+  if (std::any_of(
+      max_jerks_rad_sec3.begin() + 1, max_jerks_rad_sec3.end(),
+      [](double limit) {return !std::isfinite(limit) || limit <= 0.0;}))
+  {
+    return ValidationResult::fail("trajectory jerk limit is invalid");
   }
 
   const double initial_duration = durationToSeconds(trajectory.points.back().time_from_start);
@@ -296,8 +302,8 @@ ValidationResult enforceQuinticDynamicsLimits(
             bounds.velocity, max_velocities_rad_sec[joint]},
           {std::sqrt(bounds.acceleration / max_accelerations_rad_sec2[joint]), "acceleration",
             bounds.acceleration, max_accelerations_rad_sec2[joint]},
-          {std::cbrt(bounds.jerk / max_jerk_rad_sec3), "jerk",
-            bounds.jerk, max_jerk_rad_sec3}}};
+          {std::cbrt(bounds.jerk / max_jerks_rad_sec3[index]), "jerk",
+            bounds.jerk, max_jerks_rad_sec3[index]}}};
         for (const auto & candidate : candidates) {
           if (std::get<0>(candidate) > interval_stretch[index]) {
             interval_stretch[index] = std::get<0>(candidate);
@@ -324,10 +330,16 @@ ValidationResult enforceQuinticDynamicsLimits(
     }
     constexpr double maximum_neighbor_ratio = 1.25;
     for (std::size_t index = 2; index < interval_stretch.size(); ++index) {
+      if (max_jerks_rad_sec3[index] != max_jerks_rad_sec3[index - 1]) {
+        continue;
+      }
       interval_stretch[index] = std::max(
         interval_stretch[index], interval_stretch[index - 1] / maximum_neighbor_ratio);
     }
     for (std::size_t index = interval_stretch.size() - 1; index > 1; --index) {
+      if (max_jerks_rad_sec3[index] != max_jerks_rad_sec3[index - 1]) {
+        continue;
+      }
       interval_stretch[index - 1] = std::max(
         interval_stretch[index - 1], interval_stretch[index] / maximum_neighbor_ratio);
     }
@@ -463,9 +475,20 @@ ValidationResult enforceTrajectoryDynamicsLimits(
   const std::vector<double> & max_accelerations_rad_sec2,
   double max_jerk_rad_sec3)
 {
+  return enforceTrajectoryDynamicsLimits(
+    trajectory, max_velocities_rad_sec, max_accelerations_rad_sec2,
+    std::vector<double>(trajectory.points.size(), max_jerk_rad_sec3));
+}
+
+ValidationResult enforceTrajectoryDynamicsLimits(
+  trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & max_velocities_rad_sec,
+  const std::vector<double> & max_accelerations_rad_sec2,
+  const std::vector<double> & max_jerks_rad_sec3)
+{
   return enforceQuinticDynamicsLimits(
     trajectory, max_velocities_rad_sec, max_accelerations_rad_sec2,
-    max_jerk_rad_sec3);
+    max_jerks_rad_sec3);
 }
 
 struct TrajectoryCompiler::Impl
@@ -703,15 +726,14 @@ struct TrajectoryCompiler::Impl
     return ValidationResult::ok();
   }
 
-  ValidationResult validateVerticalConstraint(
-    const RouteDefinition & route,
+  void applyVerticalConstraint(
     const SegmentDefinition & segment,
     const Eigen::Isometry3d & start,
-    const Eigen::Isometry3d & target)
+    Eigen::Isometry3d & target)
   {
     const auto & axis = segment.constraints.vertical_axis;
     if (axis.empty()) {
-      return ValidationResult::ok();
+      return;
     }
     std::array<int, 2> lateral_axes{};
     if (axis == "x") {
@@ -722,16 +744,8 @@ struct TrajectoryCompiler::Impl
       lateral_axes = {0, 1};
     }
     for (const int index : lateral_axes) {
-      const double error = std::abs(target.translation()[index] - start.translation()[index]);
-      if (error > segment.constraints.max_lateral_error_m) {
-        std::ostringstream out;
-        out << "route '" << route.name << "' segment '" << segment.name
-            << "' violates vertical " << axis << " constraint: lateral error=" << error
-            << "m limit=" << segment.constraints.max_lateral_error_m << "m";
-        return ValidationResult::fail(out.str());
-      }
+      target.translation()[index] = start.translation()[index];
     }
-    return ValidationResult::ok();
   }
 
   ValidationResult appendLinearSegment(
@@ -754,10 +768,7 @@ struct TrajectoryCompiler::Impl
     const Eigen::Isometry3d start_pose = state.getGlobalLinkTransform(catalog.tool_frame);
     Eigen::Isometry3d target_pose = poseToEigen(*target_point->pose);
 
-    auto result = validateVerticalConstraint(route, segment, start_pose, target_pose);
-    if (!result.success) {
-      return result;
-    }
+    applyVerticalConstraint(segment, start_pose, target_pose);
 
     const double orientation_distance = rotationDistance(
       start_pose.rotation(), target_pose.rotation());
@@ -819,7 +830,7 @@ struct TrajectoryCompiler::Impl
         return ValidationResult::fail(out.str());
       }
 
-      result = checkState(
+      auto result = checkState(
         state,
         catalog,
         "route '" + route.name + "' segment '" + segment.name + "' sample " +
@@ -877,6 +888,7 @@ struct TrajectoryCompiler::Impl
       std::size_t end_index;
       double velocity_scale;
       double acceleration_scale;
+      bool cartesian;
       bool stop_at_end;
     };
     std::vector<SegmentProfile> profiles;
@@ -900,6 +912,7 @@ struct TrajectoryCompiler::Impl
           trajectory.getWayPointCount() - 1,
           segment.velocity_scale.value_or(route.velocity_scale),
           segment.acceleration_scale.value_or(route.acceleration_scale),
+          segment.type == SegmentType::LINEAR,
           segment.stop_at_end});
     }
 
@@ -989,17 +1002,23 @@ struct TrajectoryCompiler::Impl
       }
     }
 
-    const bool contains_linear_segment = std::any_of(
-      route.segments.begin(), route.segments.end(),
-      [](const SegmentDefinition & segment) {return segment.type == SegmentType::LINEAR;});
-    const double jerk_limit = contains_linear_segment ?
-      std::min(
-      catalog.defaults.max_jerk_rad_sec3,
-      catalog.defaults.cartesian_max_jerk_rad_sec3) :
-      catalog.defaults.max_jerk_rad_sec3;
+    std::vector<double> interval_jerk_limits(
+      output.trajectory.points.size(), catalog.defaults.max_jerk_rad_sec3);
+    for (const auto & profile : profiles) {
+      if (!profile.cartesian) {
+        continue;
+      }
+      for (std::size_t index = profile.start_index + 1;
+        index <= profile.end_index && index < interval_jerk_limits.size(); ++index)
+      {
+        interval_jerk_limits[index] = std::min(
+          catalog.defaults.max_jerk_rad_sec3,
+          catalog.defaults.cartesian_max_jerk_rad_sec3);
+      }
+    }
     result = enforceTrajectoryDynamicsLimits(
       output.trajectory, joint_velocity_limits, joint_acceleration_limits,
-      jerk_limit);
+      interval_jerk_limits);
     if (!result.success) {
       return ValidationResult::fail(
         "route '" + route.name + "' dynamics limiting failed: " + result.message);
@@ -1316,6 +1335,50 @@ trajectory_msgs::msg::JointTrajectory makeResumeTrajectory(
       durationToSeconds(point.time_from_start) - base_time + time_offset);
     output.points.push_back(std::move(point));
   }
+  return output;
+}
+
+trajectory_msgs::msg::JointTrajectory makeEndpointConvergenceTrajectory(
+  const trajectory_msgs::msg::JointTrajectory & source,
+  const std::vector<double> & current_positions,
+  double maximum_speed_rad_sec,
+  double minimum_duration_sec)
+{
+  if (source.points.empty() || source.joint_names.size() != current_positions.size() ||
+    !std::isfinite(maximum_speed_rad_sec) || maximum_speed_rad_sec <= 0.0 ||
+    !std::isfinite(minimum_duration_sec) || minimum_duration_sec <= 0.0)
+  {
+    throw std::invalid_argument("endpoint convergence trajectory input is invalid");
+  }
+  const auto & target_positions = source.points.back().positions;
+  if (target_positions.size() != current_positions.size()) {
+    throw std::invalid_argument("endpoint convergence trajectory point dimensions differ");
+  }
+
+  double maximum_error = 0.0;
+  for (std::size_t joint = 0; joint < current_positions.size(); ++joint) {
+    if (!std::isfinite(current_positions[joint]) || !std::isfinite(target_positions[joint])) {
+      throw std::invalid_argument("endpoint convergence trajectory contains non-finite positions");
+    }
+    maximum_error = std::max(
+      maximum_error, std::abs(target_positions[joint] - current_positions[joint]));
+  }
+
+  auto output = source;
+  output.points.clear();
+  trajectory_msgs::msg::JointTrajectoryPoint start;
+  start.positions = current_positions;
+  start.velocities.assign(current_positions.size(), 0.0);
+  start.accelerations.assign(current_positions.size(), 0.0);
+  start.time_from_start = secondsToDuration(0.0);
+  output.points.push_back(std::move(start));
+
+  auto target = source.points.back();
+  target.velocities.assign(current_positions.size(), 0.0);
+  target.accelerations.assign(current_positions.size(), 0.0);
+  target.time_from_start = secondsToDuration(
+    std::max(minimum_duration_sec, maximum_error / maximum_speed_rad_sec));
+  output.points.push_back(std::move(target));
   return output;
 }
 

@@ -5,10 +5,11 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- Current controller address: `192.168.137.186`. The Windows share is
-  `\\192.168.137.186\b1s_share\panthera_workcell_ws` and maps to the canonical
-  workspace. Treat older `10.89.*`, `192.168.8.*`, and other previously used
-  controller addresses as stale.
+- Current remote address is the Tailscale IP `100.95.35.71`. The canonical Linux
+  workspace remains `/home/b1/panthera_workcell_ws`; use SSH/SFTP when SMB is not
+  exposed over Tailscale. Treat older `10.89.*`, `192.168.8.*`, `192.168.137.*`,
+  and other previously used controller addresses as stale unless the operator
+  explicitly announces another change.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -36,10 +37,11 @@ This file contains durable repository context and operating rules for future age
 - The physically validated 2026-07-18 profile used a `2.2 rad/s` arm ceiling.
   The operator-requested 2026-08-03 production ceiling is now `2.0 rad/s` on all
   six arm joints, with acceleration still limited to `3.0 rad/s^2` and jerk to
-  `300 rad/s^3` globally / `40 rad/s^3` for Cartesian-containing routes. Do not
+  `300 rad/s^3` globally / `40 rad/s^3` for Cartesian intervals. Do not
   restore the previous `4 rad/s^2` acceleration profile, which produced overshoot.
 - The current fixed spectrometer process baseline is `x=0.1620 m`. Place uses
-  `y=0.480 m`, `z=0.320 m`; pick uses `y=0.479497 m`, `z=0.316902 m`. Their
+  `y=0.480 m`, `z=0.320 m`; pick uses `y=0.482 m`, `z=0.317 m` and RPY
+  `(0,0,1.5708) rad`. Their
   10 mm pre-approach and high-hover/template points must retain the matching x/y
   so each physical approach remains vertical. The independently tunable detection
   wait point remains at `(0.216,0.190,0.450)m` and must not follow this column.
@@ -165,7 +167,7 @@ This file contains durable repository context and operating rules for future age
   `(0.09126,-0.34374,0.250)m`. Dump z=0.250 m is an intentionally raised
   commissioning value, not final calibration. The former transformed spectrometer
   pickup column `(0.132,0.600)m` is obsolete; the current fixed process baseline
-  is `x=0.1620 m` (place `y=0.480 m`, pick `y=0.479497 m`).
+  is `x=0.1620 m` (place `y=0.480 m`, pick `y=0.482 m`).
 - The revised cleaning branch keeps the gripper pointing toward base `-Y`
   (yaw `-1.5708 rad`) and uses pour roll `-2.5 rad`. After pouring at
   `(0.09126,-0.34374,0.250)m`, move in a straight line along base `+X` by 150 mm
@@ -196,23 +198,29 @@ This file contains durable repository context and operating rules for future age
   bridge must send `abs(desired_velocity)` with a `0.05 rad/s` tracking floor and
   clamp it to the per-joint hardware maximum. Do not restore signed velocity or
   a constant full-speed chase ceiling.
-- Cartesian-containing routes use an additional `40 rad/s^3` jerk cap; joint-only
-  transfers retain the global `300 rad/s^3` cap. At 100% speed, repeated outlet
-  pick/retreat tests completed in about `11.38 s`, returned exact Home, and the
-  user confirmed visibly smoother motion. Keep this local Cartesian limit rather
-  than globally lowering speed or acceleration.
-- Joints 1-4 use route path tolerance `0.15 rad` (or `0.20 rad` during
-  pouring). Wrist joints 5-6 use `0.45 rad`: vendor feedback is batch-updated,
-  and a measured joint5 `0.1645 rad` transient plus joint6 `0.3536 rad` transient
-  caused false aborts despite correct motion. Final position/velocity tolerances
-  remain strict. After this correction, 50 consecutive 100%-speed empty
-  full-flow cycles passed on 2026-07-28 with maximum Home error `0.007912 rad`.
+- The `40 rad/s^3` Cartesian jerk cap is required for smooth cup motion, while
+  joint-space transfer intervals use `300 rad/s^3`. Do not apply the Cartesian
+  cap to an entire mixed route: that stretched the 2026-08-03 empty cycle to
+  `76.61 s` (`29.61 s` from spectrometer pick to brush entry alone).
+- Production FollowJointTrajectory goals erase controller-side path and goal
+  tolerances (`JointTolerance=-1`). Vendor feedback is batch-updated, and joint5
+  was aborting full routes at `0.450034 rad` against a `0.45 rad` threshold.
+  Motion Server instead confirms the endpoint from fresh encoders and sends up
+  to three measured-state-to-endpoint convergence trajectories at no more than
+  `1.0 rad/s`. Hard joint limits, finite/stale encoder checks, communication
+  validity and hardware torque/speed limits remain mandatory.
 - Since 2026-08-03 all production route/segment velocity scales are 100% against
   the six-axis `2.0 rad/s` ceiling. Pour wrist acceleration remains 50% and short
   shake acceleration 45%; debug, maintenance, and recovery routes keep their
   lower speeds. Keep the compiler acceleration and jerk limits rather than using
   higher dynamics to force short segments to reach peak speed.
-- Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a vertical constraint and validated lateral error.
+- Full-speed route handoff accepts residual measured speed up to `0.08 rad/s`
+  (4% of the production ceiling). The previous `0.05 rad/s` gate falsely rejected
+  a valid handoff at `0.05598 rad/s` immediately after controller success.
+- Near-object pick/place/lift/retreat segments must be explicit Cartesian lines with a
+  vertical constraint. The compiler enforces this geometrically by projecting the two
+  lateral target coordinates onto the measured segment start; it does not abort the
+  production route on a millimetre-scale lateral-error threshold.
 - The cleaning brush motor driver is AQMD6030NS-A3 on `/dev/ttyS8`, Modbus RTU
   slave `0x02`, default `9600/8E1`. Its SW8 must be ON. The manual uses an
   offset decode: SW1-SW7 all OFF is `0x01`, while the installed SW1 ON setting
@@ -226,18 +234,19 @@ This file contains durable repository context and operating rules for future age
   Home joint vector is exactly `[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]`. Do not infer
   or overwrite it from a post-power-loss/random pose. On a recoverable runtime
   error, return to this Home while enabled before disabling or restarting hardware.
-- Production gripper close is a retained position target of `0.0 m`; it must remain
+- Production gripper close is a retained position target of `0.015 m`; it must remain
   commanded until an explicit release/open operation. Do not auto-release because
-  contact prevents the encoder from reaching zero.
-- A pickup close must also confirm stable contact before transport. Reaching the
-  zero target means no cup was intercepted and is a failed grasp, not success;
-  reinforcement closes while an already-held cup is in transit do not repeat
-  that pickup-only check. A fixed-backend empty outlet pickup retreats through
-  its validated safe route, returns Home, opens the gripper, clears the abandoned
-  task, and resumes `WAIT_DISCHARGE` without entering a latched ERROR.
-- Gripper path tolerance must not include a nonzero velocity tolerance. The SDK reports
-  quantized finger velocity while opening/closing, and applying the final settled
-  velocity threshold to the whole path caused immediate false aborts.
+  contact can prevent the encoder from reaching the target.
+- Gripper open/close success follows the trajectory controller result only. Cup contact
+  naturally prevents the encoder from reaching the retained close target and must not
+  be converted into a position/velocity/contact-threshold failure.
+- Gripper controller path/goal tolerances are erased and completion is determined
+  from fresh encoder target/contact feedback. Do not restore the former 3600-second
+  hold waypoint: ros2_control retains the final position command after action
+  success, and the hour-long pending goal made protection recovery unreliable.
+- The hardware bridge must not automatically reset motor 7 from gripper position,
+  progress, or timeout heuristics. It streams the requested open/close target; only an
+  explicit operator/service recovery may reset the gripper drive.
 - After brush cleaning, retract from `brush_center` to `brush_entry` along the
   calibrated cup axis, lift vertically in the pour orientation to
   `brush_entry_clear_high` (`z=0.45 m`), then make the wrist upright at
@@ -249,11 +258,11 @@ This file contains durable repository context and operating rules for future age
   any other tunable point unless the operator explicitly changes this restriction.
 - Before real motion, confirm the workspace is clear, hardware E-stop is available, the controller is healthy, the robot is stationary, and the current joints are within the trajectory start tolerance.
 - Never silently bridge an arbitrary current state to a cached trajectory. Reject start mismatch or use a separately commissioned recovery route.
-- A transient controller path-tolerance violation gets one bounded suffix resume:
-  wait for measured settling, require the current state within `0.50 rad` of the
-  unexecuted trajectory, restart from the nearest remaining point with measured
-  zero velocity and at least a 0.25-second first interval. Never loop retries or
-  resume an unknown/divergent pose.
+- Legacy controller path-tolerance failures retain one bounded suffix-resume
+  fallback, but new production goals erase those soft abort thresholds. When a
+  controller reports success before encoder convergence, close the endpoint error
+  with a fresh measured-state trajectory; never splice an arbitrary unknown pose
+  into the middle of a cached route.
 - Motion Server must claim `busy_` only in the action accepted callback, never
   in the goal-validation callback. DDS may time out while sending a goal
   response; claiming earlier leaves no execution worker to clear `busy_` and
@@ -691,11 +700,14 @@ not a normal shutdown path.
   sequential controller spawners. Hardware reconnect attempts must retain a 5-second
   cooldown; reconnecting immediately after disable produced a transient SDK `999`
   encoder frame during real testing.
-- A successful gripper close retains a `0.0 m` position target. Arm stop, error
+- A successful gripper close retains the configured `0.015 m` position target. Arm stop, error
   recovery, and reset must not cancel that goal or replace it with the measured
   contact position; only an explicit open command may release the cup. Keep the
-  commissioned 2.5 Nm hardware limit unless a separate hardware acceptance test
+  commissioned 3.0 Nm hardware limit unless a separate hardware acceptance test
   approves a change.
+- There is no automatic gripper response watcher. Never infer a stalled close from
+  target error: a cup intentionally prevents the 15 mm target, and resetting motor 7
+  in that state releases the cup.
 - A laser-adjusted spectrometer pickup finishes at
   `spectrometer_sensor_pick_hover` and enters cleaning through the dedicated
   `spectrometer_sensor_pick_hover_to_brush_entry_recovery` route. Do not
@@ -716,10 +728,11 @@ not a normal shutdown path.
 - Tool/TCP frame: `gripper_center`.
 - Point and route IDs use stable `snake_case` names.
 - Production motion data must have one canonical source. Do not add another hard-coded list in C++, launch files or the HMI.
-- Gripper open/close duration is configured in `spectrometer_cell.yaml`. The
-  2026-08-03 values are 1.3675 s open and 0.9573 s close (50% faster than the
-  preceding 2.0513/1.4359 s); the hardware ceiling is 0.01875 m/s, while the
-  15 mm close target and hold behavior are unchanged.
+- Gripper open/close duration is configured in `spectrometer_cell.yaml`. After
+  the 2026-08-03 gripper modification, the fully closed physical position was
+  reset as absolute zero. Production cup grip/full-open targets are
+  `0.015/0.050 m`. Close/open durations are `0.9573/1.3675 s`, with the
+  `0.01875 m/s` hardware ceiling retained; target-hold behavior is unchanged.
 - Production cleaning must insert the cup fully at `brush_center` before starting
   the brush. If brush start fails, retreat to `brush_entry` with the motor off.
 - Production brush speed defaults to 40%. Outlet return points follow their grasp

@@ -283,6 +283,18 @@ bool Panthera::gripperControl(double pos, double vel, double max_torque)
     return true;
 }
 
+bool Panthera::resetGripper()
+{
+    if (gripper_id_ <= 0 || static_cast<std::size_t>(gripper_id_) > Motors.size()) {
+        return false;
+    }
+    Motors[gripper_id_ - 1]->reset();
+    motor_send_cmd();
+    motor_send_cmd();
+    motor_send_cmd();
+    return true;
+}
+
 bool Panthera::gripperControlMIT(double pos, double vel, double torque,
                                   double kp, double kd)
 {

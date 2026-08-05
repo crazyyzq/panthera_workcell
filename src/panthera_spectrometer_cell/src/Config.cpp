@@ -213,6 +213,8 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     motion, "error_recovery_timeout_margin_sec", config.motion.errorRecoveryTimeoutMarginSec);
 
   const auto gripper = root["gripper"];
+  config.gripper.commandEnabled =
+    readBool(gripper, "command_enabled", config.gripper.commandEnabled);
   config.gripper.openPosition = readDouble(gripper, "open_position", config.gripper.openPosition);
   config.gripper.closePosition = readDouble(gripper, "close_position", config.gripper.closePosition);
   config.gripper.openDurationSec =
@@ -223,20 +225,6 @@ WorkcellConfig WorkcellConfig::loadFromFile(const std::string & path)
     readDouble(gripper, "action_server_wait_sec", config.gripper.actionServerWaitSec);
   config.gripper.commandTimeoutMarginSec = readDouble(
     gripper, "command_timeout_margin_sec", config.gripper.commandTimeoutMarginSec);
-  config.gripper.positionToleranceM =
-    readDouble(gripper, "position_tolerance_m", config.gripper.positionToleranceM);
-  config.gripper.graspHoldGoalToleranceM = readDouble(
-    gripper, "grasp_hold_goal_tolerance_m", config.gripper.graspHoldGoalToleranceM);
-  config.gripper.settledVelocityToleranceMps = readDouble(
-    gripper,
-    "settled_velocity_tolerance_mps",
-    config.gripper.settledVelocityToleranceMps);
-  config.gripper.settleTimeoutSec =
-    readDouble(gripper, "settle_timeout_sec", config.gripper.settleTimeoutSec);
-  config.gripper.graspContactMinClosureM = readDouble(
-    gripper, "grasp_contact_min_closure_m", config.gripper.graspContactMinClosureM);
-  config.gripper.graspContactConfirmSec = readDouble(
-    gripper, "grasp_contact_confirm_sec", config.gripper.graspContactConfirmSec);
   config.gripper.retryCount =
     readInt(gripper, "retry_count", config.gripper.retryCount);
 
@@ -513,16 +501,9 @@ ActionResult WorkcellConfig::validate() const
   if (gripper.closePosition > gripper.openPosition ||
     gripper.openDurationSec <= 0.0 || gripper.closeDurationSec <= 0.0 ||
     gripper.actionServerWaitSec <= 0.0 || gripper.commandTimeoutMarginSec <= 0.0 ||
-    gripper.positionToleranceM <= 0.0 ||
-    gripper.graspHoldGoalToleranceM <= gripper.positionToleranceM ||
-    gripper.graspHoldGoalToleranceM >= (gripper.openPosition - gripper.closePosition) ||
-    gripper.settledVelocityToleranceMps <= 0.0 ||
-    gripper.settleTimeoutSec <= 0.0 || gripper.graspContactMinClosureM <= 0.0 ||
-    gripper.graspContactMinClosureM >= (gripper.openPosition - gripper.closePosition) ||
-    gripper.graspContactConfirmSec <= 0.0 || gripper.retryCount < 0 ||
-    gripper.retryCount > 3)
+    gripper.retryCount < 0 || gripper.retryCount > 3)
   {
-    return ActionResult::fail("gripper limits, timing, tolerance, or retry count are invalid");
+    return ActionResult::fail("gripper positions, timing, or retry count are invalid");
   }
   if (!findPose(spectrometerAxis.basePoseName)) {
     return ActionResult::fail(

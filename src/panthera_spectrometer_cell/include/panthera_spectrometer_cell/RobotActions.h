@@ -42,6 +42,7 @@ public:
   ActionResult placeToSpectrometer(double axis_position_mm);
   ActionResult pickFromSpectrometer(double axis_position_mm);
   ActionResult cleanCup();
+  ActionResult moveHomeToSpectrometerWaitForRecovery();
   ActionResult moveToOutletWait();
   ActionResult setSpeedScale(double scale);
   double speedScale() const;
@@ -92,16 +93,8 @@ private:
   ActionResult sendGripperTo(
     double position,
     double duration_sec,
-    const std::string & label,
-    bool require_grasp_contact = false);
+    const std::string & label);
   ActionResult closeGripperForGrasp();
-  bool waitForGripperTarget(
-    double target_position,
-    std::chrono::duration<double> timeout,
-    bool allow_grasp_contact,
-    bool require_grasp_contact,
-    bool & grasp_contact,
-    std::string & error) const;
   ActionResult setCleaningMotor(bool enabled, const std::string & label);
   ActionResult setCleaningMotorDuty(
     bool enabled, int duty_permille, const std::string & label);

@@ -200,6 +200,28 @@ TEST(TrajectoryResume, StartsSettledAtNearestRemainingPoint)
   EXPECT_EQ(resumed.points.back().positions, (std::vector<double>{3.0}));
 }
 
+TEST(TrajectoryRecovery, BuildsMeasuredStateToEndpointCorrection)
+{
+  trajectory_msgs::msg::JointTrajectory source;
+  source.joint_names = {"joint1", "joint2"};
+  trajectory_msgs::msg::JointTrajectoryPoint target;
+  target.positions = {1.0, -0.5};
+  target.velocities = {0.3, 0.2};
+  target.accelerations = {0.1, 0.1};
+  target.time_from_start.sec = 2;
+  source.points.push_back(target);
+
+  const auto correction = panthera_motion::makeEndpointConvergenceTrajectory(
+    source, {0.6, -0.4}, 0.5, 0.25);
+
+  ASSERT_EQ(correction.points.size(), 2u);
+  EXPECT_EQ(correction.points.front().positions, (std::vector<double>{0.6, -0.4}));
+  EXPECT_EQ(correction.points.front().velocities, (std::vector<double>{0.0, 0.0}));
+  EXPECT_EQ(correction.points.back().positions, target.positions);
+  EXPECT_EQ(correction.points.back().velocities, (std::vector<double>{0.0, 0.0}));
+  EXPECT_DOUBLE_EQ(panthera_motion::trajectoryDurationSec(correction), 0.8);
+}
+
 TEST(MotionState, PositionSlopeIgnoresStationaryEncoderJitter)
 {
   const std::vector<double> times{0.00, 0.01, 0.02, 0.03, 0.04};
@@ -267,6 +289,34 @@ TEST(TrajectoryDynamicsLimit, BoundsVelocityBetweenWaypoints)
     trajectory, {1.0}, {100.0}, 1000.0);
   ASSERT_TRUE(result.success) << result.message;
   EXPECT_GT(panthera_motion::trajectoryDurationSec(trajectory), 1.8);
+}
+
+TEST(TrajectoryDynamicsLimit, UsesPerIntervalJerkCeilings)
+{
+  trajectory_msgs::msg::JointTrajectory trajectory;
+  trajectory.joint_names = {"joint1"};
+  trajectory_msgs::msg::JointTrajectoryPoint point;
+  point.positions = {0.0};
+  point.velocities = {0.0};
+  point.accelerations = {0.0};
+  trajectory.points.push_back(point);
+  point.positions = {1.0};
+  point.time_from_start.sec = 1;
+  trajectory.points.push_back(point);
+  point.positions = {2.0};
+  point.time_from_start.sec = 2;
+  trajectory.points.push_back(point);
+
+  const auto result = panthera_motion::enforceTrajectoryDynamicsLimits(
+    trajectory, {100.0}, {100.0}, {1000.0, 10.0, 1000.0});
+  ASSERT_TRUE(result.success) << result.message;
+  const auto seconds = [](const builtin_interfaces::msg::Duration & duration) {
+      return static_cast<double>(duration.sec) + duration.nanosec * 1e-9;
+    };
+  const double slow_interval = seconds(trajectory.points[1].time_from_start);
+  const double fast_interval = seconds(trajectory.points[2].time_from_start) - slow_interval;
+  EXPECT_GT(slow_interval, 1.5);
+  EXPECT_LT(fast_interval, 1.1);
 }
 
 TEST(TrajectoryDynamicsLimit, RejectsIncompleteDynamics)

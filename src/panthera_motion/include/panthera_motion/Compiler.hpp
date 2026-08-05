@@ -80,6 +80,12 @@ trajectory_msgs::msg::JointTrajectory makeResumeTrajectory(
   const std::vector<double> & current_positions,
   double maximum_deviation_rad);
 
+trajectory_msgs::msg::JointTrajectory makeEndpointConvergenceTrajectory(
+  const trajectory_msgs::msg::JointTrajectory & source,
+  const std::vector<double> & current_positions,
+  double maximum_speed_rad_sec = 1.0,
+  double minimum_duration_sec = 0.25);
+
 double maxAbsPositionSlope(
   const std::vector<double> & sample_times_sec,
   const std::vector<std::vector<double>> & position_samples);
@@ -91,5 +97,11 @@ ValidationResult enforceTrajectoryDynamicsLimits(
   const std::vector<double> & max_velocities_rad_sec,
   const std::vector<double> & max_accelerations_rad_sec2,
   double max_jerk_rad_sec3);
+
+ValidationResult enforceTrajectoryDynamicsLimits(
+  trajectory_msgs::msg::JointTrajectory & trajectory,
+  const std::vector<double> & max_velocities_rad_sec,
+  const std::vector<double> & max_accelerations_rad_sec2,
+  const std::vector<double> & max_jerks_rad_sec3);
 
 }  // namespace panthera_motion

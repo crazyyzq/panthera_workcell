@@ -50,6 +50,7 @@ public:
   ActionResult setBrush(bool enabled, double speed_percent);
   ActionResult restartCleaningMotor();
   ActionResult ensureGripperReady(bool force_reset = false);
+  ActionResult verifyGripperMotion();
   ActionResult openGripper();
   ActionResult closeGripper();
 
@@ -92,6 +93,7 @@ private:
   ActionResult brushCleanCup();
   bool isJointWithinLimit(std::size_t joint_index, double position) const;
   bool getLatestArmJointValues(std::vector<double> & positions) const;
+  bool getLatestGripperPosition(double & position) const;
   ActionResult sendGripperTo(
     double position,
     double duration_sec,

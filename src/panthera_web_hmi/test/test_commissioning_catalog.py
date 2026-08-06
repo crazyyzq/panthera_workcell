@@ -82,10 +82,13 @@ def test_hmi_exposes_guarded_gripper_recovery_next_to_cleaning_recovery():
     cleaning_index = html.index('data-command="restart_cleaning_motor"')
     gripper_index = html.index('data-command="restart_gripper"')
     assert cleaning_index < gripper_index
-    assert '只复位夹爪电机，不移动机械臂' in html
+    assert '最终持续保持全开目标，机械臂六轴不移动' in html
     assert "command === 'restart_gripper'" in javascript
     assert "'restart_cleaning_motor', 'restart_gripper'" in node_source
     assert '/spectrometer_cell/restart_gripper' in node_source
+    assert "120.0 if command == 'restart_gripper' else 5.0" in node_source
+    assert '恢复与动作自检中' in javascript
+    assert '夹爪恢复${result.success' in javascript
 
 
 def test_hmi_exposes_hot_reloadable_process_timing():

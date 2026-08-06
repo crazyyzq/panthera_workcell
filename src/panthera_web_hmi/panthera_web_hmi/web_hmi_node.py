@@ -3685,7 +3685,8 @@ class WebHmiNode(Node):
 
         future.add_done_callback(_done)
 
-        if not event.wait(timeout=5.0):
+        timeout_sec = 120.0 if command == 'restart_gripper' else 5.0
+        if not event.wait(timeout=timeout_sec):
             return {
                 'success': False,
                 'message': f'ROS service call timeout: {service_name}',

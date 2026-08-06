@@ -249,7 +249,16 @@ ActionResult StateMachine::recoverGripper()
     return ActionResult::fail(
       "gripper recovery rejected in state " + toString(state_));
   }
-  return robot_->ensureGripperReady(true);
+  const auto recovery = robot_->ensureGripperReady(true);
+  if (!recovery.success) {
+    return recovery;
+  }
+  const auto motion_test = robot_->verifyGripperMotion();
+  if (!motion_test.success) {
+    return ActionResult::fail(
+      "gripper reset succeeded but physical motion self-test failed: " + motion_test.message);
+  }
+  return motion_test;
 }
 
 ActionResult StateMachine::reloadConfig(const WorkcellConfig & config)

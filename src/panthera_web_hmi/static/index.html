@@ -143,7 +143,7 @@
           <button class="cmd neutral" data-command="clear_estop" data-confirm="确认机械急停已释放，再清除软件急停状态。" type="button">清除急停</button>
           <button class="cmd warn" data-command="request_reset" data-confirm="确认现场安全，执行人工复位。" type="button">人工复位</button>
           <button class="cmd warn" data-command="restart_cleaning_motor" data-confirm="确认清洁电机已经上电。系统将重连驱动器、发送停止指令，并在空任务错误状态下自动复位。" type="button">清洁电机恢复</button>
-          <button class="cmd warn" data-command="restart_gripper" data-confirm="确认当前没有夹持杯子。系统将只复位夹爪电机，不移动机械臂。" type="button">恢复夹爪</button>
+          <button class="cmd warn" data-command="restart_gripper" data-confirm="确认当前没有夹持杯子。系统将复位夹爪并执行短距离动作自检，最终持续保持全开目标，机械臂六轴不移动。" type="button">恢复夹爪</button>
         </div>
         <div class="safety-sequence" id="safetySequence">急停后顺序：释放硬件急停 -> 清除急停 -> 人工复位 -> 启动自动</div>
       </div>

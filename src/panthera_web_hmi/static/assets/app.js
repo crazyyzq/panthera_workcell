@@ -479,7 +479,7 @@ function commandRule(command, services, state, context) {
     const allowedState = ['INIT', 'IDLE', 'WAIT_DISCHARGE', 'PAUSED', 'ERROR'].includes(state);
     return {
       enabled: empty && allowedState,
-      reason: empty && allowedState ? '只复位夹爪电机，不移动机械臂' : '有活动任务或杯子占位，禁止复位夹爪',
+      reason: empty && allowedState ? '复位夹爪并动作自检，机械臂六轴不动' : '有活动任务或杯子占位，禁止复位夹爪',
     };
   }
 
@@ -1563,8 +1563,15 @@ function confirmAction(message, title = '确认操作') {
 
 async function sendCommand(command, button) {
   const resultBox = $('commandResult');
+  const gripperRecovery = command === 'restart_gripper';
+  const originalButtonText = button ? button.textContent : '';
   if (resultBox) {
-    resultBox.textContent = '发送中...';
+    resultBox.textContent = gripperRecovery
+      ? '夹爪恢复：复位电机并执行可动性自检，机械臂保持不动…'
+      : '发送中...';
+  }
+  if (gripperRecovery && button) {
+    button.textContent = '恢复与动作自检中…';
   }
   setButtonFeedback(button, 'loading');
   appendLog(`MANUAL COMMAND ${command}`, 'log-warn');
@@ -1580,7 +1587,10 @@ async function sendCommand(command, button) {
       estopClearAcknowledged = true;
     }
     if (resultBox) {
-      resultBox.textContent = result.message || (result.success ? 'ok' : 'failed');
+      const message = result.message || (result.success ? 'ok' : 'failed');
+      resultBox.textContent = gripperRecovery
+        ? `夹爪恢复${result.success ? '成功' : '失败'}：${message}`
+        : message;
     }
     appendLog(`${command}: ${result.message || '--'}`, result.success ? 'log-ok' : 'log-error');
     setButtonFeedback(button, result.success ? 'success' : 'failed');
@@ -1593,6 +1603,9 @@ async function sendCommand(command, button) {
   } finally {
     if (button) {
       button.classList.remove('loading');
+      if (gripperRecovery) {
+        button.textContent = originalButtonText;
+      }
     }
     if (latestSnapshot) {
       renderServices(latestSnapshot.services || {}, (latestSnapshot.spectrometer_cell || {}).state || 'UNKNOWN', (latestSnapshot.spectrometer_cell || {}).context || {});

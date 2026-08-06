@@ -252,9 +252,16 @@ This file contains durable repository context and operating rules for future age
   a new vendor motor-7 feedback frame with a valid position sentinel and zero fault.
   A healthy drive is a no-op; an unhealthy drive is reset once and the retained target is immediately
   resumed. The guarded HMI `恢复夹爪` command deliberately forces that same one-motor
-  reset so it also works when the drive reports a stale healthy status. Never add a
-  GPIO dependency, second SDK/serial owner, probe motion, or position/velocity/force/
-  progress threshold to this path. Operator recovery is allowed only with no active
+  reset so it also works when the drive reports a stale healthy status. After an
+  explicit operator recovery only, verify physical motion through the existing
+  gripper trajectory controller: a nearly open gripper moves from 50 to 45 mm and
+  back, while any other position moves directly to the 50 mm open target. Treat
+  any fresh encoder change in the commanded direction as physical-motion success;
+  do not add a movement-size or endpoint-error threshold. This explicit self-test
+  must never become a production interlock. Automatic cycle preflight remains a
+  feedback/fault check and never probe-moves the gripper. Never add a GPIO dependency,
+  second SDK/serial owner, or position/velocity/force/progress threshold to the
+  automatic path. Operator recovery is allowed only with no active
   task, held cup or occupied spectrometer. A temporarily unavailable local service
   keeps `SELECT_TASK` waiting and retrying; it must not send production to `ERROR`.
   If no new motor-7 frame arrives within the existing service wait, queue exactly one

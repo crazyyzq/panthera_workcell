@@ -2482,6 +2482,28 @@ bool RobotActions::getLatestArmJointValues(std::vector<double> & positions) cons
   return true;
 }
 
+bool RobotActions::getLatestGripperPosition(double & position) const
+{
+  std::lock_guard<std::mutex> lock(joint_state_mutex_);
+  if (!has_joint_state_ || (node_->now() - latest_joint_state_received_).seconds() > 0.5) {
+    return false;
+  }
+  const auto it = std::find(
+    latest_joint_state_.name.begin(), latest_joint_state_.name.end(), kGripperJoint);
+  if (it == latest_joint_state_.name.end()) {
+    return false;
+  }
+  const auto index = static_cast<std::size_t>(
+    std::distance(latest_joint_state_.name.begin(), it));
+  if (index >= latest_joint_state_.position.size() ||
+    !std::isfinite(latest_joint_state_.position[index]))
+  {
+    return false;
+  }
+  position = latest_joint_state_.position[index];
+  return true;
+}
+
 ActionResult RobotActions::sendGripperTo(
   double position,
   double duration_sec,
@@ -2646,6 +2668,91 @@ ActionResult RobotActions::ensureGripperReady(bool force_reset)
   const auto response = future.get();
   return response->success ?
     ActionResult::ok(response->message) : ActionResult::fail(response->message);
+}
+
+ActionResult RobotActions::verifyGripperMotion()
+{
+  if (!config_.gripper.commandEnabled) {
+    return ActionResult::fail("gripper motion self-test requires command_enabled=true");
+  }
+  if (config_.simulation.enabled) {
+    return ActionResult::ok("gripper motion self-test skipped in simulation");
+  }
+
+  double initial = 0.0;
+  if (!getLatestGripperPosition(initial)) {
+    return ActionResult::fail("gripper motion self-test has no fresh position feedback");
+  }
+
+  constexpr double kProbeTravel = 0.005;
+  const double open = config_.gripper.openPosition;
+  const double configured_travel = open - config_.gripper.closePosition;
+  if (configured_travel <= 0.0) {
+    return ActionResult::fail("gripper motion self-test requires open_position > close_position");
+  }
+  const double probe = std::max(config_.gripper.closePosition, open - kProbeTravel);
+  const double probe_duration = std::max(
+    0.4,
+    config_.gripper.openDurationSec * (open - probe) / configured_travel);
+
+  auto millimetres = [](double metres) {
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(1) << metres * 1000.0;
+      return out.str();
+    };
+
+  auto command_and_observe = [this, &millimetres](
+    double target, double duration, double start, bool increasing,
+    const std::string & label, double & observed)
+    {
+      const auto command = sendGripperTo(target, duration, label);
+      const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration<double>(config_.gripper.commandTimeoutMarginSec);
+      do {
+        if (getLatestGripperPosition(observed) &&
+          (increasing ? observed > start : observed < start))
+        {
+          return ActionResult::ok(label + " motion encoder-confirmed");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      } while (std::chrono::steady_clock::now() < deadline);
+      return ActionResult::fail(
+        label + (command.success ? " command completed" : " command failed: " + command.message) +
+        "; encoder did not move in the expected direction: " +
+        millimetres(start) + " -> " + millimetres(observed) + " mm");
+    };
+
+  if (initial <= probe) {
+    double opened = 0.0;
+    const auto open_result = command_and_observe(
+      open, config_.gripper.openDurationSec, initial, true,
+      "gripper recovery open self-test", opened);
+    if (!open_result.success) {
+      return ActionResult::fail(open_result.message);
+    }
+    return ActionResult::ok(
+      "gripper recovered and physically opened: " + millimetres(initial) + " -> " +
+      millimetres(opened) + " mm; opening motion encoder-confirmed and open target retained");
+  }
+
+  double probed = 0.0;
+  const auto probe_result = command_and_observe(
+    probe, probe_duration, initial, false, "gripper recovery probe", probed);
+  double restored = 0.0;
+  const auto restore_result = command_and_observe(
+    open, probe_duration, probed, true, "gripper recovery restore open", restored);
+
+  if (!probe_result.success) {
+    return ActionResult::fail(
+      probe_result.message + "; restore open: " + restore_result.message);
+  }
+  if (!restore_result.success) {
+    return ActionResult::fail(restore_result.message);
+  }
+  return ActionResult::ok(
+    "gripper recovered and motion verified: " + millimetres(initial) + " -> " +
+    millimetres(probed) + " -> " + millimetres(restored) +
+    " mm; probe/open encoder-confirmed and open target retained");
 }
 
 ActionResult RobotActions::setCleaningMotorDuty(

@@ -1178,10 +1178,32 @@ button.failed {
 
 .joint-row {
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) 86px;
-  gap: 10px;
+  grid-template-columns: 72px minmax(50px, 1fr) auto;
+  gap: 6px;
   align-items: center;
   font-size: 13px;
+}
+
+.joint-value {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+  text-align: right;
+  white-space: nowrap;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.joint-value .pill {
+  min-height: 20px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+
+.joint-value .motor-mode {
+  background: #475569;
 }
 
 .joint-name {
@@ -1353,23 +1375,40 @@ button.failed {
 }
 
 .linear-jog-grid {
-  width: min(100%, 380px);
+  width: min(100%, 420px);
   display: grid;
-  grid-template-columns: repeat(3, minmax(86px, 1fr));
-  grid-template-areas:
-    ". front ."
-    "left up right"
-    ". back down";
-  gap: 8px;
+  grid-template-columns: minmax(210px, 1fr) minmax(78px, 90px);
+  gap: 14px;
   margin: 14px auto 0;
 }
 
-.linear-jog-grid .jog-button:nth-child(1) { grid-area: front; }
-.linear-jog-grid .jog-button:nth-child(2) { grid-area: left; }
-.linear-jog-grid .jog-button:nth-child(3) { grid-area: up; }
-.linear-jog-grid .jog-button:nth-child(4) { grid-area: right; }
-.linear-jog-grid .jog-button:nth-child(5) { grid-area: back; }
-.linear-jog-grid .jog-button:nth-child(6) { grid-area: down; }
+.jog-group-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.xy-jog-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(62px, 1fr));
+  grid-template-areas:
+    ". front ."
+    "left . right"
+    ". back .";
+  gap: 8px;
+}
+
+.xy-jog-grid .jog-button:nth-child(1) { grid-area: front; }
+.xy-jog-grid .jog-button:nth-child(2) { grid-area: left; }
+.xy-jog-grid .jog-button:nth-child(3) { grid-area: right; }
+.xy-jog-grid .jog-button:nth-child(4) { grid-area: back; }
+
+.z-jog-grid {
+  display: grid;
+  gap: 8px;
+}
 
 .jog-button {
   min-width: 0;
@@ -1592,6 +1631,19 @@ button.failed {
   .debug-tools > div {
     min-width: 0;
     width: 100%;
+  }
+
+  .linear-jog-grid {
+    grid-template-columns: minmax(168px, 1fr) 72px;
+    gap: 8px;
+  }
+
+  .xy-jog-grid {
+    grid-template-columns: repeat(3, minmax(48px, 1fr));
+  }
+
+  .joint-row {
+    grid-template-columns: 64px minmax(36px, 1fr) minmax(90px, 150px);
   }
 
   .debug-pose-grid {

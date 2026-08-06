@@ -422,6 +422,10 @@ class HmiStateStore:
                 'efforts': [],
                 'age_sec': None,
             },
+            'motor_status': {
+                'joints': {},
+                'age_sec': None,
+            },
             'tool_pose': {
                 'available': False,
                 'base_frame': 'base_link',
@@ -596,6 +600,30 @@ class HmiStateStore:
                 'age_sec': 0.0,
             }
             self._timestamps['joint_state'] = now_sec()
+
+    def set_motor_status(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            names = [str(value) for value in payload['names']]
+            faults = [int(value) for value in payload['faults']]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not names or len(names) != len(faults):
+            return False
+        if any(not name for name in names) or any(
+                value < 0 or value > 0xff for value in faults):
+            return False
+
+        with self._lock:
+            self._data['motor_status'] = {
+                'joints': {
+                    name: {'fault': fault}
+                    for name, fault in zip(names, faults)
+                },
+                'age_sec': 0.0,
+            }
+            self._timestamps['motor_status'] = now_sec()
+        return True
 
     def set_tool_pose(
             self,
@@ -775,6 +803,7 @@ class HmiStateStore:
                 ('workflow', 'age_sec'): 'workflow',
                 ('external_signal', 'age_sec'): 'external_signal',
                 ('joint_state', 'age_sec'): 'joint_state',
+                ('motor_status', 'age_sec'): 'motor_status',
                 ('tool_pose', 'age_sec'): 'tool_pose',
                 ('camera', 'rgb_age_sec'): 'camera_rgb',
                 ('camera', 'depth_age_sec'): 'camera_depth',
@@ -1751,6 +1780,9 @@ class WebHmiNode(Node):
             'restart_cleaning_motor': self.declare_parameter(
                 'service_restart_cleaning_motor',
                 '/spectrometer_cell/restart_cleaning_motor').value,
+            'restart_gripper': self.declare_parameter(
+                'service_restart_gripper',
+                '/spectrometer_cell/restart_gripper').value,
             'manual_mode': self.declare_parameter(
                 'service_manual_mode',
                 '/spectrometer_cell/manual_mode').value,
@@ -1876,6 +1908,8 @@ class WebHmiNode(Node):
         self.create_subscription(ExternalSignal, '/workflow/external_signal', self._on_external_signal, 10)
         self.create_subscription(JointState, '/joint_states', self._on_joint_state, 10)
         self.create_subscription(
+            String, '/panthera_hardware/motor_status', self._on_motor_status, 10)
+        self.create_subscription(
             CameraInfo,
             self.rgb_info_topic,
             self._on_rgb_camera_info,
@@ -1941,6 +1975,9 @@ class WebHmiNode(Node):
 
     def _on_joint_state(self, msg):
         self.state_store.set_joint_state(msg)
+
+    def _on_motor_status(self, msg):
+        self.state_store.set_motor_status(msg)
 
     def _on_rgb_camera_info(self, msg):
         self.state_store.set_camera_info('rgb', msg)
@@ -3599,7 +3636,7 @@ class WebHmiNode(Node):
 
         if self._debug_session_active() and command not in (
                 'manual_mode', 'clear_estop', 'request_reset',
-                'restart_cleaning_motor'):
+                'restart_cleaning_motor', 'restart_gripper'):
             return {
                 'success': False,
                 'message': 'production commands are locked during an active point-debug session',

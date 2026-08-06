@@ -27,7 +27,8 @@ cd /home/b1/panthera_workcell_ws
 scripts/start_workcell.sh
 ```
 
-This starts the commissioned production chain only: MIT hardware, ros2_control,
+This starts the commissioned production chain only: position/velocity hardware,
+ros2_control,
 Motion Server, the fixed-cache spectrometer state machine, and laser adapter.
 The HMI is a separate always-on service. Production does not start MoveGroup,
 the legacy workflow executor, pose tuner,
@@ -38,6 +39,11 @@ offset, while a sensor absent from startup uses the configured fixed reference.
 The laser zero is an HMI calibration value, not a hard-coded distance.
 Failed startup is retried only after a guarded cleanup; an unknown/non-Home pose
 is left powered and holding rather than being disabled.
+
+The lifecycle default is `CONTROL_MODE=position_velocity`. An intentional MIT
+commissioning run must set `CONTROL_MODE=mit_gravity_compensation` explicitly;
+the HMI joint-mode label reads the active lifecycle setting rather than the
+vendor status-frame type byte.
 
 Startup also removes a stale ROS CLI daemon before controller health queries. If
 that daemon ignores TERM or is already in `!rclpy.ok()`, the script kills only the

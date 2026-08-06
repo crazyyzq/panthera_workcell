@@ -11,6 +11,8 @@ find_package(rclcpp REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(hightorque_robot REQUIRED)
 find_package(pinocchio REQUIRED)
 
@@ -33,6 +35,8 @@ ament_target_dependencies(
   hardware_interface
   pluginlib
   rclcpp_lifecycle
+  std_msgs
+  std_srvs
 )
 
 target_link_libraries(
@@ -72,6 +76,8 @@ ament_export_dependencies(
   hardware_interface
   pluginlib
   rclcpp_lifecycle
+  std_msgs
+  std_srvs
   hightorque_robot
   pinocchio
 )

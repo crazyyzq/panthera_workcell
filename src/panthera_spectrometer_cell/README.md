@@ -123,6 +123,8 @@ config/spectrometer_cell.yaml
 - 主程序长期运行，不执行一轮后退出。
 - `WAIT_DISCHARGE` 只接收出料完成信号并维护任务队列，不直接进入取杯动作。
 - `SELECT_TASK` 从 `pending_outlets` 中取任务并创建本轮 `CycleContext`。
+- `SELECT_TASK` 启动动作前要求夹爪电机 7 返回新的 `fault=0` 反馈；短暂无反馈时
+  留在本状态重试，不进入 `ERROR`，也不消费已排队任务。
 - 两个出料口有独立 `OutletStatus`，同一个出料口杯子未放回前不会重复入队。
 - 当前任务执行中收到另一个出料口信号，只入队，不覆盖当前任务上下文。
 - `MEASURE_SPECTROMETER_BEFORE_PLACE` 和 `MEASURE_SPECTROMETER_BEFORE_PICK` 会分别读取激光。
@@ -191,6 +193,10 @@ HMI/调试服务语义：
 | `/spectrometer_cell/auto_mode` | 启动或恢复自动流程。`IDLE` 下进入 `WAIT_DISCHARGE`，`PAUSED` 下回到暂停前状态。 |
 | `/spectrometer_cell/step_once` | 单步请求，不会简单枚举 +1，也不会绕过测距、检测完成、清理和回原出料口等必要条件。 |
 | `/spectrometer_cell/request_reset` | 复位请求。`ERROR/ESTOP` 必须经过 `RESET`，普通中间状态也会先退出自动并复位。 |
+| `/spectrometer_cell/restart_gripper` | 仅在无活动动作、未持杯且光谱仪工位无杯时恢复夹爪驱动，不重启机械臂。 |
+
+生产夹爪预检只要求请求之后收到一帧新的电机 7 反馈且 `fault=0`。硬件层在反馈超时
+时最多执行一次夹爪复位并等待复位后的新帧；不使用位置、速度、力或进度门限。
 
 ## 外部硬件接口
 

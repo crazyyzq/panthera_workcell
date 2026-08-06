@@ -2,6 +2,7 @@
 #define PANTHERA_HPP
 
 #include "../hardware/robot.hpp"
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <array>
@@ -57,6 +58,9 @@ public:
      * @return 关节力矩数组（Nm）
      */
     std::vector<double> getCurrentTorque();
+
+    /** Exact vendor fault bytes for the six arm motors. */
+    std::array<std::uint8_t, 6> getCurrentFaults();
 
     /**
      * @brief 获取夹爪当前位置
@@ -123,6 +127,11 @@ public:
 
     /** Reset only the gripper drive without interrupting the six arm joints. */
     bool resetGripper();
+
+    /** Exact vendor status for the gripper drive; no motion heuristics. */
+    std::uint8_t getCurrentFaultGripper();
+    bool hasValidGripperFeedback();
+    std::uint64_t getCurrentFeedbackCountGripper();
 
     /**
      * @brief 夹爪控制（5参数MIT模式）

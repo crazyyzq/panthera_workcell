@@ -194,6 +194,15 @@ std::vector<double> Panthera::getCurrentTorque()
     return torques;
 }
 
+std::array<std::uint8_t, 6> Panthera::getCurrentFaults()
+{
+    std::array<std::uint8_t, 6> faults{};
+    for (std::size_t i = 0; i < faults.size(); ++i) {
+        faults[i] = Motors[i]->get_current_motor_state()->fault;
+    }
+    return faults;
+}
+
 double Panthera::getCurrentPosGripper()
 {
     auto state = Motors[gripper_id_ - 1]->get_current_motor_state();
@@ -293,6 +302,32 @@ bool Panthera::resetGripper()
     motor_send_cmd();
     motor_send_cmd();
     return true;
+}
+
+std::uint8_t Panthera::getCurrentFaultGripper()
+{
+    if (gripper_id_ <= 0 || static_cast<std::size_t>(gripper_id_) > Motors.size()) {
+        return 0xff;
+    }
+    return Motors[gripper_id_ - 1]->get_current_motor_state()->fault;
+}
+
+bool Panthera::hasValidGripperFeedback()
+{
+    if (gripper_id_ <= 0 || static_cast<std::size_t>(gripper_id_) > Motors.size()) {
+        return false;
+    }
+    const auto * state = Motors[gripper_id_ - 1]->get_current_motor_state();
+    return std::isfinite(state->position) && state->position != 999.0f;
+}
+
+std::uint64_t Panthera::getCurrentFeedbackCountGripper()
+{
+    if (gripper_id_ <= 0 || static_cast<std::size_t>(gripper_id_) > Motors.size()) {
+        return 0;
+    }
+    const auto count = Motors[gripper_id_ - 1]->get_current_motor_state()->num;
+    return count > 0 ? static_cast<std::uint64_t>(count) : 0;
 }
 
 bool Panthera::gripperControlMIT(double pos, double vel, double torque,

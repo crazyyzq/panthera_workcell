@@ -1585,6 +1585,10 @@ ActionResult RobotActions::initializeGripperAndJointStateInterfaces()
       node_->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     gripper_client_ = rclcpp_action::create_client<FollowTrajectory>(
       node_, kGripperAction, gripper_callback_group_);
+    gripper_ensure_client_ = node_->create_client<std_srvs::srv::SetBool>(
+      "/panthera_hardware/ensure_gripper",
+      rmw_qos_profile_services_default,
+      gripper_callback_group_);
 
   } catch (const std::exception & exc) {
     return ActionResult::fail(
@@ -2619,6 +2623,29 @@ ActionResult RobotActions::restartCleaningMotor()
     }
   }
   return ActionResult::ok("cleaning motor communication restored and stopped");
+}
+
+ActionResult RobotActions::ensureGripperReady(bool force_reset)
+{
+  if (config_.simulation.enabled) {
+    return ActionResult::ok("gripper ready check skipped in simulation");
+  }
+  if (!gripper_ensure_client_) {
+    return ActionResult::fail("gripper health client is not initialized");
+  }
+  if (!gripper_ensure_client_->wait_for_service(std::chrono::seconds(3))) {
+    return ActionResult::fail("gripper health service is unavailable");
+  }
+
+  const auto request = std::make_shared<std_srvs::srv::SetBool::Request>();
+  request->data = force_reset;
+  auto future = gripper_ensure_client_->async_send_request(request);
+  if (future.wait_for(std::chrono::seconds(4)) != std::future_status::ready) {
+    return ActionResult::fail("gripper health service timed out");
+  }
+  const auto response = future.get();
+  return response->success ?
+    ActionResult::ok(response->message) : ActionResult::fail(response->message);
 }
 
 ActionResult RobotActions::setCleaningMotorDuty(

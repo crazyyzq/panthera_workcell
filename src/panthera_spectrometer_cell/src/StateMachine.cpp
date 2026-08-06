@@ -231,6 +231,27 @@ State StateMachine::currentState() const
   return state_;
 }
 
+ActionResult StateMachine::recoverGripper()
+{
+  TickGuard guard(tick_running_);
+  if (!guard.owns()) {
+    return ActionResult::fail("gripper recovery rejected: state machine is busy");
+  }
+  if (context_.hasActiveTask || context_.cupInGripper || context_.spectrometerOccupied) {
+    return ActionResult::fail(
+      "gripper recovery rejected: active task or cup ownership is not empty");
+  }
+  const bool allowed_state =
+    state_ == State::INIT || state_ == State::IDLE ||
+    state_ == State::WAIT_DISCHARGE || state_ == State::PAUSED ||
+    state_ == State::ERROR;
+  if (!allowed_state) {
+    return ActionResult::fail(
+      "gripper recovery rejected in state " + toString(state_));
+  }
+  return robot_->ensureGripperReady(true);
+}
+
 ActionResult StateMachine::reloadConfig(const WorkcellConfig & config)
 {
   TickGuard guard(tick_running_);
@@ -590,6 +611,14 @@ void StateMachine::updateSelectTask(const Event &)
 {
   if (pending_outlets_.empty()) {
     transitionTo(State::WAIT_DISCHARGE, "no pending outlet");
+    return;
+  }
+
+  const auto gripper_ready = robot_->ensureGripperReady();
+  if (!gripper_ready.success) {
+    RCLCPP_WARN(
+      logger_, "SELECT_TASK waiting for gripper recovery: %s",
+      gripper_ready.message.c_str());
     return;
   }
 

@@ -140,10 +140,11 @@ This file contains durable repository context and operating rules for future age
   position-jump rejection. Do not restore the old median: at 100 Hz the quantized
   encoder produces many zero deltas and occasional real steps, so the median falsely
   reported long zero-velocity intervals during continuous physical motion.
-- `fixed_motion_bringup.launch.py` and `fixed_spectrometer_cell.launch.py` default
-  to MIT mode. Explicit `control_mode:=position_velocity` remains the immediate
-  rollback path. `hardware_moveit_rviz_mit.launch.py` is the MoveIt commissioning
-  entry point; production fixed-cache motion still does not start MoveGroup.
+- Production lifecycle startup (`scripts/start_workcell.sh` and the HMI start
+  button) defaults to `position_velocity`; the selected mode is persisted in
+  `.runtime/workcell.control_mode`. MIT remains an explicit commissioning option.
+  `hardware_moveit_rviz_mit.launch.py` is the MoveIt commissioning entry point;
+  production fixed-cache motion still does not start MoveGroup.
 - Legacy `panthera_task_framework` and `panthera_spectrometer_cell::RobotActions` still replan with MoveIt and are migration-only. Their default HMI launch flags are disabled so they do not run beside another legacy owner.
 - Target architecture: one motion server is the only arm trajectory owner. MoveIt is retained for commissioning, IK, collision checks and trajectory compilation, not per-step production planning.
 - Spectrometer positioning supports `fixed`, `sensor_optional`, and strict
@@ -247,6 +248,17 @@ This file contains durable repository context and operating rules for future age
 - The hardware bridge must not automatically reset motor 7 from gripper position,
   progress, or timeout heuristics. It streams the requested open/close target; only an
   explicit operator/service recovery may reset the gripper drive.
+- Before selecting each production cycle, `/panthera_hardware/ensure_gripper` requires
+  a new vendor motor-7 feedback frame with a valid position sentinel and zero fault.
+  A healthy drive is a no-op; an unhealthy drive is reset once and the retained target is immediately
+  resumed. The guarded HMI `恢复夹爪` command deliberately forces that same one-motor
+  reset so it also works when the drive reports a stale healthy status. Never add a
+  GPIO dependency, second SDK/serial owner, probe motion, or position/velocity/force/
+  progress threshold to this path. Operator recovery is allowed only with no active
+  task, held cup or occupied spectrometer. A temporarily unavailable local service
+  keeps `SELECT_TASK` waiting and retrying; it must not send production to `ERROR`.
+  If no new motor-7 frame arrives within the existing service wait, queue exactly one
+  reset and require a fresh post-reset frame before allowing the cycle to continue.
 - After brush cleaning, retract from `brush_center` to `brush_entry` along the
   calibrated cup axis, lift vertically in the pour orientation to
   `brush_entry_clear_high` (`z=0.45 m`), then make the wrist upright at
@@ -580,8 +592,9 @@ ros2 launch panthera_motion fixed_motion_bringup.launch.py default_speed_scale:=
 ```
 
 It starts hardware/controllers plus the Motion Server without MoveGroup. Do not start legacy real-motion nodes beside it.
-It defaults to `mit_gravity_compensation` with the commissioned `60/5.5` gains.
-Use `control_mode:=position_velocity` only for controlled rollback.
+Production must pass the selected mode explicitly; the one-key lifecycle default
+is `position_velocity`. Use `control_mode:=mit_gravity_compensation` only for an
+intentional MIT commissioning run.
 
 The full fixed-backend production entry point is:
 

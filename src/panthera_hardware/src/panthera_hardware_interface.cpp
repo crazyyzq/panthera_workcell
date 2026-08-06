@@ -191,6 +191,49 @@ bool parseFiniteScalar(const char * value, double & result)
   }
 }
 
+constexpr bool needsGripperReset(
+  bool ready, bool force_reset, std::uint64_t requested, std::uint64_t reset_sent)
+{
+  return (!ready || force_reset) && requested > reset_sent;
+}
+
+constexpr bool gripperFeedbackReady(bool feedback_valid, unsigned int fault)
+{
+  return feedback_valid && fault == 0;
+}
+
+constexpr bool hasRequiredFreshFeedback(
+  bool force_reset, std::uint64_t requested, std::uint64_t reset_sent,
+  std::uint64_t feedback_count, std::uint64_t feedback_count_at_request,
+  std::uint64_t feedback_count_at_reset)
+{
+  if (force_reset && reset_sent != requested) {
+    return false;
+  }
+  const std::uint64_t required_count =
+    reset_sent == requested ? feedback_count_at_reset : feedback_count_at_request;
+  return feedback_count > required_count;
+}
+
+static_assert(!needsGripperReset(true, false, 1, 0), "healthy preflight must not reset");
+static_assert(needsGripperReset(false, false, 1, 0), "unhealthy preflight resets once");
+static_assert(needsGripperReset(true, true, 1, 0), "operator recovery forces one reset");
+static_assert(!needsGripperReset(false, true, 1, 1), "one request must not reset-loop");
+static_assert(gripperFeedbackReady(true, 0), "valid fault-free feedback is ready");
+static_assert(!gripperFeedbackReady(true, 1), "a reported drive fault is not ready");
+static_assert(
+  !hasRequiredFreshFeedback(false, 1, 0, 7, 7, 0),
+  "cached healthy feedback must not pass preflight");
+static_assert(
+  hasRequiredFreshFeedback(false, 1, 0, 8, 7, 0),
+  "fresh healthy feedback confirms preflight");
+static_assert(
+  !hasRequiredFreshFeedback(true, 1, 1, 7, 0, 7),
+  "cached pre-reset feedback must not report recovery");
+static_assert(
+  hasRequiredFreshFeedback(true, 1, 1, 8, 0, 7),
+  "fresh post-reset feedback confirms recovery");
+
 }  // namespace
 
 class GravityModel
@@ -291,6 +334,138 @@ private:
   std::vector<pinocchio::JointIndex> joint_ids_;
 };
 
+PantheraHardwareInterface::~PantheraHardwareInterface()
+{
+  stopGripperService();
+}
+
+void PantheraHardwareInterface::startGripperService()
+{
+  if (gripper_service_node_) {
+    return;
+  }
+
+  gripper_service_node_ = std::make_shared<rclcpp::Node>("panthera_hardware_services");
+  gripper_ensure_service_ = gripper_service_node_->create_service<std_srvs::srv::SetBool>(
+    "/panthera_hardware/ensure_gripper",
+    [this](
+      const std::shared_ptr<std_srvs::srv::SetBool::Request> service_request,
+      std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+    {
+      std::lock_guard<std::mutex> lock(gripper_service_mutex_);
+      gripper_force_reset_.store(service_request->data);
+      gripper_request_feedback_count_.store(gripper_feedback_count_.load());
+      const std::uint64_t request = gripper_ensure_requested_.fetch_add(1) + 1;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (gripper_ensure_completed_.load() < request &&
+        std::chrono::steady_clock::now() < deadline)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+
+      const bool completed = gripper_ensure_completed_.load() >= request;
+      if (!completed) {
+        // A cached fault-free sample is not proof that motor 7 is still replying.
+        // Queue exactly one reset; the control loop confirms a fresh frame afterwards.
+        gripper_force_reset_.store(true);
+      }
+      response->success = completed && gripper_ensure_succeeded_.load();
+      std::ostringstream message;
+      message << (response->success ? "gripper ready" : "gripper recovery failed")
+              << ": fault=0x" << std::hex << gripper_fault_.load();
+      if (!completed) {
+        message << " service timeout; one reset queued";
+      } else if (gripper_reset_sent_.load() == request) {
+        message << " reset=performed";
+      } else {
+        message << " reset=not-needed";
+      }
+      response->message = message.str();
+    });
+
+  motor_status_publisher_ = gripper_service_node_->create_publisher<std_msgs::msg::String>(
+    "/panthera_hardware/motor_status", 10);
+  motor_status_timer_ = gripper_service_node_->create_wall_timer(
+    std::chrono::milliseconds(200),
+    [this]() {
+      std_msgs::msg::String message;
+      std::ostringstream payload;
+      payload << "{\"names\":[\"joint1\",\"joint2\",\"joint3\",\"joint4\","
+                 "\"joint5\",\"joint6\",\"L_finger_joint\",\"R_finger_joint\"],"
+                 "\"faults\":[";
+      for (std::size_t i = 0; i < arm_faults_.size(); ++i) {
+        payload << (i == 0 ? "" : ",") << arm_faults_[i].load();
+      }
+      payload << ',' << gripper_fault_.load() << ',' << gripper_fault_.load() << "]}";
+      message.data = payload.str();
+      motor_status_publisher_->publish(message);
+    });
+
+  gripper_service_executor_ =
+    std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+  gripper_service_executor_->add_node(gripper_service_node_);
+  gripper_service_thread_ = std::thread([this]() {
+      gripper_service_executor_->spin();
+    });
+}
+
+void PantheraHardwareInterface::stopGripperService()
+{
+  if (gripper_service_executor_) {
+    gripper_service_executor_->cancel();
+  }
+  if (gripper_service_thread_.joinable()) {
+    gripper_service_thread_.join();
+  }
+  motor_status_timer_.reset();
+  motor_status_publisher_.reset();
+  gripper_ensure_service_.reset();
+  gripper_service_executor_.reset();
+  gripper_service_node_.reset();
+}
+
+void PantheraHardwareInterface::processGripperEnsureRequest()
+{
+  const std::uint64_t request = gripper_ensure_requested_.load();
+  if (request <= gripper_ensure_completed_.load()) {
+    return;
+  }
+
+  const bool ready = gripperFeedbackReady(
+    gripper_feedback_valid_.load(), gripper_fault_.load());
+  const bool force_reset = gripper_force_reset_.load();
+  const std::uint64_t reset_sent = gripper_reset_sent_.load();
+  const bool fresh_feedback = hasRequiredFreshFeedback(
+    force_reset, request, reset_sent, gripper_feedback_count_.load(),
+    gripper_request_feedback_count_.load(),
+    gripper_reset_feedback_count_.load());
+  if (ready && fresh_feedback) {
+    gripper_ensure_succeeded_.store(true);
+    gripper_ensure_completed_.store(request);
+    return;
+  }
+
+  if (!needsGripperReset(ready, force_reset, request, reset_sent)) {
+    return;
+  }
+
+  gripper_reset_feedback_count_.store(gripper_feedback_count_.load());
+  const bool reset_ok = robot_ && robot_->resetGripper();
+  gripper_reset_sent_.store(request);
+  if (!reset_ok) {
+    gripper_ensure_succeeded_.store(false);
+    gripper_ensure_completed_.store(request);
+    RCLCPP_ERROR(
+      rclcpp::get_logger("PantheraHardwareInterface"),
+      "Vendor SDK rejected explicit gripper reset request");
+    return;
+  }
+  RCLCPP_WARN(
+    rclcpp::get_logger("PantheraHardwareInterface"),
+    "Explicit gripper recovery sent: fault=0x%02X; retained target unchanged",
+    gripper_fault_.load());
+}
+
 hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
   const hardware_interface::HardwareInfo & info)
 {
@@ -334,6 +509,10 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_init(
       rclcpp::get_logger("PantheraHardwareInterface"),
       "Unsupported control_mode '%s'", control_mode_.c_str());
     return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  for (std::size_t i = 0; i < arm_faults_.size(); ++i) {
+    arm_faults_[i].store(0xff);
   }
 
   // Get gripper rad to meter conversion factor
@@ -617,6 +796,9 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
       hw_velocities_[6] = robot_->getCurrentVelGripper() * gripper_rad_to_m_;
       hw_efforts_[6] = robot_->getCurrentTorqueGripper();
       hw_commands_positions_[6] = hw_positions_[6];  // Initialize commands to current position
+      gripper_fault_.store(robot_->getCurrentFaultGripper());
+      gripper_feedback_valid_.store(robot_->hasValidGripperFeedback());
+      gripper_feedback_count_.store(robot_->getCurrentFeedbackCountGripper());
     }
 
     // R_finger_joint (8th joint, index 7) is a mimic joint that follows L_finger_joint
@@ -638,6 +820,7 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_configure(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
+  startGripperService();
   RCLCPP_INFO(rclcpp::get_logger("PantheraHardwareInterface"), "Successfully configured!");
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -728,6 +911,9 @@ hardware_interface::CallbackReturn PantheraHardwareInterface::on_activate(
     {
       double gripper_rad = robot_->getCurrentPosGripper();
       hw_commands_positions_[6] = gripper_rad * gripper_rad_to_m_;
+      gripper_fault_.store(robot_->getCurrentFaultGripper());
+      gripper_feedback_valid_.store(robot_->hasValidGripperFeedback());
+      gripper_feedback_count_.store(robot_->getCurrentFeedbackCountGripper());
     }
 
     // R_finger_joint (8th joint, index 7) is a mimic joint that follows L_finger_joint
@@ -878,6 +1064,7 @@ hardware_interface::return_type PantheraHardwareInterface::read(
     // Read 6 arm joint states
     auto positions = robot_->getCurrentPos();
     auto torques = robot_->getCurrentTorque();
+    auto faults = robot_->getCurrentFaults();
     if (positions.size() < 6 || torques.size() < 6)
     {
       RCLCPP_ERROR_THROTTLE(
@@ -888,6 +1075,10 @@ hardware_interface::return_type PantheraHardwareInterface::read(
         positions.size(),
         torques.size());
       return hardware_interface::return_type::ERROR;
+    }
+
+    for (std::size_t i = 0; i < arm_faults_.size(); ++i) {
+      arm_faults_[i].store(faults[i]);
     }
 
     const bool arm_state_valid = std::all_of(
@@ -954,6 +1145,9 @@ hardware_interface::return_type PantheraHardwareInterface::read(
         gripper_velocity,
         state_velocity_gripper_deadband_m_sec_);
       hw_efforts_[6] = robot_->getCurrentTorqueGripper();
+      gripper_fault_.store(robot_->getCurrentFaultGripper());
+      gripper_feedback_valid_.store(robot_->hasValidGripperFeedback());
+      gripper_feedback_count_.store(robot_->getCurrentFeedbackCountGripper());
     }
 
     // R_finger_joint (8th joint, index 7) is a mimic joint that follows L_finger_joint
@@ -988,6 +1182,7 @@ hardware_interface::return_type PantheraHardwareInterface::write(
         "Suppress arm write while motors are not ready");
       return hardware_interface::return_type::OK;
     }
+    processGripperEnsureRequest();
     // Extract first 6 joints for arm control
     std::vector<double> arm_positions(hw_commands_positions_.begin(),
                                        hw_commands_positions_.begin() + 6);

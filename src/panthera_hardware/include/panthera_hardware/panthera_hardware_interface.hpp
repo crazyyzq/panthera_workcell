@@ -2,9 +2,13 @@
 #define PANTHERA_HARDWARE__PANTHERA_HARDWARE_INTERFACE_HPP_
 
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hardware_interface/handle.hpp"
@@ -12,9 +16,13 @@
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "rclcpp/clock.hpp"
+#include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/macros.hpp"
+#include "rclcpp/node.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 
 // Forward declaration
 namespace panthera
@@ -30,6 +38,8 @@ class PantheraHardwareInterface : public hardware_interface::SystemInterface
 {
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS(PantheraHardwareInterface)
+
+  ~PantheraHardwareInterface() override;
 
   hardware_interface::CallbackReturn on_init(
     const hardware_interface::HardwareInfo & info) override;
@@ -118,6 +128,29 @@ private:
     size_t joint_index,
     double raw_velocity,
     double deadband);
+
+  void startGripperService();
+  void stopGripperService();
+  void processGripperEnsureRequest();
+
+  std::shared_ptr<rclcpp::Node> gripper_service_node_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> gripper_service_executor_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr gripper_ensure_service_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr motor_status_publisher_;
+  rclcpp::TimerBase::SharedPtr motor_status_timer_;
+  std::thread gripper_service_thread_;
+  std::mutex gripper_service_mutex_;
+  std::array<std::atomic<unsigned int>, 6> arm_faults_;
+  std::atomic<unsigned int> gripper_fault_{0xff};
+  std::atomic<bool> gripper_feedback_valid_{false};
+  std::atomic<std::uint64_t> gripper_feedback_count_{0};
+  std::atomic<bool> gripper_force_reset_{false};
+  std::atomic<std::uint64_t> gripper_request_feedback_count_{0};
+  std::atomic<std::uint64_t> gripper_ensure_requested_{0};
+  std::atomic<std::uint64_t> gripper_reset_sent_{0};
+  std::atomic<std::uint64_t> gripper_reset_feedback_count_{0};
+  std::atomic<std::uint64_t> gripper_ensure_completed_{0};
+  std::atomic<bool> gripper_ensure_succeeded_{false};
 };
 
 }  // namespace panthera_hardware

@@ -312,7 +312,85 @@ function renderFlow(activeState) {
   });
 }
 
-function renderJoints(jointState) {
+function formatMotorByte(value) {
+  const byte = Number(value);
+  if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+    return '--';
+  }
+  return `0x${byte.toString(16).padStart(2, '0').toUpperCase()}`;
+}
+
+// Source: 高擎电机 CAN 协议解析 v2.0.0, 表3-电机报错代码说明.
+const motorFaultLabels = {
+  1: ['DMA数据流传输错误', '硬件问题'],
+  2: ['DMA数据流FIFO错误', '硬件问题'],
+  3: ['UART溢出错误', '硬件问题'],
+  4: ['UART帧错误', '硬件问题'],
+  5: ['UART噪声错误', '硬件问题'],
+  6: ['UART缓冲区溢出错误', '硬件问题'],
+  7: ['UART奇偶校验错误', '硬件问题'],
+  32: ['校准故障', '校准过程中，编码器无法感知到磁铁'],
+  33: ['电机驱动故障', '多为欠压、电流不足'],
+  34: ['过压', '母线电压过大'],
+  35: ['编码器故障', '编码器读数错误'],
+  36: ['电机未校准', '电机还未进行校准（电机出厂都会校准一次）'],
+  37: ['PWM周期过限', '一般是内部固件错误'],
+  38: ['温度过高', '已超过最大配置温度'],
+  39: ['起始位置超出限制', '在位置界限之外尝试启动位置控制（出厂默认无位置限制）'],
+  40: ['电压过低', '电压太低'],
+  41: ['配置已更改', '在操作期间更改了需要停止的配置值'],
+  42: ['角度无效', '没有可用的有效换相编码器'],
+  43: ['位置无效', '没有可用的有效输出编码器'],
+  44: ['驱动器使能故障', '驱动芯片异常'],
+  45: ['停止位置使用错误', '程序不支持在设置停止位置的同时，还设置加速度或速度限制'],
+  46: ['时序错误', '系统检测到操作或事件未在预期的时间窗口内完成'],
+  47: ['反电动势前馈错误', '使用反电动势前馈必须使用加速度限制'],
+};
+
+function configuredMotorMode(name, activeMode) {
+  if (name === 'R_finger_joint') {
+    return '从动';
+  }
+  if (name === 'L_finger_joint') {
+    return '位置速度';
+  }
+  return {
+    position_velocity: '位置速度',
+    mit_gravity_compensation: 'MIT 重力补偿',
+  }[activeMode] || '控制 --';
+}
+
+function formatMotorFault(value) {
+  const fault = Number(value);
+  if (!Number.isInteger(fault) || fault < 0 || fault > 0xff) {
+    return {className: 'pill pill-warn', text: '状态 --', detail: '未收到有效故障码'};
+  }
+  if (fault === 0) {
+    return {className: 'pill pill-ok', text: '正常', detail: '操作成功，没有错误发生'};
+  }
+  const known = motorFaultLabels[fault];
+  if (known) {
+    return {
+      className: 'pill pill-error',
+      text: `${known[0]} ${formatMotorByte(fault)}`,
+      detail: known[1],
+    };
+  }
+  if (fault >= 8 && fault <= 31) {
+    return {
+      className: 'pill pill-error',
+      text: `保留故障码 ${formatMotorByte(fault)}`,
+      detail: '高擎电机 CAN 协议 v2.0.0 将此范围标记为保留',
+    };
+  }
+  return {
+    className: 'pill pill-error',
+    text: `未知故障 ${formatMotorByte(fault)}`,
+    detail: '高擎电机 CAN 协议 v2.0.0 未定义此故障码',
+  };
+}
+
+function renderJoints(jointState, motorStatus, workcellControl) {
   const list = $('jointList');
   if (!list) {
     return;
@@ -321,6 +399,9 @@ function renderJoints(jointState) {
 
   const names = jointState.names || [];
   const positions = jointState.positions || [];
+  const statusAge = Number(motorStatus.age_sec);
+  const statuses = Number.isFinite(statusAge) && statusAge <= 2.0 ? (motorStatus.joints || {}) : {};
+  const activeMode = workcellControl.active_control_mode || '';
   if (!names.length) {
     const empty = document.createElement('div');
     empty.className = 'muted';
@@ -334,7 +415,6 @@ function renderJoints(jointState) {
     const row = document.createElement('div');
     row.className = 'joint-row';
 
-    const left = document.createElement('div');
     const title = document.createElement('div');
     title.className = 'joint-name';
     title.textContent = name;
@@ -344,13 +424,24 @@ function renderJoints(jointState) {
     const normalized = Math.max(0, Math.min(100, 50 + pos * 20));
     fill.style.width = `${normalized}%`;
     bar.appendChild(fill);
-    left.appendChild(title);
-    left.appendChild(bar);
 
     const right = document.createElement('div');
-    right.textContent = pos.toFixed(3);
+    right.className = 'joint-value';
+    const status = statuses[name] || {};
+    right.textContent = `${pos.toFixed(3)} · `;
+    const modeLabel = document.createElement('span');
+    modeLabel.className = 'pill motor-mode';
+    modeLabel.textContent = configuredMotorMode(name, activeMode);
+    right.appendChild(modeLabel);
+    const faultLabel = document.createElement('span');
+    const faultView = formatMotorFault(status.fault);
+    faultLabel.className = faultView.className;
+    faultLabel.textContent = faultView.text;
+    faultLabel.title = faultView.detail;
+    right.appendChild(faultLabel);
 
-    row.appendChild(left);
+    row.appendChild(title);
+    row.appendChild(bar);
     row.appendChild(right);
     list.appendChild(row);
   });
@@ -366,7 +457,7 @@ function commandRule(command, services, state, context) {
   }
 
   if (latestSnapshot?.debug?.active &&
-      !['manual_mode', 'clear_estop', 'request_reset', 'restart_cleaning_motor'].includes(command)) {
+      !['manual_mode', 'clear_estop', 'request_reset', 'restart_cleaning_motor', 'restart_gripper'].includes(command)) {
     return {enabled: false, reason: '点位调试中，生产命令已锁定'};
   }
 
@@ -382,6 +473,16 @@ function commandRule(command, services, state, context) {
     return {enabled: false, reason: 'ESTOP 中禁止其他动作'};
   }
 
+  if (command === 'restart_gripper') {
+    const empty = !hasActiveTask(context) && !context?.cup_in_gripper &&
+      !context?.spectrometer_occupied;
+    const allowedState = ['INIT', 'IDLE', 'WAIT_DISCHARGE', 'PAUSED', 'ERROR'].includes(state);
+    return {
+      enabled: empty && allowedState,
+      reason: empty && allowedState ? '只复位夹爪电机，不移动机械臂' : '有活动任务或杯子占位，禁止复位夹爪',
+    };
+  }
+
   if (isError(state)) {
     if (command === 'request_reset') {
       return {enabled: true, reason: '错误状态允许人工复位'};
@@ -389,7 +490,7 @@ function commandRule(command, services, state, context) {
     if (command === 'restart_cleaning_motor') {
       return {enabled: true, reason: '清洁电机重新上电后，重连驱动并恢复空任务错误'};
     }
-    return {enabled: false, reason: 'ERROR 中只允许复位或恢复清洁电机'};
+    return {enabled: false, reason: 'ERROR 中只允许复位或设备恢复'};
   }
 
   if (command === 'clear_estop') {
@@ -1378,7 +1479,8 @@ function render(snapshot) {
   renderLaser(snapshot, context);
   renderToolPose(snapshot);
   renderSignal(snapshot.external_signal || {});
-  renderJoints(snapshot.joint_state || {});
+  renderJoints(
+    snapshot.joint_state || {}, snapshot.motor_status || {}, snapshot.workcell_control || {});
   setText('jointAge', formatAge((snapshot.joint_state || {}).age_sec));
   renderServices(snapshot.services || {}, state, context);
   renderWorkcellControl(snapshot.workcell_control || {});

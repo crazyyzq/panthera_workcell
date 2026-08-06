@@ -35,6 +35,7 @@ public:
 
   void tick();
   State currentState() const;
+  ActionResult recoverGripper();
   ActionResult reloadConfig(const WorkcellConfig & config);
 
 private:

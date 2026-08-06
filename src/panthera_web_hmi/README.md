@@ -17,6 +17,7 @@ Web UI <-> HTTP/SSE <-> panthera_web_hmi ROS2 node <-> ROS2 topics/services
 - 急停按钮按现场工业急停风格设计，点击后立即发送急停请求，不做二次确认。
 - 操作台按安全、自动运行、流程信号模拟和点位示教分区。
 - 点位示教支持 XYZ 和基坐标系 Roll/Pitch/Yaw 点动、夹爪、毛刷及实测点位热保存。
+- 提供独立“恢复夹爪”按钮，仅恢复夹爪驱动，不重启机械臂或生产状态机。
 - 进入调试后无需前往点位即可修改毛刷清洁时间和光谱扫描完成时间；保存采用原子
   备份、运行时热重载和失败自动回滚。
 - 高风险动作有确认弹层，按钮会根据 ESTOP、ERROR、PAUSED、动作中等状态自动禁用。
@@ -41,6 +42,11 @@ Web HMI 的急停是 ROS2 软件急停入口，真实产线仍必须保留硬接
 - `人工复位`：急停清除后或 `ERROR` 状态开放。
 - `启动自动` / `恢复自动`：只在安全空闲、等待出料或暂停状态开放。
 - `点位示教`：仅允许空任务、未持杯且工位未占用时进入，进入后自动保持 `PAUSED`。
+- `恢复夹爪`：仅允许无活动动作、未持杯且光谱仪工位无杯时点击。
+
+关节卡片的 `fault=0` 显示绿色正常，非零值显示红色故障及已知厂商含义。控制模式
+显示来自当前工作站启动配置（默认 `position_velocity`），不会把厂商原始状态帧
+类型 `0x0A` 误当成 MIT 控制模式。
 
 ## 启动
 
@@ -154,6 +160,7 @@ Content-Type: application/json
 | `clear_estop` | `/spectrometer_cell/clear_estop` |
 | `request_reset` | `/spectrometer_cell/request_reset` |
 | `restart_cleaning_motor` | `/spectrometer_cell/restart_cleaning_motor` |
+| `restart_gripper` | `/spectrometer_cell/restart_gripper` |
 | `manual_mode` | `/spectrometer_cell/manual_mode` |
 | `auto_mode` | `/spectrometer_cell/auto_mode` |
 
@@ -168,6 +175,7 @@ Content-Type: application/json
 | `/workflow/status` | `panthera_interfaces/msg/WorkflowStatus` | YAML workflow 状态 |
 | `/workflow/external_signal` | `panthera_interfaces/msg/ExternalSignal` | RS485/IO 流程信号 |
 | `/joint_states` | `sensor_msgs/msg/JointState` | 关节位置 |
+| `/panthera_hardware/motor_status` | `std_msgs/msg/String` | 各关节厂商 fault 字节；控制模式取当前工作站启动配置 |
 | `rgb_topic` 参数 | `sensor_msgs/msg/Image` | RGB 图像 |
 | `depth_topic` 参数 | `sensor_msgs/msg/Image` | 深度图像 |
 

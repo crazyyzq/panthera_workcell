@@ -15,6 +15,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 
 #include "panthera_rs485/modbus_rtu.hpp"
@@ -48,6 +49,7 @@ public:
   double speedScale() const;
   ActionResult setBrush(bool enabled, double speed_percent);
   ActionResult restartCleaningMotor();
+  ActionResult ensureGripperReady(bool force_reset = false);
   ActionResult openGripper();
   ActionResult closeGripper();
 
@@ -128,6 +130,7 @@ private:
   OutletId active_outlet_{OutletId::NONE};
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr gripper_client_;
   rclcpp::CallbackGroup::SharedPtr gripper_callback_group_;
+  rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr gripper_ensure_client_;
   rclcpp::CallbackGroup::SharedPtr joint_state_callback_group_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   mutable std::mutex joint_state_mutex_;

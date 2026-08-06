@@ -63,6 +63,31 @@ def test_hmi_separates_debug_entry_from_point_motion():
     assert "'/api/debug/goto', {point_name: point}" in javascript
 
 
+def test_hmi_groups_xy_and_z_jog_controls_separately():
+    static_root = Path(__file__).parents[1] / 'static'
+    html = (static_root / 'index.html').read_text(encoding='utf-8')
+
+    assert 'class="xy-jog-grid"' in html
+    assert 'class="z-jog-grid"' in html
+    assert html.index('平面 X / Y') < html.index('高度 Z')
+    assert html.index('高度 Z') < html.index('上 +Z') < html.index('下 -Z')
+
+
+def test_hmi_exposes_guarded_gripper_recovery_next_to_cleaning_recovery():
+    static_root = Path(__file__).parents[1] / 'static'
+    html = (static_root / 'index.html').read_text(encoding='utf-8')
+    javascript = (static_root / 'assets' / 'app.js').read_text(encoding='utf-8')
+    node_source = inspect.getsource(WebHmiNode)
+
+    cleaning_index = html.index('data-command="restart_cleaning_motor"')
+    gripper_index = html.index('data-command="restart_gripper"')
+    assert cleaning_index < gripper_index
+    assert '只复位夹爪电机，不移动机械臂' in html
+    assert "command === 'restart_gripper'" in javascript
+    assert "'restart_cleaning_motor', 'restart_gripper'" in node_source
+    assert '/spectrometer_cell/restart_gripper' in node_source
+
+
 def test_hmi_exposes_hot_reloadable_process_timing():
     static_root = Path(__file__).parents[1] / 'static'
     html = (static_root / 'index.html').read_text(encoding='utf-8')
@@ -72,6 +97,36 @@ def test_hmi_exposes_hot_reloadable_process_timing():
     assert 'id="debugScanDurationSec"' in html
     assert "'/api/debug/process_timing'" in javascript
     assert "'/api/debug/process_timing'" in inspect.getsource(HmiRequestHandler.do_POST)
+
+
+def test_hmi_exposes_validated_motor_status_and_highlights_laser_calibration():
+    store = HmiStateStore()
+    assert store.set_motor_status(SimpleNamespace(data=json.dumps({
+        'names': ['joint1', 'L_finger_joint'],
+        'faults': [0, 3],
+    }))) is True
+    assert store.set_motor_status(SimpleNamespace(data='not json')) is False
+    status = store.snapshot()['motor_status']['joints']
+    assert status['joint1'] == {'fault': 0}
+    assert status['L_finger_joint'] == {'fault': 3}
+
+    static_root = Path(__file__).parents[1] / 'static'
+    html = (static_root / 'index.html').read_text(encoding='utf-8')
+    javascript = (static_root / 'assets' / 'app.js').read_text(encoding='utf-8')
+    assert 'id="calibrateLaser" class="cmd warn"' in html
+    assert "32: ['校准故障', '校准过程中，编码器无法感知到磁铁']" in javascript
+    assert "34: ['过压', '母线电压过大']" in javascript
+    assert "38: ['温度过高', '已超过最大配置温度']" in javascript
+    assert "40: ['电压过低', '电压太低']" in javascript
+    assert "44: ['驱动器使能故障', '驱动芯片异常']" in javascript
+    assert "text: '正常', detail: '操作成功，没有错误发生'" in javascript
+    assert 'text: `保留故障码 ${formatMotorByte(fault)}`' in javascript
+    assert 'text: `未知故障 ${formatMotorByte(fault)}`' in javascript
+    assert 'faultLabel.title = faultView.detail' in javascript
+    assert "position_velocity: '位置速度'" in javascript
+    assert "mit_gravity_compensation: 'MIT 重力补偿'" in javascript
+    assert 'configuredMotorMode(name, activeMode)' in javascript
+    assert 'formatMotorMode' not in javascript
 
 
 def test_laser_filter_reports_stable_median_and_axis_offset():

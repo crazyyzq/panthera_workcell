@@ -96,7 +96,7 @@ ros2 service call /gpio_io_node/set_input panthera_interfaces/srv/SetDigitalInpu
 
 ```bash
 sudo -E bash -c '
-cd /home/b1/Panthera-HT_ROS2-humble
+cd /home/b1/panthera_workcell_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch panthera_io gpio_io.launch.py \

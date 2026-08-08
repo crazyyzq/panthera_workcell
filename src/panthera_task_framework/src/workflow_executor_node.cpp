@@ -209,7 +209,9 @@ public:
       gripper_min_position_,
       gripper_max_position_);
     RCLCPP_INFO(logger_, "workflow_status_topic: %s", workflow_status_topic_.c_str());
-    RCLCPP_INFO(logger_, "services: /run_workflow, /run_default_workflow, /reload_workflows, /stop_workflow");
+    RCLCPP_INFO(
+      logger_,
+      "services: /run_workflow, /run_default_workflow, /reload_workflows, /stop_workflow");
 
     publishWorkflowStatus(
       "",
@@ -266,26 +268,26 @@ private:
 
       auto source = std::make_shared<PoseSource>();
       source->name = name;
-    source->topic = source_cfg["topic"].as<std::string>();
-    source->max_age_sec = readDouble(source_cfg, "max_age_sec", 1.0);
-    source->received_time = node_->now();
+      source->topic = source_cfg["topic"].as<std::string>();
+      source->max_age_sec = readDouble(source_cfg, "max_age_sec", 1.0);
+      source->received_time = node_->now();
 
-    rclcpp::SubscriptionOptions options;
-    options.callback_group = input_callback_group_;
+      rclcpp::SubscriptionOptions options;
+      options.callback_group = input_callback_group_;
 
-    source->subscription = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
-      source->topic,
-      10,
-      [this, source](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-        std::lock_guard<std::mutex> lock(source->mutex);
+      source->subscription = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
+        source->topic,
+        10,
+        [this, source](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+          std::lock_guard<std::mutex> lock(source->mutex);
           source->latest_pose = *msg;
           if (source->latest_pose.header.frame_id.empty()) {
             source->latest_pose.header.frame_id = base_frame_;
-        }
-        source->received_time = node_->now();
-        source->has_pose = true;
-      },
-      options);
+          }
+          source->received_time = node_->now();
+          source->has_pose = true;
+        },
+        options);
 
       pose_sources_[name] = source;
 
@@ -536,23 +538,23 @@ private:
       return it->second;
     }
 
-  auto source = std::make_shared<BoolSignalSource>();
-  source->topic = topic;
-  source->received_time = node_->now();
+    auto source = std::make_shared<BoolSignalSource>();
+    source->topic = topic;
+    source->received_time = node_->now();
 
-  rclcpp::SubscriptionOptions options;
-  options.callback_group = input_callback_group_;
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = input_callback_group_;
 
-  source->subscription = node_->create_subscription<std_msgs::msg::Bool>(
-    topic,
-    10,
-    [this, source](const std_msgs::msg::Bool::SharedPtr msg) {
-      std::lock_guard<std::mutex> source_lock(source->mutex);
-      source->latest_value = msg->data;
-      source->received_time = node_->now();
-      source->has_value = true;
-    },
-    options);
+    source->subscription = node_->create_subscription<std_msgs::msg::Bool>(
+      topic,
+      10,
+      [this, source](const std_msgs::msg::Bool::SharedPtr msg) {
+        std::lock_guard<std::mutex> source_lock(source->mutex);
+        source->latest_value = msg->data;
+        source->received_time = node_->now();
+        source->has_value = true;
+      },
+      options);
 
     bool_signal_sources_[topic] = source;
     RCLCPP_INFO(logger_, "bool signal source: topic=%s", topic.c_str());
@@ -568,32 +570,32 @@ private:
       return it->second;
     }
 
-  auto source = std::make_shared<ExternalSignalSource>();
-  source->topic = topic;
-  source->received_time = node_->now();
+    auto source = std::make_shared<ExternalSignalSource>();
+    source->topic = topic;
+    source->received_time = node_->now();
 
-  rclcpp::SubscriptionOptions options;
-  options.callback_group = input_callback_group_;
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = input_callback_group_;
 
-  source->subscription = node_->create_subscription<ExternalSignal>(
-    topic,
-    10,
-    [this, source](const ExternalSignal::SharedPtr msg) {
-      std::lock_guard<std::mutex> source_lock(source->mutex);
-      source->latest_signal = *msg;
-      source->received_time = node_->now();
-      source->has_signal = true;
-      RCLCPP_INFO(
-        logger_,
-        "[SIGNAL] received external topic '%s' source=%s name=%s code=%d active=%s workflow=%s",
-        source->topic.c_str(),
-        msg->source.c_str(),
-        msg->name.c_str(),
-        msg->code,
-        msg->active ? "true" : "false",
-        msg->workflow_name.c_str());
-    },
-    options);
+    source->subscription = node_->create_subscription<ExternalSignal>(
+      topic,
+      10,
+      [this, source](const ExternalSignal::SharedPtr msg) {
+        std::lock_guard<std::mutex> source_lock(source->mutex);
+        source->latest_signal = *msg;
+        source->received_time = node_->now();
+        source->has_signal = true;
+        RCLCPP_INFO(
+          logger_,
+          "[SIGNAL] received external topic '%s' source=%s name=%s code=%d active=%s workflow=%s",
+          source->topic.c_str(),
+          msg->source.c_str(),
+          msg->name.c_str(),
+          msg->code,
+          msg->active ? "true" : "false",
+          msg->workflow_name.c_str());
+      },
+      options);
 
     external_signal_sources_[topic] = source;
     RCLCPP_INFO(logger_, "external signal source: topic=%s", topic.c_str());
@@ -636,8 +638,8 @@ private:
       {
         std::lock_guard<std::mutex> lock(source->mutex);
         if (source->has_value &&
-            source->latest_value == expected &&
-            isFreshEnough(source->received_time, start, fresh, max_age_sec))
+          source->latest_value == expected &&
+          isFreshEnough(source->received_time, start, fresh, max_age_sec))
         {
           RCLCPP_INFO(
             logger_,
@@ -718,18 +720,17 @@ private:
         if (source->has_signal) {
           const bool matches = externalSignalMatches(source->latest_signal, step);
           const bool fresh_enough = isFreshEnough(source->received_time, start, fresh, max_age_sec);
-          if (matches && fresh_enough)
-        {
-          RCLCPP_INFO(
-            logger_,
-            "[SIGNAL] external topic '%s' matched name=%s code=%d active=%s workflow=%s",
-            topic.c_str(),
-            source->latest_signal.name.c_str(),
-            source->latest_signal.code,
-            source->latest_signal.active ? "true" : "false",
-            source->latest_signal.workflow_name.c_str());
-          return true;
-        }
+          if (matches && fresh_enough) {
+            RCLCPP_INFO(
+              logger_,
+              "[SIGNAL] external topic '%s' matched name=%s code=%d active=%s workflow=%s",
+              topic.c_str(),
+              source->latest_signal.name.c_str(),
+              source->latest_signal.code,
+              source->latest_signal.active ? "true" : "false",
+              source->latest_signal.workflow_name.c_str());
+            return true;
+          }
 
           if ((node_->now() - last_diagnostic).seconds() >= 1.0) {
             std::string expected_source = readString(step, "signal_source", "");
@@ -981,7 +982,9 @@ private:
     bool execute_step,
     std::string & error_msg)
   {
-    RCLCPP_INFO(logger_, "[ARM] %s -> joint target with %zu joints", name.c_str(), joint_positions.size());
+    RCLCPP_INFO(
+      logger_, "[ARM] %s -> joint target with %zu joints",
+      name.c_str(), joint_positions.size());
 
     arm_->setStartStateToCurrentState();
     if (!arm_->setJointValueTarget(joint_positions)) {
@@ -1191,7 +1194,10 @@ private:
     std::string & error_msg)
   {
     if (!readBool(step, "enabled", true)) {
-      RCLCPP_INFO(logger_, "[STEP] skip disabled step: %s", readString(step, "name", "<unnamed>").c_str());
+      RCLCPP_INFO(
+        logger_, "[STEP] skip disabled step: %s", readString(
+          step, "name",
+          "<unnamed>").c_str());
       return true;
     }
 
@@ -1559,11 +1565,12 @@ private:
     }
 
     message = "started workflow '" + workflow_name + "'";
-    std::thread([this, workflow_name, dry_run]() {
-      std::string result_message;
-      runWorkflow(workflow_name, dry_run, result_message);
-      workflow_running_.store(false);
-    }).detach();
+    std::thread(
+      [this, workflow_name, dry_run]() {
+        std::string result_message;
+        runWorkflow(workflow_name, dry_run, result_message);
+        workflow_running_.store(false);
+      }).detach();
     return true;
   }
 

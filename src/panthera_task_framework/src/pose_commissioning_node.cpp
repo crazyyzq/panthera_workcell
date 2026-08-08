@@ -254,7 +254,9 @@ public:
     try {
       config_ = loadProbeConfig(config_file_);
     } catch (const std::exception & exc) {
-      RCLCPP_FATAL(get_logger(), "failed to load probe config '%s': %s", config_file_.c_str(), exc.what());
+      RCLCPP_FATAL(
+        get_logger(), "failed to load probe config '%s': %s",
+        config_file_.c_str(), exc.what());
       return false;
     }
 
@@ -319,13 +321,16 @@ public:
             continue;
           }
 
-          const bool ok = planFromStart(start_name, start_positions, target, orientation_it->second);
+          const bool ok =
+            planFromStart(start_name, start_positions, target, orientation_it->second);
           if (ok) {
             ++success_count;
           } else {
             ++fail_count;
           }
-          writeResult(result_stream, start_name, start_positions, target, orientation_it->second, ok);
+          writeResult(
+            result_stream, start_name, start_positions, target, orientation_it->second,
+            ok);
         }
       }
     }
@@ -407,7 +412,8 @@ private:
            << "\"target\":\"" << jsonEscape(target.name) << "\","
            << "\"orientation\":\"" << jsonEscape(orientation.name) << "\","
            << "\"xyz\":[" << target.xyz[0] << "," << target.xyz[1] << "," << target.xyz[2] << "],"
-           << "\"rpy\":[" << orientation.rpy[0] << "," << orientation.rpy[1] << "," << orientation.rpy[2] << "]"
+           << "\"rpy\":[" << orientation.rpy[0] << "," << orientation.rpy[1] << "," <<
+      orientation.rpy[2] << "]"
            << "}\n";
   }
 

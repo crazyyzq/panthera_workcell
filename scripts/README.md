@@ -6,7 +6,7 @@ The Web HMI starts automatically with Ubuntu and remains available when the
 production workcell is stopped:
 
 ```text
-http://192.168.137.186:8080
+http://127.0.0.1:8080
 ```
 
 Use the **启动工作站**, **安全停止**, and **安全重启** buttons in the HMI.
@@ -29,10 +29,11 @@ scripts/start_workcell.sh
 
 This starts the commissioned production chain only: position/velocity hardware,
 ros2_control,
-Motion Server, the fixed-cache spectrometer state machine, and laser adapter.
-The HMI is a separate always-on service. Production does not start MoveGroup,
-the legacy workflow executor, pose tuner,
-or camera. Startup is idempotent and requires active controllers, a settled Motion
+Motion Server, the fixed-cache spectrometer state machine, laser adapter, and
+the non-blocking camera recovery watchdog. The watchdog starts/restarts Gemini305
+only when needed; an absent camera never blocks production readiness. The HMI is
+a separate always-on service. Production does not start MoveGroup, the legacy
+workflow executor, or pose tuner. Startup is idempotent and requires active controllers, a settled Motion
 Server, fresh encoder positions at the commissioned Home, and ready HMI services.
 Laser data is optional: fresh valid data applies the calibrated spectrometer X
 offset, while a sensor absent from startup uses the configured fixed reference.

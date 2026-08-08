@@ -27,8 +27,8 @@ int declareIntInRange(
   const int value = node.declare_parameter<int>(name, default_value);
   if (value < min_value || value > max_value) {
     throw std::runtime_error(
-      name + " must be in range " + std::to_string(min_value) +
-      ".." + std::to_string(max_value));
+            name + " must be in range " + std::to_string(min_value) +
+            ".." + std::to_string(max_value));
   }
   return value;
 }
@@ -66,7 +66,7 @@ std::map<int32_t, StateMapping> parseStateMap(const std::vector<std::string> & e
     const auto parts = splitMappingEntry(entry);
     if (parts.size() < 2 || parts[0].empty() || parts[1].empty()) {
       throw std::runtime_error(
-        "state_map entries must use 'code:workflow_name[:detail]', got: " + entry);
+              "state_map entries must use 'code:workflow_name[:detail]', got: " + entry);
     }
 
     StateMapping mapping;
@@ -264,7 +264,7 @@ private:
 
     const auto now_time = now();
     if (has_last_trigger_time_ &&
-        (now_time - last_trigger_time_).seconds() < min_trigger_interval_sec_)
+      (now_time - last_trigger_time_).seconds() < min_trigger_interval_sec_)
     {
       return;
     }

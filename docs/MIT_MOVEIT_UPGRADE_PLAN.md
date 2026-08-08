@@ -1,101 +1,54 @@
-# MIT MoveIt Upgrade Plan
+# MIT MoveIt Integration Record
 
-> Historical implementation plan. Production now defaults to the cached fixed
-> trajectory server with the selectable vendor controller mode. Current gains,
-> limits, routes, and commissioning rules are recorded in `AGENTS.md`; do not use
-> this plan as an instruction to switch production back to per-action planning.
+> 历史兼容文件名。MIT 接口已经集成，但 **v1.0.0 生产默认模式是
+> `position_velocity`**。本文件只记录实现边界，不是切换生产控制模式的操作指令。
 
-## Goal
+## 当前实现
 
-Integrate the vendor's ROS 2 Humble MIT MoveIt mode into the commissioned
-workcell without replacing the validated fixed trajectory catalog or removing
-the existing hardware fault filtering. The arm joints use the vendor-recommended
-gains:
+- `panthera_hardware` 支持显式的 `mit_gravity_compensation` 模式。
+- MIT 模式通过厂商 SDK 的位置、速度、力矩、Kp、Kd 命令发送，并使用 Pinocchio
+  计算重力前馈。
+- `hardware_moveit_rviz_mit.launch.py` 是独立的 MIT 调试入口。
+- 固定轨迹生产入口和 `scripts/start_workcell.sh` 默认使用 `position_velocity`；不会
+  因安装了 MIT 支持而自动切换。
+- 夹爪继续使用独立位置命令，不走六轴 MIT 增益。
+- 生产仍由单一 Motion Server 执行缓存轨迹，不为每个动作在线规划。
 
-- `Kp = [60, 60, 60, 60, 60, 60]`
-- `Kd = [5, 5, 5, 5, 5, 5]`
+当前 MIT 调试入口默认参数与代码一致：
 
-The gripper remains on its existing retained position command path.
+```text
+Kp = [75, 105, 135, 135, 75, 75]
+Kd = [5.5, 5.5, 5.5, 5.5, 5.5, 5.5]
+gravity_scale = [0, 1.04, 1.10, 1.52, 0, 0]
+```
 
-## Baseline and upstream
+这些值不是生产位置速度模式的 PD 参数，也不得在未做实机验收时写成“稳定生产参数”。
 
-- Workcell baseline: `23500b7` (`validated-motion-20260718`).
-- Vendor repository: `HighTorque-Robotics/Panthera-HT_ROS2`, branch `humble`.
-- Vendor MIT commit reviewed: `3815fce1a2b805e39544f66368ed46a0089a5cb0`.
-- Rollback: switch back to `main`/`validated-motion-20260718` and rebuild.
+## 使用边界
 
-The vendor commit is not merged wholesale. The workcell contains later
-stability, command validation, gripper retention, fixed trajectory, and HMI
-changes which must not be overwritten.
+只有明确的 MIT 调试任务才允许设置：
 
-## Design
+```bash
+CONTROL_MODE=mit_gravity_compensation scripts/start_workcell.sh
+```
 
-1. Add the vendor `mit_gravity_compensation` hardware mode to
-   `panthera_hardware`.
-2. Use Pinocchio to load the installed robot URDF and calculate model gravity
-   torque from current joint positions at each controller update.
-3. Send the existing trajectory position and velocity targets through the
-   vendor SDK `posVelTorqueKpKd()` command with clamped gravity feed-forward,
-   `Kp`, and `Kd`.
-4. Keep the existing communication sentinel rejection, state filtering,
-   command finite/range checks, SDK return checking, and write suppression when
-   the motors are unavailable.
-5. Reject malformed MIT gain vectors instead of silently running unexpected
-   defaults. Gains must contain exactly six finite, non-negative values.
-6. Keep the normal `position_velocity` launch path available as a rollback
-   mode.
+切换前必须停止工作站，确保只有一个 `ros2_control_node` 和一个轨迹控制器。禁止在
+生产运行中热切换控制模式。HMI 显示的模式来自本次启动配置，不从厂商状态反馈帧的
+类型字节推断。
 
-## Launch integration
+## 保留的保护
 
-- Add the vendor-compatible commissioning entry point
-  `hardware_moveit_rviz_mit.launch.py`.
-- Expose `mit_kp` and `mit_kd` as comma-separated launch arguments.
-- Make the fixed-motion production entry points default to
-  `mit_gravity_compensation` with the commissioned `60/5` gains.
-- Preserve explicit `control_mode:=position_velocity` support for immediate
-  rollback.
-- Do not add MoveGroup to the production fixed-cache path; MIT is a hardware
-  control mode beneath both MoveIt and the deterministic trajectory server.
+- 增益、重力比例和负载参数必须是完整、有限的六轴向量。
+- URDF/动力学模型加载失败时 MIT 初始化失败，不发送未补偿命令。
+- 重力力矩按关节配置限幅；无效 SDK 状态和不可用电机不下发六轴命令。
+- 任何调试都不得启动第二个 MoveGroup、旧 workflow executor 或 pose tuner 与生产
+  Motion Server 争用控制器。
 
-## Safety and failure behavior
+## 历史来源
 
-- No real motion is used for build or software validation.
-- MIT configuration fails closed if the URDF/dynamics model or gain vector
-  cannot be loaded.
-- Gravity torque is checked for finite values and clamped to each joint's
-  configured torque limit before sending.
-- Motor-unavailable sentinel handling continues to suppress all arm writes.
-- Only the existing `arm_controller` remains the
-  `/arm_controller/follow_joint_trajectory` owner.
-- The original Home vector and validated motion catalog are unchanged.
+- 初始工作站基线：`23500b7`（`validated-motion-20260718`）。
+- 上游参考：`HighTorque-Robotics/Panthera-HT_ROS2` `humble` 分支，提交
+  `3815fce1a2b805e39544f66368ed46a0089a5cb0`。
+- 厂商早期建议的统一 `Kp=60`、`Kd=5` 仅是最初调试起点，已不作为当前启动默认值。
 
-## Validation
-
-1. Verify Pinocchio and the installed URDF are available on the target.
-2. Build `panthera_hardware`, `panthera_ht_config`, and packages depending on
-   them.
-3. Run focused package tests and report pre-existing lint failures separately.
-4. Run Python launch syntax checks.
-5. Verify `--show-args` exposes MIT mode and the exact `60/5` defaults.
-6. Verify the non-MIT rollback launch still parses.
-7. Inspect the final Git diff to ensure no motion catalog or workcell point
-   changed.
-8. Commit and push only after all non-motion checks pass.
-
-## Hardware acceptance (separate controlled step)
-
-After software validation, perform a low-speed, short-range test from Home with
-the workspace clear and hardware E-stop available. Confirm startup hold,
-direction, gravity compensation, following error, temperature/current, and
-stop behavior before allowing a complete production cycle. Hardware acceptance
-is not implied by a successful build.
-
-### 2026-07-24 partial acceptance result
-
-- Kp/Kd `60/5` and gravity scale `[0,1,1.5,0,0,0]` held at startup and completed
-  a direct-controller Home/safe-center/Home test.
-- The upstream scale `[1,1,1,1,1,1]` is rejected for this physical arm because it
-  produced joint drift.
-- Multi-sample encoder latching and terminal action-state handling were hardened.
-- Full-cycle acceptance remains blocked on eliminating a false stationary
-  velocity spike that makes the motion server report the arm as unsettled.
+MIT 的实机验收、温度/电流和长周期稳定性必须单独记录；软件构建通过不代表硬件验收。

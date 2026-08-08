@@ -83,7 +83,7 @@ std::vector<uint8_t> ModbusRtuMaster::transact(
 
   auto response = serial_.readExact(5, timeout_);
   if (response.size() >= 2 &&
-      response[1] == static_cast<uint8_t>(request_without_crc[1] | 0x80))
+    response[1] == static_cast<uint8_t>(request_without_crc[1] | 0x80))
   {
     const uint16_t received_crc =
       static_cast<uint16_t>(response[response.size() - 2]) |
@@ -117,9 +117,9 @@ std::vector<uint8_t> ModbusRtuMaster::transact(
   const uint16_t computed_crc = crc16(response);
   if (received_crc != computed_crc) {
     throw ModbusException(
-      "CRC mismatch, response=" + toHex(response) +
-      " received=0x" + std::to_string(received_crc) +
-      " computed=0x" + std::to_string(computed_crc));
+            "CRC mismatch, response=" + toHex(response) +
+            " received=0x" + std::to_string(received_crc) +
+            " computed=0x" + std::to_string(computed_crc));
   }
 
   const uint8_t request_slave = request_without_crc[0];
@@ -245,7 +245,7 @@ void ModbusRtuMaster::writeMultipleRegisters(
 
   const auto response = transact(request, 8);
   if (readU16(response, 2) != start_address ||
-      readU16(response, 4) != values.size())
+    readU16(response, 4) != values.size())
   {
     throw ModbusException("Unexpected write response: " + toHex(response));
   }

@@ -32,8 +32,8 @@ public:
 
   LaserDistanceResult readDistance();
 
-  uint8_t slaveId() const { return slave_id_; }
-  const std::string & decodeMode() const { return decode_mode_; }
+  uint8_t slaveId() const {return slave_id_;}
+  const std::string & decodeMode() const {return decode_mode_;}
 
 private:
   double decodeDistanceMm(const std::vector<uint16_t> & registers) const;

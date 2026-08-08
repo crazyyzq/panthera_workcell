@@ -3,6 +3,8 @@
 Panthera 六轴机械臂光谱检测与杯具清洗工作站，基于 ROS 2 Humble。工程包含位置速度
 控制、固定轨迹生产流程、光谱仪激光偏置、RS485 毛刷控制、点位示教和常驻 Web HMI。
 
+当前稳定发布版：`v1.0.0`。生产默认使用 `position_velocity`，MIT 仅保留为显式调试选项。
+
 ## 分支
 
 - `main`：已验证的稳定生产版本。
@@ -21,6 +23,9 @@ http://127.0.0.1:8080
 
 通过界面的“启动工作站”“安全停止”“安全重启”管理生产服务。HMI 不随工作站停止，
 因此生产进程异常时仍可操作恢复。
+
+远程维护不要在文档或代码中写死工控机 IP；使用现场配置的 SSH 跳板/反向隧道，
+需要查看 HMI 时转发本机 `8080` 端口。
 
 命令行备用操作：
 
@@ -48,6 +53,7 @@ scripts/stop_workcell.sh
 - [点位调试说明](docs/SPECTROMETER_CELL_POINT_TUNING.md)
 - [外部指令接口](docs/EXTERNAL_COMMAND_API.md)
 - [固定轨迹调试记录](docs/FIXED_MOTION_COMMISSIONING.md)
+- [v1.0.0 发布说明](docs/RELEASE_NOTES_v1.0.0.md)
 - [生产状态机](src/panthera_spectrometer_cell/README.md)
 - [Web HMI](src/panthera_web_hmi/README.md)
 

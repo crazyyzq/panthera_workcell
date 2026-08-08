@@ -11,7 +11,7 @@
 真实机械臂 + MoveIt + 工作流 + RS485 激光：
 
 ```bash
-cd ~/Panthera-HT_ROS2-humble
+cd /home/b1/panthera_workcell_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch panthera_task_framework application_bringup.launch.py

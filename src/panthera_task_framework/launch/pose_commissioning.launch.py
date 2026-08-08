@@ -15,7 +15,6 @@ def generate_launch_description():
         'config',
         'station_pose_commissioning.yaml',
     ])
-
     moveit_config = (
         MoveItConfigsBuilder(
             'panthera_ht_ros_description',
@@ -50,4 +49,3 @@ def generate_launch_description():
             ],
         ),
     ])
-

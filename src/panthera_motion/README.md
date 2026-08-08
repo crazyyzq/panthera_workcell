@@ -15,7 +15,8 @@ Production execution does not call a MoveIt planner for every step.
 - Runtime speed scaling can only slow a compiled trajectory.
 - Long-running motion uses a cancellable ROS action.
 - After brush exit, the production return lifts vertically to `z=0.45 m`, makes
-  the wrist upright at that safe height, and crosses directly to outlet 1. It
+  the wrist upright at that safe height, and crosses directly to the active
+  cycle's original outlet. It
   must not return through the low pour points.
 
 ## Interfaces

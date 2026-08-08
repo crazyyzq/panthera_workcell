@@ -5,11 +5,13 @@ This file contains durable repository context and operating rules for future age
 ## Workspace and platform
 
 - Canonical remote workspace: `/home/b1/panthera_workcell_ws`.
-- Current remote address is the Tailscale IP `100.95.35.71`. The canonical Linux
-  workspace remains `/home/b1/panthera_workcell_ws`; use SSH/SFTP when SMB is not
-  exposed over Tailscale. Treat older `10.89.*`, `192.168.8.*`, `192.168.137.*`,
-  and other previously used controller addresses as stale unless the operator
-  explicitly announces another change.
+- The controller's LAN/Tailscale addresses are not durable configuration. Use
+  `/home/b1/panthera_workcell_ws` as the identity of the workspace and the
+  operator-maintained SSH jump/reverse-tunnel alias for remote maintenance. Do
+  not commit a transient IP address or depend on SMB reachability.
+- The canonical HMI URL on the controller is `http://127.0.0.1:8080`; remote
+  access should use an authenticated SSH tunnel or the controller's current
+  address announced by the operator.
 - Target platform observed on 2026-07-17: Ubuntu 22.04 on Rockchip kernel `5.10.0-1012-rockchip`.
 - ROS distribution: ROS 2 Humble.
 - MoveIt version observed: 2.5.9.
@@ -30,7 +32,7 @@ This file contains durable repository context and operating rules for future age
 - `src/panthera_rs485`: serial/Modbus, laser and RS485 state adapters.
 - `src/panthera_io`: optional GPIO/DIDO adapter; real GPIO is disabled by default because the installed interface board/pinmux is not confirmed.
 - `src/panthera_motion`: deterministic catalog compiler, cache and single-owner `FollowJointTrajectory` executor. Use this for new production motion.
-- `docs/FIXED_TRAJECTORY_REFACTOR_PLAN.md`: authoritative implementation plan for the fixed-trajectory refactor.
+- `docs/FIXED_TRAJECTORY_REFACTOR_PLAN.md`: implemented fixed-trajectory architecture record; current operating values remain in this file and the commissioning manual.
 
 ## Current motion facts
 
@@ -63,7 +65,8 @@ This file contains durable repository context and operating rules for future age
   caching the scene, 20 consecutive real ±2 mm jogs on 2026-07-29 completed in
   0.574-0.594 s end-to-end (mean 0.586 s), with staging bounded to 17 ms.
 - Vendor MIT MoveIt support was integrated from upstream `humble` commit `3815fce`
-  on 2026-07-24. The hardware mode is `mit_gravity_compensation`: trajectory
+  on 2026-07-24 as an explicit commissioning option. The optional hardware mode
+  is `mit_gravity_compensation`: trajectory
   position/velocity targets plus Pinocchio gravity feed-forward are sent through
   the SDK position/velocity/torque/Kp/Kd command.
 - Commissioned MIT arm gains are `Kp=[75,105,135,135,75,75]` and
@@ -699,7 +702,8 @@ not a normal shutdown path.
   from `outlet_wait`, select the matching `outlet_wait_to_outlet_*_grasp` route.
   Do not collapse this into an outlet-1-only Home special case. Both outlet-2
   variants completed consecutive full physical cycles at 100% speed in about
-  60 seconds per cycle with the production MIT gains.
+  60 seconds per cycle during the historical MIT commissioning run. Current
+  production still defaults to `position_velocity`.
 - Shutdown may encounter `ERROR` with a stale active task after safety recovery.
   It may clear that context only when the gripper and spectrometer are empty and
   fresh encoders independently verify commissioned Home. Otherwise it must keep

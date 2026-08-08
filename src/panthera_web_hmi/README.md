@@ -81,8 +81,10 @@ ros2 launch panthera_web_hmi spectrometer_cell_hmi.launch.py \
 浏览器打开：
 
 ```text
-http://192.168.137.186:8080
+http://127.0.0.1:8080
 ```
+
+远程地址不写死在工程中；通过现场 SSH 隧道转发端口后仍使用本机地址访问。
 
 ## Gemini305 相机
 

@@ -168,8 +168,8 @@ std::vector<uint8_t> SerialPort::readExact(
     const auto elapsed = std::chrono::steady_clock::now() - start;
     if (elapsed >= timeout) {
       throw std::runtime_error(
-        "Serial read timeout, expected " + std::to_string(length) +
-        " bytes, got " + std::to_string(data.size()));
+              "Serial read timeout, expected " + std::to_string(length) +
+              " bytes, got " + std::to_string(data.size()));
     }
 
     const auto remain = timeout - std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);

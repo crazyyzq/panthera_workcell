@@ -31,8 +31,8 @@ int declareIntInRange(
   const int value = node.declare_parameter<int>(name, default_value);
   if (value < min_value || value > max_value) {
     throw std::runtime_error(
-      name + " must be in range " + std::to_string(min_value) +
-      ".." + std::to_string(max_value));
+            name + " must be in range " + std::to_string(min_value) +
+            ".." + std::to_string(max_value));
   }
   return value;
 }

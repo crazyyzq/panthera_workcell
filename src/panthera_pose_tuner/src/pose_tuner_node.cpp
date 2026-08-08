@@ -143,7 +143,9 @@ public:
         std::placeholders::_2));
 
     RCLCPP_INFO(logger_, "panthera_pose_tuner ready");
-    RCLCPP_INFO(logger_, "services: /pose_tuner/run_target, /pose_tuner/list_targets, /pose_tuner/stop");
+    RCLCPP_INFO(
+      logger_,
+      "services: /pose_tuner/run_target, /pose_tuner/list_targets, /pose_tuner/stop");
     RCLCPP_INFO(logger_, "execute_motion parameter: %s", execute_motion_ ? "true" : "false");
     logAvailableTargets();
   }
@@ -202,7 +204,8 @@ private:
     const auto target_it = targets_.find(request->workflow_name);
     if (target_it == targets_.end()) {
       response->success = false;
-      response->message = "unknown target: " + request->workflow_name + ". Call /pose_tuner/list_targets first.";
+      response->message = "unknown target: " + request->workflow_name +
+        ". Call /pose_tuner/list_targets first.";
       return;
     }
 
@@ -239,8 +242,13 @@ private:
       arm_->setPoseReferenceFrame(pose.header.frame_id);
       arm_->setEndEffectorLink(target.hand_frame.empty() ? default_hand_frame_ : target.hand_frame);
       arm_->setGoalPositionTolerance(std::max(0.0005, target.position_tolerance_mm / 1000.0));
-      arm_->setGoalOrientationTolerance(std::max(degToRad(0.2), degToRad(target.orientation_tolerance_deg)));
-      arm_->setPoseTarget(pose, target.hand_frame.empty() ? default_hand_frame_ : target.hand_frame);
+      arm_->setGoalOrientationTolerance(
+        std::max(
+          degToRad(0.2),
+          degToRad(target.orientation_tolerance_deg)));
+      arm_->setPoseTarget(
+        pose,
+        target.hand_frame.empty() ? default_hand_frame_ : target.hand_frame);
     }
 
     RCLCPP_INFO(

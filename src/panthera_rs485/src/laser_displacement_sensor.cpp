@@ -96,9 +96,11 @@ double LaserDisplacementSensor::decodeDistanceMm(
   } else if (decode_mode_ == "uint32_cdab") {
     value = static_cast<double>(bytesToU32(registerBytesCdab(registers))) * scale_;
   } else if (decode_mode_ == "int32_abcd") {
-    value = static_cast<double>(static_cast<int32_t>(bytesToU32(registerBytesAbcd(registers)))) * scale_;
+    value = static_cast<double>(static_cast<int32_t>(bytesToU32(registerBytesAbcd(registers)))) *
+      scale_;
   } else if (decode_mode_ == "int32_cdab") {
-    value = static_cast<double>(static_cast<int32_t>(bytesToU32(registerBytesCdab(registers)))) * scale_;
+    value = static_cast<double>(static_cast<int32_t>(bytesToU32(registerBytesCdab(registers)))) *
+      scale_;
   } else {
     throw std::runtime_error("Unsupported laser decode_mode: " + decode_mode_);
   }
